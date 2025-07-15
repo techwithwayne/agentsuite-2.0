@@ -56,3 +56,4 @@ build/
 *.egg-info/
 .eggs/
 .Python
+barista_assistant_old.zip
