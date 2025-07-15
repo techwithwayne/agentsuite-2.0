@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Django
+*.sqlite3
+db.sqlite3
+*.log
+*.pot
+*.pyc
+*.mo
+*.db
+
+# Virtual Envs
+venv/
+env/
+ENV/
+.venv/
+.env/
+.env
+
+# Secrets
+*.env
+secrets.json
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# System Files
+.DS_Store
+Thumbs.db
+
+# Static/media
+/static/
+media/
+
+# Migrations (optional: keep only if clean repo)
+**/migrations/*.py
+!**/migrations/__init__.py
+
+# Node / Frontend
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# Build
+dist/
+build/
+*.egg-info/
+.eggs/
+.Python
