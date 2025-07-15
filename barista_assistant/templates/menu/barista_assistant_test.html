@@ -1,0 +1,26 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Barista Assistant Test</title>
+    <script src="https://js.stripe.com/v3/"></script>
+    <style>
+        body {
+            background-color: #121212;
+            color: white;
+            font-family: sans-serif;
+            text-align: center;
+            padding: 50px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Barista Assistant Test Page</h1>
+    <p>If your floating Barista Assistant button appears, your setup is correct.</p>
+    <script>
+        const csrftoken = '{{ csrf_token }}';
+    </script>
+    <script src="{% static 'js/barista-assistant-widget.js' %}"></script>
+</body>
+</html>

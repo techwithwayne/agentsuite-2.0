@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Your Fuel Espresso Order Confirmation</title>
+</head>
+<body style="font-family: sans-serif; background-color: #f9f9f9; padding: 20px; color: #121212;">
+  <div style="max-width: 600px; margin: auto; background: white; border-radius: 8px; overflow: hidden; border: 1px solid #ddd;">
+    <div style="background-color: #121212; color: white; padding: 20px; text-align: center;">
+      <h1>☕ Fuel Espresso</h1>
+    </div>
+    <div style="padding: 20px;">
+      <h2>Thank you for your order, {{ order.customer_first_name }}!</h2>
+      <p>Your order will be ready for pickup at:</p>
+      <p><strong>{{ order.pickup_time|date:"F j, Y, g:i A" }}</strong></p>
+      <p><strong>Order Details:</strong></p>
+      <ul>
+        {% for item in order.order_items %}
+          <li>{{ item.item }} (Quantity: {{ item.quantity }})</li>
+        {% endfor %}
+      </ul>
+      <p>Thank you for supporting your local coffee shop. We can't wait to serve you!</p>
+    </div>
+    <div style="background-color: #ff6c00; color: white; text-align: center; padding: 10px;">
+      Fuel Espresso - Freshly Brewed for You
+    </div>
+  </div>
+</body>
+</html>

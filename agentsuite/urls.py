@@ -1,23 +1,13 @@
-"""
-URL configuration for agentsuite project.
-
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/5.2/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
-"""
-
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
+from barista_assistant.orders.views import stripe_success_view
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path('webdoctor/', include('webdoctor.urls')),
+    path('website-analyzer/', include('website_analyzer.urls')),
+    path('barista-assistant/', include('barista_assistant.urls')),
+    path('content-strategy/', include('content_strategy_generator_agent.urls')),
+    path('api/', include('barista_assistant.api_urls')),
+    path("success/", stripe_success_view, name="stripe-success"),
 ]

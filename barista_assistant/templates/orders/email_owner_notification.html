@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>New Fuel Espresso Order</title>
+</head>
+<body style="font-family: sans-serif; background-color: #f9f9f9; padding: 20px; color: #121212;">
+  <div style="max-width: 600px; margin: auto; background: white; border-radius: 8px; overflow: hidden; border: 1px solid #ddd;">
+    <div style="background-color: #121212; color: white; padding: 20px; text-align: center;">
+      <h1>☕ New Order Alert</h1>
+    </div>
+    <div style="padding: 20px;">
+      <h2>Order from {{ order.customer_name }}</h2>
+      <p><strong>Email:</strong> {{ order.customer_email }}</p>
+      <p><strong>Pickup Time:</strong> {{ order.pickup_time|date:"F j, Y, g:i A" }}</p>
+      <p><strong>Order Details:</strong></p>
+      <ul>
+        {% for item in order.order_items %}
+          <li>{{ item.item }} (Quantity: {{ item.quantity }})</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div style="background-color: #ff6c00; color: white; text-align: center; padding: 10px;">
+      Fuel Espresso - Incoming Order
+    </div>
+  </div>
+</body>
+</html>

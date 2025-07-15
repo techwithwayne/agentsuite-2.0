@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
 
-class AnalyzerConfig(AppConfig):
+class MenuConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
-    name = "website_analyzer"
+    name = "barista_assistant.menu"

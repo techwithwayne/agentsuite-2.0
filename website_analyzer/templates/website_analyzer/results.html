@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Website Analyzer Results</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; line-height: 1.6; }
+        h1, h2 { color: #222; }
+        ul { padding-left: 20px; }
+        img { border: 1px solid #ddd; border-radius: 4px; }
+        .image-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+        .consultation-cta {
+            background: #f0f8ff;
+            padding: 10px;
+            border-radius: 5px;
+            display: inline-block;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Results for {{ url }}</h1>
+
+    <h2>General Issues Found</h2>
+    <ul>
+        {% for issue in general_issues %}
+            <li>{{ issue }}</li>
+        {% empty %}
+            <li>No general issues found.</li>
+        {% endfor %}
+    </ul>
+
+    <h2>Headings Found</h2>
+    {% for tag, headings in headings_found.items %}
+        {% if headings %}
+            <h3>{{ tag.upper }} Tags</h3>
+            <ul>
+                {% for heading in headings %}
+                    <li>{{ heading }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    {% endfor %}
+
+    <h2>Broken Links</h2>
+    {% if broken_links %}
+        <ul>
+            {% for link in broken_links %}
+                <li><a href="{{ link }}" target="_blank">{{ link }}</a></li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>No broken links found.</p>
+    {% endif %}
+
+    {% if missing_alt_images %}
+        <h2>Images Missing Alt Text</h2>
+        <div class="image-grid">
+            {% for img_url in missing_alt_images %}
+                <img src="{{ img_url }}" alt="Missing Alt" width="350" style="height: auto;">
+            {% endfor %}
+        </div>
+    {% endif %}
+
+    <h2>Recommendations (What, Why, Urgency)</h2>
+    {% if recommendations %}
+        <ul>
+            {% for rec in recommendations %}
+                <li>
+                    <strong>What to do:</strong> {{ rec.recommendation }}<br>
+                    <strong>Why it matters:</strong> {{ rec.why }}<br>
+                    <strong>Urgency:</strong> {{ rec.urgency }}
+                </li>
+            {% endfor %}
+        </ul>
+        <div class="consultation-cta">
+            👉 Need help fixing these? <a href="https://techwithwayne.com/free-consultation/" target="_blank">Get a Free Consultation</a>
+        </div>
+    {% else %}
+        <p>No recommendations — looking good!</p>
+    {% endif %}
+
+    <h2>Recommended Layout Structure (What, Why, Example)</h2>
+{% if layout_suggestions %}
+    <ul>
+        {% for suggestion in layout_suggestions %}
+            <li>
+                <strong>What to implement:</strong> {{ suggestion.what }}<br>
+                <strong>Why it matters:</strong> {{ suggestion.why }}<br>
+                <strong>Example link:</strong> <a href="{{ suggestion.example_link }}" target="_blank">{{ suggestion.example_link }}</a>
+            </li>
+        {% endfor %}
+    </ul>
+    <div class="consultation-cta">
+        👉 Need help implementing these? <a href="https://techwithwayne.com/free-consultation/" target="_blank">Get a Free Consultation</a>
+    </div>
+{% else %}
+    <p>No layout suggestions available or GPT returned no structured results. Please retry.</p>
+{% endif %}
+
+
+
+    <p><a href="{% url 'home' %}">Analyze another site</a></p>
+</body>
+</html>

@@ -1,0 +1,26 @@
+<h1>Thank you for your order! ☕</h1>
+
+{% if order %}
+  {% if order.fallback %}
+    <p><strong>Name:</strong> {{ order.name }}</p>
+    <p><strong>Email:</strong> {{ order.email }}</p>
+    <p><strong>Menu Item:</strong> {{ order.menu_item }}</p>
+    <p><strong>Pickup Time:</strong> {{ order.pickup_time }}</p>
+    <p><strong>Total Paid:</strong> ${{ order.amount }}</p>
+    <p><em>Note: Data retrieved from Stripe fallback.</em></p>
+  {% else %}
+    <p><strong>Name:</strong> {{ order.customer_first_name }} {{ order.customer_last_name }}</p>
+    <p><strong>Email:</strong> {{ order.customer_email }}</p>
+    <p><strong>Menu Item:</strong>
+      <ul>
+        {% for item in order.order_items %}
+          <li>{{ item.item }} (x{{ item.quantity }})</li>
+        {% endfor %}
+      </ul>
+    </p>
+    <p><strong>Pickup Time:</strong> {{ order.pickup_time }}</p>
+    <p><strong>Status:</strong> {{ order.status }}</p>
+  {% endif %}
+{% else %}
+  <p>We couldn't retrieve your order. Please check your email confirmation.</p>
+{% endif %}

@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<head><title>Website Analyzer</title></head>
+<body>
+  <h1>Website Analyzer</h1>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Scan</button>
+  </form>
+</body>
+</html>

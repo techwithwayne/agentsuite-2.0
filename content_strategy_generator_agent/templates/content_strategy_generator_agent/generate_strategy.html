@@ -1,0 +1,25 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Content Strategy Generator Agent</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; }
+        textarea { width: 100%; }
+        pre { background: #f5f5f5; padding: 10px; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>Content Strategy Generator Agent</h1>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Generate Strategy</button>
+    </form>
+    {% if result %}
+        <h2>Generated Strategy:</h2>
+        <div>{{ result|safe }}</div>
+    {% endif %}
+</body>
+</html>
