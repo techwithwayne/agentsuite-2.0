@@ -17,6 +17,7 @@ website_issue_keywords = [
     "database", "server", "hosting", "caching", "maintenance"
 ]
 
+# Helper to enforce one short paragraph + invitation line
 def enforce_short_response(gpt_response, is_diagnostic, invitation="But tell me your issue and let’s see if I can help."):
     if is_diagnostic:
         return gpt_response.strip()
@@ -45,52 +46,36 @@ def chat_with_agent(request):
         if not user_message:
             return JsonResponse({"error": "Empty message provided."}, status=400)
 
+        # Determine if this is a diagnostic message
         is_diagnostic = any(keyword in user_message.lower() for keyword in website_issue_keywords)
 
-        # ~line 45 — NEW block with stage handling
+        # Retrieve last 5 conversation pairs for memory
         context_convos = []
-        stage = "initial"
-
         if session_id:
             past_convos = Conversation.objects.filter(session_id=session_id).order_by('-timestamp')[:5][::-1]
             for convo in past_convos:
                 context_convos.append({"role": "user", "content": convo.user_message})
                 context_convos.append({"role": "assistant", "content": convo.agent_response})
 
-            if past_convos:
-                last_stage = past_convos[-1].stage
-                if last_stage == "initial":
-                    stage = "clarifying"
-                elif last_stage == "clarifying":
-                    stage = "summarize"
-                elif last_stage == "summarize":
-                    stage = "offered_report"
-                else:
-                    stage = "initial"
-
-
-        # Stage tracking logic
-        last_convo = (
-            Conversation.objects.filter(session_id=session_id).order_by("-timestamp").first()
-            if session_id else None
-        )
-        
-
-        # Get agent response based on stage
-        raw_response = get_agent_response(user_message, context_convos, stage=stage)
+        # Generate AI response with memory
+        raw_response = get_agent_response(user_message, context_convos)
         response = enforce_short_response(raw_response, is_diagnostic)
 
+        # Check if fallback triggered
+        if response.strip().lower().startswith("i'm here to help with your website issues"):
+            return JsonResponse({"response": response, "fallback": True, "diagnostic": True})
+
+        # Save conversation with session memory
         convo = Conversation.objects.create(
             session_id=session_id or None,
             name=name or None,
             email=email or None,
             subject=subject or None,
             user_message=user_message,
-            agent_response=response,
-            stage=stage
+            agent_response=response
         )
 
-        # Email logic if user gave email (unchanged)
+        # Send email if provided
         if email:
             name_line_user = f"**Name:** {name}\n" if name else ""
             report_heading = f"Here is your report, {name}:" if name else "Here is your report:"
@@ -189,6 +174,7 @@ If you’d like to chat about it, you can [book a free consultation here](https:
         return JsonResponse({"error": "Invalid JSON."}, status=400)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
 
 
 def test_widget(request):

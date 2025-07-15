@@ -8,7 +8,6 @@ class Conversation(models.Model):
     user_message = models.TextField()
     agent_response = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
-    stage = models.CharField(max_length=50, default="initial")
 
     def __str__(self):
         who = self.name or self.email or "Anonymous"

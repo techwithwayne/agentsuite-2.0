@@ -12,61 +12,106 @@
   document.body.appendChild(chatContainer);
 
   const style = document.createElement("style");
+  
   style.textContent = `
-      #barista-assistant-toggle {
-          position: fixed;
-          bottom: 20px;
-          right: 20px;
-          background-color: #c00000;
-          color: white;
-          border: none;
-          border-radius: 50%;
-          width: 60px;
-          height: 60px;
-          font-size: 24px;
-          cursor: pointer;
-          z-index: 9999;
-      }
-      #barista-assistant-container {
-          position: fixed;
-          bottom: 100px;
-          right: 20px;
-          width: 350px;
-          max-height: 500px;
-          background: #121212;
-          color: white;
-          border-radius: 12px;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-          overflow-y: auto;
-          padding: 10px;
-          z-index: 9999;
-          font-family: sans-serif;
-          display: flex;
-          flex-direction: column;
-      }
-      .msg {
-          background: #333;
-          margin: 5px;
-          padding: 8px 12px;
-          border-radius: 12px;
-      }
-      .input-row {
-          margin: 5px;
-      }
-      .input-row input, .input-row button {
-          width: 100%;
-          padding: 8px;
-          margin-top: 4px;
-          border-radius: 8px;
-          border: none;
-      }
-      .menu-item-btn {
-          background: #c00000;
-          color: white;
-          cursor: pointer;
-          margin-top: 5px;
-      }
-  `;
+  #barista-assistant-toggle {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background-color: #c00000;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 60px;
+    height: 60px;
+    font-size: 24px;
+    cursor: pointer;
+    z-index: 9999;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  }
+
+  #barista-assistant-container {
+    position: fixed;
+    bottom: 100px;
+    right: 20px;
+    width: 350px;
+    max-height: 90vh;
+    background: #121212;
+    color: white;
+    border-radius: 16px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    overflow-y: auto;
+    padding: 16px;
+    z-index: 9999;
+    font-family: 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+  }
+
+  .msg {
+    background: #1e1e1e;
+    margin: 6px 0;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.4;
+    box-sizing: border-box;
+  }
+
+  .input-row {
+    width: 100%;
+    margin: 8px 0;
+    box-sizing: border-box;
+  }
+
+  .input-row input {
+    width: 100%;
+    padding: 12px;
+    border-radius: 8px;
+    border: none;
+    font-size: 14px;
+    background: #2a2a2a;
+    color: white;
+    box-sizing: border-box;
+  }
+
+  .input-row input:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px #ff6c00;
+  }
+
+  .input-row button,
+  .menu-item-btn {
+    width: 100%;
+    padding: 12px;
+    margin-top: 6px;
+    background: #ff6c00;
+    color: white;
+    font-weight: bold;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.3s ease;
+    box-sizing: border-box;
+  }
+
+  .input-row button:hover,
+  .menu-item-btn:hover {
+    background: #e65a00;
+  }
+
+  @media (max-width: 480px) {
+    #barista-assistant-container {
+      width: 90%;
+      right: 5%;
+      bottom: 80px;
+    }
+  }
+`;
+
+
   document.head.appendChild(style);
 
   toggleButton.addEventListener("click", () => {
