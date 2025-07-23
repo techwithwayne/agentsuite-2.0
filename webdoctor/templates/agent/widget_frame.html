@@ -1,19 +1,30 @@
-{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Website Doctor Widget</title>
-  <script src="{% static 'webdoctor/js/website-doctor-widget.js' %}" defer></script>
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      overflow: hidden;
-      background: transparent;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Website Doctor Widget</title>
+    <link rel="stylesheet" href="/static/webdoctor/css/website-doctor.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked@4.0.12/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@2.3.6/dist/purify.min.js"></script>
 </head>
 <body>
+    <button id="wd-chat-toggle" title="Open Website Doctor Chat" aria-label="Open chat">?</button>
+    <div id="wd-chat-box" class="hidden" aria-hidden="true">
+        <div id="wd-messages" role="log" aria-live="polite"></div>
+        <div id="wd-form">
+            <input id="wd-input" type="text" placeholder="Ask about your website..." aria-label="Chat input" required>
+            <button id="wd-send" title="Send message" aria-label="Send">➤</button>
+        </div>
+        <div id="wd-report-form" class="hidden" aria-hidden="true">
+            <input id="wd-report-email" type="email" placeholder="Enter your email for the report" aria-label="Email for report" required>
+            <button id="wd-report-submit" aria-label="Submit report email">Submit</button>
+        </div>
+        <div id="wd-nudge-buttons" class="hidden" aria-hidden="true">
+            <button id="wd-nudge-consult" aria-label="Request free consultation">Free Consultation</button>
+            <button id="wd-nudge-review" aria-label="Request free site review">Site Review</button>
+        </div>
+    </div>
+    <script src="/static/webdoctor/js/website-doctor-widget.js" defer></script>
 </body>
 </html>

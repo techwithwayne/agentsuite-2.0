@@ -1,14 +1,33 @@
-from django.db import models
+# webdoctor/admin.py
 
-class Conversation(models.Model):
-    session_id = models.CharField(max_length=255, blank=True, null=True)  # <-- Added for memory
-    name = models.CharField(max_length=100, blank=True, null=True)
-    email = models.EmailField(blank=True, null=True)
-    subject = models.CharField(max_length=255, blank=True, null=True)
-    user_message = models.TextField()
-    agent_response = models.TextField()
-    timestamp = models.DateTimeField(auto_now_add=True)
+from django.contrib import admin
+from .models import Conversation
 
-    def __str__(self):
-        who = self.name or self.email or "Anonymous"
-        return f"{who} - {self.subject or 'No Subject'} at {self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+@admin.register(Conversation)
+class ConversationAdmin(admin.ModelAdmin):
+    list_display = (
+        'name', 
+        'email', 
+        'subject', 
+        'timestamp', 
+        'short_user_message', 
+        'short_agent_response'
+    )
+    search_fields = (
+        'name', 
+        'email', 
+        'subject', 
+        'user_message', 
+        'agent_response'
+    )
+    list_filter = ('timestamp',)
+    ordering = ('-timestamp',)
+    readonly_fields = ('timestamp',)
+
+    def short_user_message(self, obj):
+        return (obj.user_message[:50] + "...") if len(obj.user_message) > 50 else obj.user_message
+    short_user_message.short_description = "User Message"
+
+    def short_agent_response(self, obj):
+        return (obj.agent_response[:50] + "...") if len(obj.agent_response) > 50 else obj.agent_response
+    short_agent_response.short_description = "Agent Response"

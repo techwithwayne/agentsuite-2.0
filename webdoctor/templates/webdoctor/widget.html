@@ -1,0 +1,32 @@
+<!-- webdoctor/templates/webdoctor/widget.html -->
+<!DOCTYPE html>  <!-- Declare HTML5 document -->
+<html lang="en">  <!-- Set default language to English -->
+<head>
+    <meta charset="UTF-8">  <!-- Set character encoding to UTF-8 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">  <!-- Ensure responsive design -->
+    <link rel="stylesheet" href="{% static 'webdoctor/css/widget.css' %}">  <!-- Load widget CSS -->
+</head>
+<body>
+    <div id="web-doctor-widget" class="widget-container">  <!-- Main widget container -->
+        <div id="chat-header">Web Doctor</div>  <!-- Widget header with title -->
+        <div id="chat-body"></div>  <!-- Container for chat messages -->
+        <div id="chat-input">  <!-- Input area for user interaction -->
+            <select id="language-select">  <!-- Dropdown for language selection -->
+                <option value="en">English</option>  <!-- English option -->
+                <option value="es">Español</option>  <!-- Spanish option -->
+                <option value="fr">Français</option>  <!-- French option -->
+            </select>
+            <input type="text" id="user-input" placeholder="Describe your website issue...">  <!-- User input field -->
+            <button onclick="sendMessage()">Send</button>  <!-- Send button -->
+        </div>
+        <div id="report-form" style="display:none;">  <!-- Report form, hidden by default -->
+            <input type="text" id="name" placeholder="Your Name">  <!-- Name input -->
+            <input type="email" id="email" placeholder="Your Email">  <!-- Email input -->
+            <div class="g-recaptcha" data-sitekey="your_recaptcha_site_key"></div>  <!-- reCAPTCHA widget -->
+            <button onclick="requestReport()">Request Report</button>  <!-- Report request button -->
+        </div>
+    </div>
+    <script src="https://www.google.com/recaptcha/api.js" async defer></script>  <!-- Load reCAPTCHA script -->
+    <script src="{% static 'webdoctor/js/widget.js' %}"></script>  <!-- Load widget JavaScript -->
+</body>
+</html>

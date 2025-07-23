@@ -1,7 +1,9 @@
 from django.urls import path
-from .views import chat_with_agent, chatbot_iframe_view
+from . import views
 
 urlpatterns = [
-    path("ask/", chat_with_agent, name="ask-agent"),
-    path('widget-frame/', chatbot_iframe_view, name='chatbot_widget_frame'),
+    path('', views.webdoctor_home, name='webdoctor_home'),
+    path('chat/', views.chat_widget, name='chat_widget'),
+    path('handle_message/', views.handle_message, name='handle_message'),
+    path('submit_form/', views.submit_form, name='submit_form'),
 ]

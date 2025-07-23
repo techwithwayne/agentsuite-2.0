@@ -1,0 +1,4 @@
+include README.md
+recursive-include webdoctor/static *
+recursive-include webdoctor/templates *
+recursive-include webdoctor/migrations *

@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
-
-class AgentConfig(AppConfig):
-    default_auto_field = "django.db.models.BigAutoField"
-    name = "webdoctor"
+class WebdoctorConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'webdoctor'
+    verbose_name = "WebDoctor AI Support"
