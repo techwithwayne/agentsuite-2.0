@@ -35,6 +35,7 @@ User Input:
         ],
         temperature=0.4
     )
+
     result = response.choices[0].message.content.strip()
     lines = result.splitlines()
     category = "Unclassified"
@@ -75,14 +76,29 @@ Respond in 1–3 sentences like a website doctor would explain it to the user.
     )
     return response.choices[0].message.content.strip()
 
-def get_agent_response(history, stage="initial", category=None, clarifications=0):
+def translate(text, lang):
+    if lang == "en" or not text:
+        return text
+    prompt = f"Translate the following message into {lang}:\n\n{text}"
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a professional translator."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.3
+    )
+    return response.choices[0].message.content.strip()
+
+def get_agent_response(history, stage="initial", category=None, clarifications=0, lang="en"):
     last_user_input = history[-1]['content'] if history else ""
     user_input = last_user_input.lower().strip()
 
-    closing_phrases = ["thanks", "thank you", "bye", "goodbye", "that’s all", "got it", "appreciate it", "ok cool", "see ya", "nope", "i’m good"]
+    closing_phrases = ["thanks", "thank you", "bye", "goodbye", "that’s all", "got it", "appreciate it", "ok cool"]
     if stage in ["offered_report", "report_sent"] and any(phrase in user_input for phrase in closing_phrases):
+        final_msg = "You're very welcome! 😊 If you ever need more help, I’m just a click away. Take care!"
         return {
-            "response": "You're very welcome! 😊 If you ever need more help, I’m just a click away. Take care!",
+            "response": translate(final_msg, lang),
             "next_stage": "closed",
             "category": category,
             "clarifications": clarifications,
@@ -91,47 +107,40 @@ def get_agent_response(history, stage="initial", category=None, clarifications=0
 
     if stage == "initial":
         category, confidence, question = classify_issue(last_user_input)
-        if confidence >= 70:
-            return {
-                "response": question,
-                "next_stage": "clarifying",
-                "category": category,
-                "clarifications": 1,
-                "typing_delay": 4
-            }
-        else:
-            return {
-                "response": "Hmm, I’m not quite sure yet — could you describe that a bit differently?",
-                "next_stage": "initial",
-                "category": None,
-                "clarifications": clarifications + 1,
-                "typing_delay": 4
-            }
+        response_text = question if confidence >= 70 else "Hmm, I’m not quite sure yet — could you describe that a bit differently?"
+        return {
+            "response": translate(response_text, lang),
+            "next_stage": "clarifying" if confidence >= 70 else "initial",
+            "category": category if confidence >= 70 else None,
+            "clarifications": 1 if confidence >= 70 else clarifications + 1,
+            "typing_delay": 4
+        }
 
     elif stage == "clarifying":
         if clarifications >= 2:
             summary = summarize_issue(history, category)
+            response_text = f"{summary} Would you like me to email you a full diagnostic report with tips to fix it?"
             return {
-                "response": f"{summary} Would you like me to email you a full diagnostic report with tips to fix it?",
+                "response": translate(response_text, lang),
                 "next_stage": "summarize",
                 "category": category,
                 "clarifications": clarifications,
                 "typing_delay": 4
             }
-        else:
-            _, confidence, question = classify_issue(last_user_input)
-            return {
-                "response": question if confidence >= 70 else "Got it. I just need a little more info — what happens exactly when you try?",
-                "next_stage": "clarifying",
-                "category": category,
-                "clarifications": clarifications + 1,
-                "typing_delay": 4
-            }
+        _, confidence, question = classify_issue(last_user_input)
+        follow_up = question if confidence >= 70 else "Got it. I just need a little more info — what happens exactly when you try?"
+        return {
+            "response": translate(follow_up, lang),
+            "next_stage": "clarifying",
+            "category": category,
+            "clarifications": clarifications + 1,
+            "typing_delay": 4
+        }
 
     elif stage == "summarize":
         if user_input in ["yes", "sure", "okay", "ok", "yep", "yeah"]:
             return {
-                "response": "No problem. Just enter your name and email below to get a report. It's free and tailored to your issue.",
+                "response": translate("No problem. Just enter your name and email below to get a report. It's free and tailored to your issue.", lang),
                 "next_stage": "offered_report",
                 "category": category,
                 "clarifications": clarifications,
@@ -139,7 +148,7 @@ def get_agent_response(history, stage="initial", category=None, clarifications=0
             }
         elif user_input in ["no", "not now", "maybe later"]:
             return {
-                "response": "Totally fine! If you change your mind, just let me know and I’ll prepare a report for you.",
+                "response": translate("Totally fine! If you change your mind, just let me know and I’ll prepare a report for you.", lang),
                 "next_stage": "summarize",
                 "category": category,
                 "clarifications": clarifications,
@@ -147,7 +156,7 @@ def get_agent_response(history, stage="initial", category=None, clarifications=0
             }
         else:
             return {
-                "response": "Would you like me to email you a full diagnostic report with tips to fix it?",
+                "response": translate("Would you like me to email you a full diagnostic report with tips to fix it?", lang),
                 "next_stage": "summarize",
                 "category": category,
                 "clarifications": clarifications,
@@ -156,15 +165,16 @@ def get_agent_response(history, stage="initial", category=None, clarifications=0
 
     elif stage == "offered_report":
         return {
-            "response": "Awesome. Just fill out your name and email below and I’ll generate your custom report. 📬",
+            "response": translate("Awesome. Just fill out your name and email below and I’ll generate your custom report. 📬", lang),
             "next_stage": "offered_report",
             "category": category,
             "clarifications": clarifications,
             "typing_delay": 4
         }
 
+    fallback = "Let’s take another look together. Could you explain a bit more?"
     return {
-        "response": "Let’s take another look together. Could you explain a bit more?",
+        "response": translate(fallback, lang),
         "next_stage": "initial",
         "category": None,
         "clarifications": 0,

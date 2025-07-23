@@ -2,7 +2,7 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from webdoctor.models import UserInteraction, AgentResponse, DiagnosticReport
-from webdoctor.ai_agent import get_agent_response  # ⬅️ uses OpenAI logic
+from webdoctor.ai_agent import get_agent_response
 import json
 import re
 
@@ -36,7 +36,8 @@ def handle_message(request):
             history=conversation["history"],
             stage=conversation["stage"],
             category=conversation["category"],
-            clarifications=conversation["clarifications"]
+            clarifications=conversation["clarifications"],
+            lang=lang
         )
 
         # Update session state
@@ -51,10 +52,10 @@ def handle_message(request):
         AgentResponse.get_or_create_response(ai_response["response"])
 
         return JsonResponse({
-        "response": ai_response["response"],
-        "typing_delay": ai_response.get("typing_delay", 4),
-        "stage": ai_response.get("next_stage", "initial")  # 👈 This is the key!
-    })
+            "response": ai_response["response"],
+            "typing_delay": ai_response.get("typing_delay", 4),
+            "stage": ai_response.get("next_stage", "initial")
+        })
 
     return JsonResponse({'error': 'Invalid method'}, status=400)
 
