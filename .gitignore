@@ -35,6 +35,7 @@ secrets.json
 # System Files
 .DS_Store
 Thumbs.db
+agentsuite/wsgi.py
 
 # Static/media
 /static/
