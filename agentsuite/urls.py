@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import path, include
-from barista_assistant.orders.views import stripe_success_view
 from webdoctor import views
+from barista_assistant.views import success_view
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -11,5 +11,6 @@ urlpatterns = [
     path('barista-assistant/', include('barista_assistant.urls')),
     path('content-strategy/', include('content_strategy_generator_agent.urls')),
     path('api/', include('barista_assistant.api_urls')),
-    path("success/", stripe_success_view, name="stripe-success"),
+     path('api/menu/', include('barista_assistant.menu.urls')),
+    path("success/", success_view, name="stripe-success"),
 ]

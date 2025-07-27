@@ -1,35 +1,33 @@
-{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>WebDoctor Chat</title>
-    <link rel="stylesheet" href="{% static 'webdoctor/css/chat_widget.css' %}">
+    <link rel="stylesheet" href="https://apps.techwithwayne.com/static/webdoctor/css/chat_widget.css">
     <style>
-        body{
-            background-color:#121212;
+        body {
+            background-color: #121212;
         }
     </style>
 </head>
 <body>
-    <div id="chat-widget" class="chat-widget">
-        <div id="chat-header">Veronica - Your Website Helper</div>
-        <div id="chat-body"></div>
-        <div id="chat-input">
-            <select id="language-select">
-                <option value="en">English</option>
-                <option value="es">Español</option>
-                <option value="fr">Français</option>
-            </select>
-            <input type="text" id="user-input" placeholder="Describe your issue...">
-            <button onclick="sendMessage()">Send</button>
-        </div>
-        <div id="form-section" style="display:none;">
-            <input type="text" id="form-name" placeholder="Your Name">
-            <input type="email" id="form-email" placeholder="Your Email">
-            <button onclick="submitForm()">Get Report</button>
-        </div>
+  <div class="chat-widget">
+    <div id="chat-header">TechWithWayne Chat</div>
+
+    <div id="chat-body" class="chat-body"></div>
+
+    <div id="chat-input" class="chat-input-wrapper">
+      <input type="text" id="user-input" placeholder="Write a message..." />
+      <button onclick="sendMessage()">➤</button>
     </div>
-    <script src="{% static 'webdoctor/js/chat_widget.js' %}"></script>
+
+    <div id="form-section" class="form-section" style="display: none;">
+      <input type="text" id="form-name" placeholder="Your Name" />
+      <input type="email" id="form-email" placeholder="Your Email" />
+      <button onclick="submitForm()">Get Report</button>
+    </div>
+  </div>
+
+    <script src="https://apps.techwithwayne.com/static/webdoctor/js/chat_widget.js?v=0.1.1.1.15</script>
 </body>
 </html>

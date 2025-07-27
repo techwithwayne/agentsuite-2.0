@@ -1,7 +1,7 @@
 from django.urls import path
-from .views import MenuItemListView, barista_assistant_test
+from .views import MenuItemListView, seed_menu
 
 urlpatterns = [
-    path('menu/', MenuItemListView.as_view(), name='menu-list'),
-    path('barista-assistant-test/', barista_assistant_test, name='barista-assistant-test'),
+    path('', MenuItemListView.as_view(), name='menu-list'),
+    path('seed/', seed_menu, name='menu-seed'),
 ]

@@ -16,6 +16,8 @@ def index(request):
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+from .openai_client import get_openai_client
+
 def generate_layout_suggestions(title, headings, url):
     headings_text = "\n".join([f"{tag.upper()}: {text}" for tag, texts in headings.items() for text in texts])
 
@@ -240,6 +242,7 @@ def scan_website(url):
     }
 
 def home(request):
+    client = get_openai_client()
     if request.method == 'POST':
         form = URLScanForm(request.POST)
         if form.is_valid():
