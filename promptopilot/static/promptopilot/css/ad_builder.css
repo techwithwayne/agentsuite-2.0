@@ -1,0 +1,83 @@
+/* static/promptopilot/css/ad_builder.css */
+
+/* General layout */
+body {
+  background-color: #121212;
+  color: #ffffff;
+  font-family: 'Segoe UI', Roboto, sans-serif;
+  padding: 2rem;
+  margin: 0;
+  line-height: 1.5;
+}
+
+h1 {
+  color: #ffffff;
+  font-size: 2rem;
+  margin-bottom: 1.5rem;
+  text-align: center;
+}
+
+/* Form layout */
+form {
+  display: grid;
+  gap: 1rem;
+  max-width: 600px;
+  margin: 0 auto;
+  background-color: #1e1e1e;
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: 0 0 10px rgba(0,0,0,0.6);
+}
+
+label {
+  font-weight: bold;
+  margin-bottom: 0.25rem;
+  color: #ffffff;
+}
+
+input,
+select,
+button {
+  padding: 10px;
+  font-size: 1rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background-color: #2a2a2a;
+  color: #ffffff;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: #ff6c00;
+  box-shadow: 0 0 0 2px rgba(255, 108, 0, 0.4);
+}
+
+button {
+  background-color: #ff6c00;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  border: none;
+  transition: background-color 0.3s ease;
+}
+
+button:hover {
+  background-color: #e55c00;
+}
+
+/* Output section */
+#result {
+  max-width: 600px;
+  margin: 2rem auto 0;
+  padding: 1rem;
+  background-color: #1e1e1e;
+  border-radius: 10px;
+  border: 1px solid #333;
+  white-space: pre-wrap;
+  color: #ffffff;
+  font-family: monospace;
+  box-shadow: 0 0 6px rgba(255, 108, 0, 0.2);
+}

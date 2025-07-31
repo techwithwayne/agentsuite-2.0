@@ -1,0 +1,64 @@
+<!-- templates/promptopilot/widget_frame.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PromptoPilot Widget Frame</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Brand styles -->
+  <link rel="stylesheet" href="{{ STATIC_HOST }}promptopilot/css/ad_builder.css">
+  
+  <!-- Optional: Add iframe resize support -->
+  <script>
+    function sendHeight() {
+      window.parent.postMessage({
+        type: "promptopilot-resize",
+        height: document.body.scrollHeight
+      }, "*");
+    }
+
+    window.addEventListener("load", sendHeight);
+    window.addEventListener("resize", sendHeight);
+  </script>
+</head>
+<body style="background-color: #121212; color: white;">
+
+  <main style="max-width: 600px; margin: 2rem auto;">
+    <h1 style="text-align: center; font-size: 2rem; margin-bottom: 1.5rem;">
+      PromptoPilot Ad Builder
+    </h1>
+
+    <!-- 🔽 This is your existing form template code -->
+    <form method="post" id="ad-builder-form">
+      {% csrf_token %}
+      <label>User ID</label>
+      <input type="text" name="user_id" required>
+
+      <label>Product Name</label>
+      <input type="text" name="product_name" required>
+
+      <label>Audience</label>
+      <input type="text" name="audience" required>
+
+      <label>Tone</label>
+      <input type="text" name="tone" required>
+
+      <label>Model</label>
+      <select name="model">
+        <option value="gpt4">GPT-4o (OpenAI)</option>
+        <option value="claude">Claude (Anthropic)</option>
+      </select>
+
+      <button type="submit" id="submit-btn">
+        🚀 Build Ad
+      </button>
+    </form>
+
+    <!-- Output area -->
+    <div id="ad-result" style="margin-top: 2rem;"></div>
+  </main>
+
+  <script src="{{ STATIC_HOST }}promptopilot/js/ad_builder.js"></script>
+</body>
+</html>

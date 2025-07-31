@@ -16,19 +16,10 @@ if not SECRET_KEY:
 DEBUG = os.getenv("DEBUG", "False") == "True"
 
 ALLOWED_HOSTS = [
+    "techwithwayne.pythonanywhere.com",
+    "apps.techwithwayne.com",
     "127.0.0.1",
     "localhost",
-    "apps.techwithwayne.com", 
-    "techwithwayne.pythonanywhere.com",
-] + (os.getenv("ADDITIONAL_HOSTS", "").split(",") if os.getenv("ADDITIONAL_HOSTS") else [])
-
-# ✅ CSRF Trusted Origins for iframe/subdomain POST support
-CSRF_TRUSTED_ORIGINS = [
-    "https://promptopilot.com",
-    "https://tools.promptopilot.com",
-    "https://ai.promptopilot.com",
-    "https://showcase.techwithwayne.com",
-    "https://apps.techwithwayne.com",
 ]
 
 # Installed apps
@@ -54,14 +45,13 @@ INSTALLED_APPS = [
     "content_strategy_generator_agent",
     "rest_framework",
 ]
-INSTALLED_APPS += ["django_extensions"]
 
 # Middleware
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    "corsheaders.middleware.CorsMiddleware",  # ✅ required before CommonMiddleware
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -91,14 +81,11 @@ TEMPLATES = [
 # WSGI application
 WSGI_APPLICATION = "agentsuite.wsgi.application"
 
-# ✅ DATABASE WITH OPTIMIZATIONS
+# Database
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
-        "OPTIONS": {
-            "timeout": 30,
-        }
     }
 }
 
@@ -124,38 +111,19 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-# ✅ ENHANCED SECURITY SETTINGS
-SECURE_BROWSER_XSS_FILTER = True
-SECURE_CONTENT_TYPE_NOSNIFF = True
-X_FRAME_OPTIONS = 'SAMEORIGIN'
-
-if not DEBUG:
-    SECURE_SSL_REDIRECT = True
-    SECURE_HSTS_SECONDS = 31536000
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
-
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = "/static/"
 
 # Add this for local development to serve app-level static files like PromptoPilot
-# STATICFILES_DIRS = [
-#     BASE_DIR / "promptopilot" / "static",
-# ]
+STATICFILES_DIRS = [
+    BASE_DIR / "promptopilot" / "static",
+]
 
 # Where collectstatic will place files for production
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Use WhiteNoise for static file serving in production
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
-
-def set_cors_headers(headers, path, url):
-    """Enhanced CORS headers for static files"""
-    if path.endswith((".css", ".js")):
-        headers["Access-Control-Allow-Origin"] = "*"
-        headers["Cache-Control"] = "public, max-age=31536000"
-
-WHITENOISE_ADD_HEADERS_FUNCTION = set_cors_headers
 
 def set_custom_headers(headers, path, url):
     if path.endswith(".css") or path.endswith(".js"):
@@ -179,87 +147,13 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")
 
-if not all([EMAIL_HOST_USER, EMAIL_HOST_PASSWORD]):
-    print("⚠️  EMAIL configuration incomplete - email features will be disabled")
-
-# ✅ OPENAI CONFIGURATION WITH VALIDATION
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_ASSISTANT_ID = os.getenv("OPENAI_ASSISTANT_ID")
+# Security/CORS
+X_FRAME_OPTIONS = 'SAMEORIGIN'  # Safer default; adjust if widget requires ALLOWALL
 
 CORS_ALLOWED_ORIGINS = [
     "https://showcase.techwithwayne.com",
     "https://apps.techwithwayne.com",
-    "https://promptopilot.com",
-    "https://tools.promptopilot.com",
-    'http://localhost:8000',
-    'http://127.0.0.1:8000'
 ]
-
-CORS_ALLOW_CREDENTIALS = True  # ✅ Allow cookies/auth headers across domains
-CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
-CSRF_COOKIE_SECURE = False  # Set to True in production with HTTPS
-
-
-# ✅ Extra Security Headers for production
-SESSION_COOKIE_SECURE = True
-SECURE_BROWSER_XSS_FILTER = True
-SECURE_CONTENT_TYPE_NOSNIFF = True
-SECURE_HSTS_SECONDS = 31536000  # 1 year
-SECURE_SSL_REDIRECT = not DEBUG  # redirect only if in prod
-
-# ✅ SESSION CONFIGURATION  
-SESSION_COOKIE_AGE = 3600  # 1 hour
-SESSION_SAVE_EVERY_REQUEST = True
-SESSION_EXPIRE_AT_BROWSER_CLOSE = True
-
-# ✅ Logging for production diagnostics
-# ✅ COMPREHENSIVE LOGGING
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
-            'style': '{',
-        },
-        'simple': {
-            'format': '{levelname} {message}',
-            'style': '{',
-        },
-    },
-    'handlers': {
-        'file': {
-            'level': 'INFO',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': BASE_DIR / 'logs' / 'webdoctor.log',
-            'maxBytes': 1024*1024*15,  # 15MB
-            'backupCount': 10,
-            'formatter': 'verbose',
-        },
-        'console': {
-            'level': 'INFO',
-            'class': 'logging.StreamHandler',
-            'formatter': 'simple',
-        },
-    },
-    'loggers': {
-        'webdoctor': {
-            'handlers': ['file', 'console'],
-            'level': 'INFO',
-            'propagate': True,
-        },
-        'django': {
-            'handlers': ['file'],
-            'level': 'ERROR',
-            'propagate': True,
-        },
-    },
-}
-
-# Create logs directory
-(BASE_DIR / 'logs').mkdir(exist_ok=True)
-
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Stripe configuration (commented out if unused)
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")

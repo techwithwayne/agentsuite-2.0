@@ -3,17 +3,17 @@ from django.urls import path, include
 from webdoctor import views
 from barista_assistant.views import success_view
 
-app_name = 'webdoctor'
-
 urlpatterns = [
     path("admin/", admin.site.urls),
     
     path("agent/", include("webdoctor.urls")),
+    path('webdoctor/', include('webdoctor.urls')),
     path('webdoctor/', views.webdoctor_home, name='webdoctor_home'),
     
     path("coach/", include("personal_coach.urls")),
     
     path("tools/", include("promptopilot.urls")),
+    path("promptopilot/", include("promptopilot.urls")),
 
     path('website-analyzer/', include('website_analyzer.urls')),
     

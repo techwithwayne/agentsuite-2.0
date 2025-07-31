@@ -1,33 +1,85 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>WebDoctor Chat</title>
-    <link rel="stylesheet" href="https://apps.techwithwayne.com/static/webdoctor/css/chat_widget.css">
-    <style>
-        body {
-            background-color: #121212;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <title>WebDoctor Chat</title>
+
+  <style>
+    body {
+      background-color: #121212;
+    }
+  </style>
+
+  <script>
+    // ✅ Declare once and reuse throughout the page
+    window.isLocal = window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost";
+
+    // ✅ Dynamically load the CSS based on environment
+    const cssLink = document.createElement("link");
+    cssLink.rel = "stylesheet";
+    cssLink.href = isLocal
+      ? "https://127.0.0.1:8000/static/webdoctor/css/chat_widget.css"
+      : "https://apps.techwithwayne.com/static/webdoctor/css/chat_widget.css";
+    document.head.appendChild(cssLink);
+  </script>
 </head>
 <body>
   <div class="chat-widget">
-    <div id="chat-header">TechWithWayne Chat</div>
-
-    <div id="chat-body" class="chat-body"></div>
-
-    <div id="chat-input" class="chat-input-wrapper">
-      <input type="text" id="user-input" placeholder="Write a message..." />
-      <button onclick="sendMessage()">➤</button>
+        <div id="chat-header">
+            WebDoctor AI Assistant - Shirley
+        </div>
+        
+        <div class="chat-body" id="chat-body">
+            <!-- Messages will be dynamically added here -->
+        </div>
+        
+        <div class="chat-input-wrapper">
+            <input 
+                type="text" 
+                id="user-input" 
+                placeholder="Describe your website issue..."
+                maxlength="500"
+            >
+            <button id="send-button" type="button">➤</button>
+        </div>
+        
+        <div class="form-section" id="form-section">
+            <input 
+                type="text" 
+                id="form-name" 
+                placeholder="Your Name"
+                maxlength="100"
+            >
+            <input 
+                type="email" 
+                id="form-email" 
+                placeholder="Your Email"
+                maxlength="100"
+            >
+            <button id="submit-button" type="button">Get Free Diagnostic Report</button>
+        </div>
     </div>
 
-    <div id="form-section" class="form-section" style="display: none;">
-      <input type="text" id="form-name" placeholder="Your Name" />
-      <input type="email" id="form-email" placeholder="Your Email" />
-      <button onclick="submitForm()">Get Report</button>
-    </div>
-  </div>
+    <script>
+        // Provide correct URLs to JavaScript
+        window.webdoctorUrls = {
+            handleMessage: "/agent/handle_message/",
+            submitForm: "/agent/submit_form/"
+        };
+        console.log('🔧 webdoctorUrls set to:', window.webdoctorUrls);
+    </script>
 
-    <script src="https://apps.techwithwayne.com/static/webdoctor/js/chat_widget.js?v=0.1.1.1.15</script>
+  <script>
+    // ✅ Load JS dynamically and attach events AFTER it’s loaded
+    const js = document.createElement("script");
+    js.src = isLocal
+      ? "https://127.0.0.1:8000/static/webdoctor/js/chat_widget.js"
+      : "https://apps.techwithwayne.com/static/webdoctor/js/chat_widget.js?v=0.1.1.1.15";
+
+    document.body.appendChild(js);
+  </script>
 </body>
 </html>
+
+

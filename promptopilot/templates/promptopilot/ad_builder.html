@@ -1,0 +1,51 @@
+<!-- templates/promptopilot/ad_builder.html -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PromptoPilot Ad Builder</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Use dynamic static host for local vs. production -->
+  <link rel="stylesheet" href="{{ STATIC_HOST }}promptopilot/css/ad_builder.css" />
+  <link rel="stylesheet" href="{{ STATIC_HOST }}promptopilot/css/widget-floating.css">
+</head>
+<body>
+  <h1>PromptoPilot Ad Builder</h1>
+
+  <form id="adForm">
+    <label for="user_id">User ID</label>
+    <input type="hidden" id="user_id" value="test123" name="user_id" required />
+
+    <label for="product_name">Product Name</label>
+    <input type="text" id="product_name" name="product_name" required />
+
+    <label for="audience">Audience</label>
+    <input type="text" id="audience" name="audience" required />
+
+    <label for="tone">Tone</label>
+    <select id="tone" name="tone">
+      <option value="friendly">Friendly</option>
+      <option value="funny">Funny</option>
+      <option value="professional">Professional</option>
+      <option value="bold">Bold</option>
+    </select>
+
+    <label for="model">Model</label>
+    <select id="model" name="model">
+      <option value="gpt-4o">GPT-4o</option>
+      <option value="claude">Claude 3</option>
+    </select>
+
+    <button type="submit">Generate Ad</button>
+  </form>
+
+  <div id="result" hidden></div>
+
+  <div id="promptopilot-widget"></div>
+
+  <script src="{{ STATIC_HOST }}promptopilot/js/ad_builder.js"></script>
+  {% comment %} <script src="{{ STATIC_HOST }}promptopilot/js/widget-floating.js"></script> {% endcomment %}
+</body>
+</html>
