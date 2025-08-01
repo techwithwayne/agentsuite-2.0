@@ -38,6 +38,7 @@ Thumbs.db
 */wsgi.py
 api_test.py
 
+
 # Static/media
 /static/
 media/
