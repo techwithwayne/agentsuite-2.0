@@ -1,5 +1,27 @@
-# webdoctor/ai_agent.py - CONVERSATION FLOW FIXED VERSION
 import os
+import json
+import re
+import requests
+import time
+import hashlib
+import logging
+from functools import lru_cache
+from typing import Dict, Any, Optional
+from django.conf import settings
+from django.core.mail import send_mail
+from django.core.cache import cache
+from django.utils import timezone
+from openai import OpenAI
+from webdoctor.models import UserInteraction, DiagnosticReport
+
+logger = logging.getLogger('webdoctor')
+
+class OpenAIClientManager:
+    """Singleton OpenAI client manager"""
+    _instance = None
+    _client = None
+    
+    def __new__(cls):import os
 import json
 import re
 import requests
@@ -162,7 +184,7 @@ def get_assistant_id():
     return assistant_id
 
 def create_shirley_assistant():
-    """Enhanced assistant creation with FIXED conversation flow"""
+    """Simple assistant creation - let Python handle the stage logic"""
     client = get_openai_client()
     
     try:
@@ -170,66 +192,24 @@ def create_shirley_assistant():
             name="Shirley - WebDoctor AI",
             model="gpt-4o",
             instructions="""
-🚨 CRITICAL JSON FORMAT REQUIREMENT 🚨
+You are Shirley, a friendly website doctor. 
 
-YOU MUST ALWAYS RESPOND WITH VALID JSON. NO EXCEPTIONS. NEVER PLAIN TEXT.
+STRICTLY follow the current stage task provided in the system message. Do not deviate from it, even if you think it would be helpful. The Python system controls stages—your job is only to generate the response text as instructed for the current stage.
 
-REQUIRED JSON FORMAT (EXACT):
+You MUST respond with valid JSON in this format:
 {
     "response": "your conversational message here",
-    "next_stage": "initial|clarifying|summarize|offered_report|hybrid_closing",
+    "next_stage": "stage_will_be_set_by_system",
     "category": "Performance|Design/Layout|Functionality|Access/Errors|Update/Plugin|Security/Hack|Hosting/DNS|null",
-    "clarifications": 0
+    "clarifications": the exact value provided in the system message CLARIFICATIONS ASKED - DO NOT CHANGE IT
 }
 
-You are Shirley, a professional website doctor who helps diagnose and fix website issues.
-
-🚨 CRITICAL CONVERSATION FLOW 🚨
-
-STAGE 1 - initial: Greet warmly, ask about their website problem
-STAGE 2 - clarifying: Ask 2-3 diagnostic questions to understand the issue  
-STAGE 3 - summarize: Summarize the issue and identify the category
-STAGE 4 - offered_report: ASK "Would you like me to send you a free diagnostic report?" and WAIT for user consent
-STAGE 5 - hybrid_closing: After ANY tool use (email sent, speed test, etc.), say thanks and offer additional help
-
-🚨 CRITICAL RULES AFTER TOOL EXECUTION 🚨
-
-AFTER using send_email_diagnostic tool:
-- NEVER ask for name/email again
-- IMMEDIATELY move to "hybrid_closing" stage  
-- Say something like "Perfect! Your report has been sent. Is there anything else I can help you with?"
-- DO NOT repeat the email sending process
-
-AFTER using any other tools:
-- Move to "hybrid_closing" stage
-- Offer additional assistance
-- DO NOT ask for more information unless user requests it
-
-PERSONALITY RULES:
-- Friendly, casual, human (never robotic)
-- Use phrases like "Got it!", "I see", "That helps"
-- Be empathetic about website troubles
-- Don't repeat your introduction
-- Keep responses conversational and helpful
-
-CRITICAL RULES:
-- NEVER show forms without explicit user consent
-- ONLY use tools ONCE per user request
-- NEVER EVER output anything other than valid JSON
-- Always use double quotes in JSON, never single quotes
-- Escape any quotes inside the response text properly
-- AFTER tool execution, ALWAYS move to "hybrid_closing"
-
-🚨 REMINDER: OUTPUT ONLY VALID JSON - NEVER PLAIN TEXT 🚨
-
-VALID EXAMPLES:
-{"response": "Hi there! I'm Shirley, your website doctor. What seems to be troubling your website today?", "next_stage": "clarifying", "category": null, "clarifications": 0}
-
-{"response": "Perfect! Your diagnostic report has been sent. Is there anything else about your website I can help you with today?", "next_stage": "hybrid_closing", "category": "Performance", "clarifications": 2}
+Be conversational, empathetic, and helpful WITHIN the stage task limits. Ask good diagnostic questions ONLY when instructed. DO NOT mention or offer reports unless the stage task explicitly says to.
+Repeat: DO NOT offer reports until instructed in the task for clarifications >= 3. DO NOT CHANGE THE CLARIFICATIONS VALUE; USE EXACTLY THE VALUE GIVEN IN "CLARIFICATIONS ASKED".
             """,
             tools=SHIRLEY_TOOLS,
-            metadata={"project": "webdoctor", "version": "2.3"},
-            temperature=0.7,
+            metadata={"project": "webdoctor", "version": "3.0"},
+            temperature=0.0,
             response_format={"type": "json_object"}
         )
         
@@ -238,6 +218,60 @@ VALID EXAMPLES:
     except Exception as e:
         logger.error(f"Failed to create assistant: {str(e)}")
         raise ValueError(f"Could not create OpenAI assistant: {str(e)}")
+
+def force_stage_logic(stage: str, clarifications: int, user_message: str, assistant_response: str) -> tuple[str, int]:
+    """FORCE the correct conversation stage logic in Python"""
+    user_msg_lower = user_message.lower()
+    response_lower = assistant_response.lower()
+    
+    logger.info(f"STAGE LOGIC: Current stage={stage}, clarifications={clarifications}")
+    
+    # FORCED STAGE PROGRESSION RULES - Enforce at least 3 clarifying questions
+    if stage == "initial":
+        # After initial greeting, ALWAYS go to clarifying
+        next_stage = "clarifying"
+        next_clarifications = 0
+        logger.info("FORCED: initial -> clarifying")
+        
+    elif stage == "clarifying":
+        # Stay in clarifying until we have at least 3 questions asked
+        if clarifications < 3:
+            next_stage = "clarifying"
+            next_clarifications = clarifications + 1
+            logger.info(f"FORCED: staying in clarifying, incrementing to {next_clarifications}")
+        else:
+            # After 3+ clarifications, move to offered_report
+            next_stage = "offered_report"
+            next_clarifications = clarifications
+            logger.info("FORCED: clarifying -> offered_report")
+            
+    elif stage == "offered_report":
+        # Check if user said yes to report
+        yes_words = ["yes", "sure", "okay", "ok", "please", "send", "absolutely", "definitely", "yeah"]
+        if any(word in user_msg_lower for word in yes_words):
+            # User said yes, stay in offered_report to collect details
+            next_stage = "offered_report"
+            next_clarifications = clarifications
+            logger.info("FORCED: user said yes, staying in offered_report")
+        else:
+            # User said no or something else, stay in offered_report
+            next_stage = "offered_report"  
+            next_clarifications = clarifications
+            logger.info("FORCED: staying in offered_report")
+            
+    elif stage == "hybrid_closing":
+        # Stay in closing
+        next_stage = "hybrid_closing"
+        next_clarifications = clarifications
+        logger.info("FORCED: staying in hybrid_closing")
+        
+    else:
+        # Default fallback
+        next_stage = "clarifying"
+        next_clarifications = clarifications
+        logger.info("FORCED: fallback to clarifying")
+    
+    return next_stage, next_clarifications
 
 def validate_tool_arguments(function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Validate tool arguments"""
@@ -279,7 +313,7 @@ def handle_tool_call(tool_call) -> Dict[str, Any]:
     function_name = tool_call.function.name
 
     try:
-        # ✅ Safely extract and validate arguments
+        # Safely extract and validate arguments
         raw_args = tool_call.function.arguments.strip() if tool_call.function.arguments else ""
         if not raw_args:
             raise json.JSONDecodeError("Empty tool_call.function.arguments", doc="", pos=0)
@@ -289,7 +323,7 @@ def handle_tool_call(tool_call) -> Dict[str, Any]:
 
         logger.info(f"Executing tool: {function_name}")
 
-        # ✅ Route to the correct tool function
+        # Route to the correct tool function
         if function_name == "send_email_diagnostic":
             return handle_send_email_diagnostic(validated_args)
         elif function_name == "recommend_fixes":
@@ -315,7 +349,7 @@ def handle_tool_call(tool_call) -> Dict[str, Any]:
 
 
 def handle_send_email_diagnostic(arguments: Dict[str, str]) -> Dict[str, Any]:
-    """Enhanced email diagnostic handler with clear completion signal"""
+    """Enhanced email diagnostic handler"""
     name = arguments["name"]
     email = arguments["email"]
     issue = arguments["issue"]
@@ -382,32 +416,23 @@ TechWithWayne Digital Solutions
             report.mark_email_sent()
             logger.info(f"Email sent successfully to {email}")
             
-            # 🚨 CLEAR SUCCESS SIGNAL - CONVERSATION SHOULD END HERE
             return {
-                "status": "completed",
-                "message": f"Perfect! Your diagnostic report has been sent to {email}. Check your inbox (and spam folder) in the next few minutes.",
-                "success": True,
-                "email_sent": True,
-                "recipient": email,
-                "next_action": "close_conversation"
+                "message": "Great! Your diagnostic report has been sent to your email. Check your inbox (and spam folder) in the next few minutes.",
+                "success": True
             }
             
         except Exception as email_error:
             logger.error(f"Email failed to {email}: {str(email_error)}")
             return {
-                "status": "failed",
                 "error": "I created your report but had trouble sending the email. Please check your email address and try again.",
-                "success": False,
-                "email_sent": False
+                "success": False
             }
             
     except Exception as e:
         logger.error(f"Database error for {email}: {str(e)}")
         return {
-            "status": "error",
             "error": "I'm having trouble processing your request right now. Please try again in a moment.",
-            "success": False,
-            "email_sent": False
+            "success": False
         }
 
 def handle_recommend_fixes(arguments: Dict[str, str]) -> Dict[str, Any]:
@@ -659,8 +684,57 @@ def handle_get_plugin_list(arguments: Dict[str, str]) -> Dict[str, Any]:
         logger.error(f"Plugin scan failed for {url}: {str(e)}")
         return {"error": "Plugin scan failed due to technical issues."}
 
+def get_stage_specific_prompt(stage: str, clarifications: int, category: Optional[str]) -> str:
+    """Get stage-specific prompts to force proper behavior"""
+    
+    if stage == "initial":
+        return """Ask what's wrong with their website. Be friendly and move to diagnostic questions.
+Example output:
+{"response": "Hey there! I'm Shirley, your website's doctor. What seems to be the issue today?", "next_stage": "stage_will_be_set_by_system", "category": null, "clarifications": 0}"""
+        
+    elif stage == "clarifying":
+        base_examples = """
+Examples of questions:
+- 'When did you first notice this problem?'
+- 'Does this happen on all pages or just specific ones?'
+- 'What browser are you using?'
+- 'Have you made any recent changes to your website?'
+- 'Is your site WordPress-based or another platform?'
+"""
+        if clarifications == 0:
+            return f"""Ask ONE specific diagnostic question about their website issue. DO NOT offer any reports yet. DO NOT mention reports at all. DO NOT summarize or categorize yet. Just ask diagnostic questions. Repeat: NO REPORTS UNTIL AFTER EXACTLY 3 QUESTIONS. {base_examples}
+STRICTLY FOLLOW THIS. Example output:
+{{"response": "I'm sorry to hear about the issue. When did you first notice your site being slow?", "next_stage": "stage_will_be_set_by_system", "category": null, "clarifications": 0}}"""
+        elif clarifications == 1:
+            return f"""Ask ONE follow-up diagnostic question to better understand their issue. DO NOT offer any reports yet. DO NOT mention reports at all. DO NOT summarize or categorize yet. Repeat: NO REPORTS UNTIL AFTER EXACTLY 3 QUESTIONS. {base_examples}
+STRICTLY FOLLOW THIS. Example output:
+{{"response": "Thanks for that detail. Does this slowness happen on mobile devices, desktop, or both?", "next_stage": "stage_will_be_set_by_system", "category": null, "clarifications": 1}}"""
+        elif clarifications == 2:
+            return f"""Ask ONE more diagnostic question to gather more details. DO NOT offer any reports yet. DO NOT mention reports at all. DO NOT summarize or categorize yet. Repeat: NO REPORTS UNTIL AFTER EXACTLY 3 QUESTIONS. {base_examples}
+STRICTLY FOLLOW THIS. Example output:
+{{"response": "Got it. Have you made any recent changes to your website that might be causing this?", "next_stage": "stage_will_be_set_by_system", "category": null, "clarifications": 2}}"""
+        else:  # clarifications >= 3
+            return f"""Now summarize the issue based on all gathered information and identify it as a {category or 'website'} problem. Set category to the matching one. Then ask if they would like a free diagnostic report. DO NOT ask for name/email yet.
+Example output:
+{{"response": "From what you've described, it sounds like a performance issue with slow loading times. Would you like me to send you a free diagnostic report?", "next_stage": "stage_will_be_set_by_system", "category": "Performance", "clarifications": 3}}"""
+            
+    elif stage == "offered_report":
+        return """If the user has not yet agreed to the report, ask if they want a diagnostic report. If they said yes, ask for their name and email to send it. DO NOT send the report yet—use the tool for that.
+Example output if not agreed yet:
+{"response": "Would you like a free diagnostic report emailed to you?", "next_stage": "stage_will_be_set_by_system", "category": "Performance", "clarifications": 3}
+Example output if agreed:
+{"response": "Great! To send your report, what's your name and email address?", "next_stage": "stage_will_be_set_by_system", "category": "Performance", "clarifications": 3}"""
+        
+    elif stage == "hybrid_closing":
+        return """Thank them and offer additional help or other services.
+Example output:
+{"response": "You're welcome! If you need more help, feel free to ask.", "next_stage": "stage_will_be_set_by_system", "category": "Performance", "clarifications": 3}"""
+        
+    else:
+        return "Continue the conversation naturally."
+
 def convert_plain_text_to_json(text: str, stage: str, category: Optional[str], clarifications: int) -> Dict[str, Any]:
-    """🚨 BULLETPROOF: Convert any plain text response to valid JSON format"""
+    """BULLETPROOF: Convert any plain text response to valid JSON format"""
     logger.warning(f"Converting plain text to JSON: {text[:100]}...")
     
     # Clean the text
@@ -669,28 +743,24 @@ def convert_plain_text_to_json(text: str, stage: str, category: Optional[str], c
     # Escape quotes in the text for JSON
     escaped_text = cleaned_text.replace('"', '\\"').replace('\n', ' ').replace('\r', ' ')
     
-    # 🚨 CRITICAL: If text mentions email being sent, force to hybrid_closing
-    if any(phrase in cleaned_text.lower() for phrase in ["report has been sent", "email sent", "check your inbox", "sent to your email"]):
-        next_stage = "hybrid_closing"
-    # Check for stage transitions based on content
-    elif any(phrase in cleaned_text.lower() for phrase in ["would you like", "want me to send", "diagnostic report", "free report"]):
-        next_stage = "offered_report"
-    else:
-        next_stage = stage
+    # FORCE the stage using Python logic instead of trusting the assistant
+    next_stage, next_clarifications = force_stage_logic(stage, clarifications, "", escaped_text)
     
-    # Detect category
+    # Detect category from content
     detected_category = category
-    if any(phrase in cleaned_text.lower() for phrase in ["performance", "slow", "loading"]):
+    if any(phrase in cleaned_text.lower() for phrase in ["slow", "loading", "performance", "speed"]):
         detected_category = "Performance"
-    elif any(phrase in cleaned_text.lower() for phrase in ["error", "404", "500", "broken"]):
+    elif any(phrase in cleaned_text.lower() for phrase in ["error", "404", "500", "broken", "not working"]):
         detected_category = "Access/Errors"
+    elif any(phrase in cleaned_text.lower() for phrase in ["mobile", "responsive", "layout", "design"]):
+        detected_category = "Design/Layout"
     
     # Create valid JSON structure
     json_response = {
         "response": escaped_text,
         "next_stage": next_stage,
         "category": detected_category,
-        "clarifications": clarifications
+        "clarifications": next_clarifications
     }
     
     logger.info(f"Successfully converted plain text to JSON: {json_response}")
@@ -738,7 +808,7 @@ def extract_json_from_text(text: str) -> Dict[str, Any]:
     json_text = text[start_idx:end_idx]
     return json.loads(json_text)
 
-def validate_assistant_response(parsed_json: Dict[str, Any]) -> Dict[str, Any]:
+def validate_assistant_response(parsed_json: Dict[str, Any], input_clarifications: int) -> Dict[str, Any]:
     """Validate and sanitize assistant response"""
     required_fields = ['response', 'next_stage', 'category', 'clarifications']
     
@@ -751,10 +821,10 @@ def validate_assistant_response(parsed_json: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("Response must be a non-empty string")
     
     # Validate next_stage
-    valid_stages = ['initial', 'clarifying', 'summarize', 'offered_report', 'hybrid_closing']
+    valid_stages = ['initial', 'clarifying', 'offered_report', 'hybrid_closing']
     if parsed_json['next_stage'] not in valid_stages:
-        logger.warning(f"Invalid stage: {parsed_json['next_stage']}, defaulting to 'initial'")
-        parsed_json['next_stage'] = 'initial'
+        logger.warning(f"Invalid stage: {parsed_json['next_stage']}, defaulting to 'clarifying'")
+        parsed_json['next_stage'] = 'clarifying'
     
     # Validate category
     valid_categories = [
@@ -765,46 +835,51 @@ def validate_assistant_response(parsed_json: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning(f"Invalid category: {parsed_json['category']}, setting to None")
         parsed_json['category'] = None
     
-    # Validate clarifications
-    if not isinstance(parsed_json['clarifications'], int) or parsed_json['clarifications'] < 0:
-        logger.warning(f"Invalid clarifications: {parsed_json['clarifications']}, defaulting to 0")
-        parsed_json['clarifications'] = 0
+    # Override clarifications to match input value
+    if parsed_json['clarifications'] != input_clarifications:
+        logger.warning(f"Assistant set clarifications={parsed_json['clarifications']}, overriding to input value={input_clarifications}")
+        parsed_json['clarifications'] = input_clarifications
     
     return parsed_json
 
 def get_agent_response(history, stage, category, clarifications, lang='en', request=None):
-    """🚨 BULLETPROOF main agent response function with FIXED conversation flow"""
+    """FORCED STAGE LOGIC main agent response function"""
     start_time = time.time()
 
     try:
+        # Adjust stage for first user message after greeting
+        if stage == "initial" and history and history[-1]["role"] == "user":
+            stage = "clarifying"
+            clarifications = 0
+            logger.info("Adjusted stage to clarifying for first user message")
+
         assistant_id = get_assistant_id()
         client = get_openai_client()
+
+        # Get the latest user message for stage logic
+        user_message = ""
+        if history:
+            user_message = history[-1].get("content", "")
 
         # Create thread with timeout
         thread = client.beta.threads.create()
 
-        # 🚨 ENHANCED SYSTEM MESSAGE WITH FLOW CONTROL
-        system_message = f"""🚨 CRITICAL: You MUST respond with VALID JSON ONLY. 
-
-        Current Stage: {stage}
+        # STAGE-SPECIFIC SYSTEM MESSAGE
+        stage_prompt = get_stage_specific_prompt(stage, clarifications, category)
         
-        IMPORTANT FLOW RULES:
-        - If you just sent an email (used send_email_diagnostic), move to "hybrid_closing" and offer additional help
-        - NEVER ask for name/email again after email is sent
-        - After any tool use, go to "hybrid_closing" stage
+        system_message = f"""You MUST respond with VALID JSON ONLY. 
+
+        CURRENT STAGE: {stage}
+        CLARIFICATIONS ASKED: {clarifications}
+        
+        YOUR TASK FOR THIS STAGE: {stage_prompt}
         
         REQUIRED FORMAT:
-        {{"response": "your message", "next_stage": "stage", "category": "category_or_null", "clarifications": 0}}
+        {{"response": "your message", "next_stage": "will_be_overridden", "category": "category_or_null", "clarifications": {clarifications}}}
         
-        NO PLAIN TEXT ALLOWED. JSON ONLY."""
+        NO PLAIN TEXT ALLOWED. JSON ONLY. STRICTLY OUTPUT JSON ONLY. Follow the example format exactly."""
         
-        client.beta.threads.messages.create(
-            thread_id=thread.id,
-            role="user",
-            content=system_message
-        )
-
-        # Add conversation history with validation
+        # Add history first
         for msg in history[-10:]:  # Limit history to last 10 messages
             if not msg.get("content", "").strip():
                 continue
@@ -815,38 +890,17 @@ def get_agent_response(history, stage, category, clarifications, lang='en', requ
                 content=msg["content"][:2000]  # Limit message length
             )
 
-        # 🚨 ENHANCED INSTRUCTIONS WITH FLOW ENFORCEMENT
-        additional_instructions = f"""
-🚨🚨🚨 CONVERSATION FLOW CONTROL 🚨🚨🚨
-
-Current Context:
-- Stage: {stage}
-- Category: {category or 'Not determined'}
-- Clarifications asked: {clarifications}
-- Language: {lang}
-
-CRITICAL STAGE RULES:
-- If stage is "offered_report" and user says YES: Use send_email_diagnostic tool, then move to "hybrid_closing"
-- After ANY tool execution: Move to "hybrid_closing" and offer additional help
-- NEVER ask for name/email after email tool is used
-- If email was already sent: Say thanks and offer more help
-
-JSON FORMAT REQUIRED:
-{{
-    "response": "your conversational message here",
-    "next_stage": "{stage if stage != 'offered_report' else 'hybrid_closing'}",
-    "category": {"null" if not category else f'"{category}"'},
-    "clarifications": {clarifications}
-}}
-
-🚨 NO PLAIN TEXT. NO REPETITION. FOLLOW FLOW. 🚨
-        """.strip()
+        # Add system message last
+        client.beta.threads.messages.create(
+            thread_id=thread.id,
+            role="user", 
+            content=system_message
+        )
 
         # Create run with enforced JSON format
         run = client.beta.threads.runs.create(
             thread_id=thread.id,
             assistant_id=assistant_id,
-            additional_instructions=additional_instructions,
             tool_choice="auto",
             response_format={"type": "json_object"}  # Force JSON
         )
@@ -870,10 +924,6 @@ JSON FORMAT REQUIRED:
                         "tool_call_id": tool_call.id,
                         "output": json.dumps(output)
                     })
-                    
-                    # 🚨 FORCE STAGE CHANGE AFTER EMAIL TOOL
-                    if tool_call.function.name == "send_email_diagnostic" and output.get("success"):
-                        logger.info("🚨 Email tool executed successfully - forcing stage to hybrid_closing")
 
                 run = client.beta.threads.runs.submit_tool_outputs(
                     thread_id=thread.id,
@@ -896,7 +946,7 @@ JSON FORMAT REQUIRED:
             logger.error("No assistant messages returned")
             return create_fallback_response("I didn't receive a proper response. Please try again.", stage, category, clarifications)
 
-        # 🚨 BULLETPROOF JSON PARSING WITH ULTIMATE FALLBACK
+        # BULLETPROOF JSON PARSING WITH ULTIMATE FALLBACK
         try:
             message_obj = messages.data[0]
             if not message_obj.content:
@@ -912,14 +962,14 @@ JSON FORMAT REQUIRED:
 
             logger.debug(f"Raw assistant response: {raw_text[:200]}...")
 
-            # 🚨 BULLETPROOF PARSING STRATEGIES
+            # BULLETPROOF PARSING STRATEGIES
             assistant_msg = None
             parsing_errors = []
             
             # Strategy 1: Direct JSON parsing
             try:
                 assistant_msg = json.loads(raw_text)
-                logger.info("✅ JSON parsed successfully with direct parsing")
+                logger.info("JSON parsed successfully with direct parsing")
             except json.JSONDecodeError as e:
                 parsing_errors.append(f"Direct parsing: {str(e)}")
             
@@ -927,7 +977,7 @@ JSON FORMAT REQUIRED:
             if assistant_msg is None:
                 try:
                     assistant_msg = extract_json_from_text(raw_text)
-                    logger.info("✅ JSON parsed successfully with extraction")
+                    logger.info("JSON parsed successfully with extraction")
                 except json.JSONDecodeError as e:
                     parsing_errors.append(f"Extraction parsing: {str(e)}")
             
@@ -938,23 +988,44 @@ JSON FORMAT REQUIRED:
                     json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
                     if json_match:
                         assistant_msg = json.loads(json_match.group(0))
-                        logger.info("✅ JSON parsed successfully with pattern matching")
+                        logger.info("JSON parsed successfully with pattern matching")
                     else:
                         raise json.JSONDecodeError("No JSON pattern found", doc=raw_text, pos=0)
                 except json.JSONDecodeError as e:
                     parsing_errors.append(f"Pattern parsing: {str(e)}")
             
-            # 🚨 ULTIMATE FALLBACK: Convert plain text to JSON
+            # ULTIMATE FALLBACK: Convert plain text to JSON
             if assistant_msg is None:
                 logger.error(f"All JSON parsing strategies failed: {parsing_errors}")
                 logger.error(f"Raw response was: {raw_text}")
-                logger.warning("🚨 USING ULTIMATE FALLBACK: Converting plain text to JSON")
+                logger.warning("USING ULTIMATE FALLBACK: Converting plain text to JSON")
                 
                 assistant_msg = convert_plain_text_to_json(raw_text, stage, category, clarifications)
-                logger.info("✅ Successfully converted plain text to JSON using fallback")
+                logger.info("Successfully converted plain text to JSON using fallback")
 
             # Validate the parsed JSON structure
-            assistant_msg = validate_assistant_response(assistant_msg)
+            assistant_msg = validate_assistant_response(assistant_msg, clarifications)
+
+            # FORCE THE CORRECT STAGE LOGIC IN PYTHON (override assistant's stage)
+            forced_stage, forced_clarifications = force_stage_logic(stage, clarifications, user_message, assistant_msg["response"])
+            assistant_msg["next_stage"] = forced_stage
+            assistant_msg["clarifications"] = forced_clarifications
+
+            # Enhanced safety check for early report mentions - enforce up to 3
+            logger.info("Entering safety check: stage={}, clarifications={}, response={}".format(stage, clarifications, assistant_msg["response"]))
+            if stage in ["initial", "clarifying"] and clarifications < 3:
+                forbidden_phrases = ["diagnostic report", "send you", "free report", "email you", "report"]
+                if any(phrase in assistant_msg["response"].lower() for phrase in forbidden_phrases):
+                    logger.warning("Assistant mentioned report too early—overriding response")
+                    if clarifications == 0:
+                        assistant_msg["response"] = "I'm sorry to hear about the issue. When did you first notice your site being slow?"
+                    elif clarifications == 1:
+                        assistant_msg["response"] = "Thanks for that detail. Does this slowness happen on mobile devices, desktop, or both?"
+                    elif clarifications == 2:
+                        assistant_msg["response"] = "Got it. Have you made any recent changes to your website that might be causing this?"
+                    assistant_msg["category"] = None
+                    assistant_msg["clarifications"] = clarifications  # Preserve current count
+                    logger.info("Overriding response to: {}".format(assistant_msg["response"]))
 
         except (ValueError, KeyError, IndexError, AttributeError) as e:
             logger.error(f"Message processing failed: {str(e)}")

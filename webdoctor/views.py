@@ -114,6 +114,17 @@ def handle_message(request):
                 "start_time": timezone.now().isoformat()
             })
 
+            # Validate and reset if first message or invalid history
+            if not conversation_data.get("history") or len(conversation_data["history"]) <= 1:  # Reset if no or only initial message
+                logger.info(f"Resetting conversation state for {client_ip} due to first message or invalid history")
+                conversation_data = {
+                    "history": [],
+                    "stage": "initial",
+                    "category": None,
+                    "clarifications": 0,
+                    "start_time": timezone.now().isoformat()
+                }
+
             # Validate conversation data structure
             if not isinstance(conversation_data.get("history"), list):
                 conversation_data["history"] = []
@@ -124,7 +135,7 @@ def handle_message(request):
 
         except Exception as session_error:
             logger.error(f"Session error for {client_ip}: {str(session_error)}")
-            # Reset conversation state
+            # Reset conversation state on session error
             conversation_data = {
                 "history": [],
                 "stage": "initial",
@@ -152,7 +163,7 @@ def handle_message(request):
                 request=request
             )
             
-            # Validate AI response structure
+            # Validate AI response structure and enforce clarifications
             required_fields = ['response', 'next_stage', 'category', 'clarifications']
             for field in required_fields:
                 if field not in ai_response:
@@ -162,7 +173,15 @@ def handle_message(request):
             # Ensure response is not empty
             if not ai_response.get("response", "").strip():
                 raise ValueError("Empty AI response")
-                
+            
+            # Enforce clarifications increment during clarifying stage
+            if conversation_data["stage"] == "clarifying" and ai_response["clarifications"] > conversation_data["clarifications"] + 1:
+                logger.warning(f"Assistant tried to increment clarifications by more than 1 ({ai_response['clarifications']} > {conversation_data['clarifications'] + 1}), overriding to {conversation_data['clarifications'] + 1}")
+                ai_response["clarifications"] = conversation_data["clarifications"] + 1
+            elif ai_response["clarifications"] != conversation_data["clarifications"] and conversation_data["stage"] != "clarifying":
+                logger.warning(f"Assistant set unexpected clarifications value ({ai_response['clarifications']}), overriding to {conversation_data['clarifications']}")
+                ai_response["clarifications"] = conversation_data["clarifications"]
+
         except Exception as ai_error:
             logger.error(f"❌ AI response failed for {client_ip}: {str(ai_error)}")
             ai_response = {
