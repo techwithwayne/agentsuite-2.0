@@ -1,5 +1,5 @@
 (function () {
-  const apiBase = "http://127.0.0.1:8000/api";
+  const apiBase = "https://apps.techwithwayne.com//api";
 
   const toggleButton = document.createElement("button");
   toggleButton.id = "barista-assistant-toggle";
@@ -12,7 +12,7 @@
   document.body.appendChild(chatContainer);
 
   const style = document.createElement("style");
-  
+
   style.textContent = `
   #barista-assistant-toggle {
     position: fixed;

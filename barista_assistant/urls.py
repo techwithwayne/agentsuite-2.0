@@ -6,4 +6,5 @@ urlpatterns = [
     path('success/', views.success_view, name='barista_success'),
     path('cancel/', views.cancel_view, name='barista_cancel'),
     path('api/', include('barista_assistant.api_urls')),
+    path('api/menu/', include('barista_assistant.menu.urls')),  # Added menu routes
 ]

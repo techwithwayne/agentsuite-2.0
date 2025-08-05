@@ -6,6 +6,9 @@ from webdoctor.ai_agent import get_agent_response
 import json
 import re
 
+def widget_frame(request):
+    return render(request, "webdoctor/widget_frame.html")
+
 def webdoctor_home(request):
     return render(request, 'webdoctor/chat_widget.html')
 
