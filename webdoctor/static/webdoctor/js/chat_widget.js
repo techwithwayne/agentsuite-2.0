@@ -219,7 +219,9 @@ class WebDoctorChat {
     console.log("✅ User message added, total messages:", this.messageCount);
   }
 
-  addBotMessage(message, animate = false) {
+  // In your chat_widget.js, replace the addBotMessage function with this:
+
+  addBotMessage(message, animate = false, callback = null) {
     console.log("🤖 Adding bot message:", message, "animate:", animate);
 
     const chatBody = document.getElementById("chat-body");
@@ -235,7 +237,7 @@ class WebDoctorChat {
       console.log("🎬 Starting animation...");
       // ✅ Play typing sound when animation starts
       this.playTypingSound();
-      this.animateTyping(messageDiv, message);
+      this.animateTyping(messageDiv, message, callback); // ✅ Pass callback to animation
     } else {
       messageDiv.innerHTML = `<strong>Shirley:</strong> ${this.escapeHtml(
         message
@@ -243,10 +245,16 @@ class WebDoctorChat {
       chatBody.appendChild(messageDiv);
       this.scrollToBottom();
       console.log("✅ Bot message added instantly");
+
+      // ✅ Execute callback if provided
+      if (callback) {
+        setTimeout(callback, 100);
+      }
     }
   }
 
-  animateTyping(messageDiv, message) {
+  // ✅ Also update the animateTyping function to handle callback:
+  animateTyping(messageDiv, message, callback = null) {
     console.log("⌨️ Animating typing for message:", message);
 
     const chatBody = document.getElementById("chat-body");
@@ -273,6 +281,13 @@ class WebDoctorChat {
         console.log("✅ Typing animation complete");
         clearInterval(typeInterval);
         this.isTyping = false;
+
+        // ✅ Execute callback after typing is complete
+        if (callback) {
+          console.log("🎯 Executing callback after typing animation");
+          setTimeout(callback, 200); // Small delay for better UX
+        }
+
         this.checkForFormTrigger(message);
       }
     }, delay);
@@ -348,6 +363,8 @@ class WebDoctorChat {
     }
   }
 
+  // In your chat_widget.js, replace the sendMessage function with this fixed version:
+
   async sendMessage() {
     console.log(
       "Send message called, isTyping:",
@@ -356,7 +373,6 @@ class WebDoctorChat {
       this.sendInProgress
     );
 
-    // ✅ Prevent double-sending
     if (this.isTyping || this.sendInProgress) {
       console.log("Already processing, skipping...");
       return;
@@ -372,7 +388,6 @@ class WebDoctorChat {
       return;
     }
 
-    // ✅ Set flags to prevent race conditions
     this.isTyping = true;
     this.sendInProgress = true;
     console.log("Set flags: isTyping=true, sendInProgress=true");
@@ -387,7 +402,8 @@ class WebDoctorChat {
       console.log("Send button disabled");
     }
 
-    // Check if user is accepting report offer
+    // ✅ Check if user is accepting report offer (but DON'T show form yet)
+    let isAcceptingReport = false;
     if (this.formOffered && !this.formAccepted) {
       const acceptanceWords = [
         "yes",
@@ -403,16 +419,17 @@ class WebDoctorChat {
       const userResponse = message.toLowerCase();
 
       if (acceptanceWords.some((word) => userResponse.includes(word))) {
+        isAcceptingReport = true;
         this.formAccepted = true;
-        setTimeout(() => this.showForm(), 1000);
-        console.log("✅ Form acceptance detected");
+        console.log(
+          "✅ Form acceptance detected - will show form after AI response"
+        );
       }
     }
 
     const typingIndicator = this.showTypingIndicator();
 
     try {
-      // Use URLs from HTML template
       const targetUrl =
         window.webdoctorUrls?.handleMessage || "/agent/handle_message/";
       console.log("🌐 Making fetch request to:", targetUrl);
@@ -420,9 +437,8 @@ class WebDoctorChat {
       const csrfToken = this.getCsrfToken();
       console.log("🔐 CSRF token:", csrfToken ? "Found" : "Missing");
 
-      // ✅ Enhanced request with timeout and better error handling
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
 
       const response = await fetch(targetUrl, {
         method: "POST",
@@ -446,7 +462,6 @@ class WebDoctorChat {
         throw new Error(`Server error: ${response.status}`);
       }
 
-      // ✅ Enhanced response parsing
       let data;
       try {
         data = await response.json();
@@ -461,7 +476,16 @@ class WebDoctorChat {
 
       if (data.response && data.response.trim()) {
         this.currentStage = data.stage || this.currentStage;
-        this.addBotMessage(data.response, true);
+
+        // ✅ Add bot message with callback to show form after typing animation
+        this.addBotMessage(data.response, true, () => {
+          // ✅ Show form AFTER the AI response is fully typed out
+          if (isAcceptingReport) {
+            console.log("✅ Showing form after AI response");
+            setTimeout(() => this.showForm(), 500);
+          }
+        });
+
         console.log("✅ Bot response added");
       } else {
         this.addBotMessage(
@@ -474,7 +498,6 @@ class WebDoctorChat {
       console.error("❌ Error in sendMessage:", error);
       this.removeTypingIndicator();
 
-      // ✅ Better error messages based on error type
       let errorMessage;
       if (error.name === "AbortError") {
         errorMessage = "Request timed out. Please try again.";
@@ -491,7 +514,6 @@ class WebDoctorChat {
       this.addBotMessage(errorMessage);
       this.isTyping = false;
     } finally {
-      // ✅ Always reset flags and re-enable button
       this.sendInProgress = false;
       if (sendBtn) {
         sendBtn.disabled = false;

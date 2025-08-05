@@ -235,9 +235,8 @@ def force_stage_logic(stage: str, clarifications: int, user_message: str, assist
     
     # RULE 1: From initial, ALWAYS go to clarifying after first user response
     if stage == "initial":
-        # User has responded to greeting, move to clarifying stage
         next_stage = "clarifying"
-        next_clarifications = 1  # ✅ Set to 1 since we're asking first question
+        next_clarifications = 1  # Set to 1 since we're asking first question
         logger.info("SESSION-FORCED: initial -> clarifying (user responded to greeting)")
         
     # RULE 2: Stay in clarifying until we have asked at least 2 questions
@@ -253,29 +252,31 @@ def force_stage_logic(stage: str, clarifications: int, user_message: str, assist
             next_clarifications = clarifications
             logger.info("SESSION-FORCED: clarifying -> offered_report (sufficient questions asked)")
             
-    # RULE 3: Handle report offering stage
+    # RULE 3: Handle report offering stage - ✅ FIXED PROGRESSION
     elif stage == "offered_report":
         # Check if user said yes to report
         yes_words = ["yes", "sure", "okay", "ok", "please", "send", "absolutely", "definitely", "yeah"]
         if any(word in user_msg_lower for word in yes_words):
-            next_stage = "offered_report"  # Stay to collect details
+            # ✅ MOVE TO COMPLETION STAGE when user agrees
+            next_stage = "hybrid_closing"  # Changed from staying in offered_report
             next_clarifications = clarifications
-            logger.info("SESSION-FORCED: user agreed to report, staying in offered_report")
+            logger.info("SESSION-FORCED: user agreed to report -> hybrid_closing (collecting details)")
         else:
-            next_stage = "offered_report"  # Stay in offering stage
+            # Stay in offering stage if user hasn't agreed yet
+            next_stage = "offered_report"
             next_clarifications = clarifications
-            logger.info("SESSION-FORCED: staying in offered_report")
+            logger.info("SESSION-FORCED: staying in offered_report (user hasn't agreed yet)")
             
-    # RULE 4: Handle closing stage
+    # RULE 4: Handle closing stage - ✅ STAYS IN CLOSING FOR FORM COLLECTION
     elif stage == "hybrid_closing":
         next_stage = "hybrid_closing"
         next_clarifications = clarifications
-        logger.info("SESSION-FORCED: staying in hybrid_closing")
+        logger.info("SESSION-FORCED: staying in hybrid_closing (collecting form details)")
         
     else:
         # Fallback - go to clarifying (not initial to avoid repeated greetings)
         next_stage = "clarifying"
-        next_clarifications = 1  # ✅ Start with first clarifying question
+        next_clarifications = 1
         logger.info("SESSION-FORCED: fallback to clarifying")
     
     logger.info(f"SESSION-BASED OUTPUT: {stage} -> {next_stage}, session clarifications: {clarifications} -> {next_clarifications}")
@@ -694,8 +695,8 @@ def handle_get_plugin_list(arguments: Dict[str, str]) -> Dict[str, Any]:
         logger.error(f"Plugin scan failed for {url}: {str(e)}")
         return {"error": "Plugin scan failed due to technical issues."}
 
-# TARGETED FIX for ai_agent.py
-# Find the get_stage_specific_prompt function and replace it with this:
+# In your ai_agent.py file, find the get_stage_specific_prompt function
+# and update the "offered_report" section:
 
 def get_stage_specific_prompt(stage: str, clarifications: int, category: Optional[str]) -> str:
     """Get stage-specific prompts - SESSION-BASED ONLY"""
@@ -722,10 +723,21 @@ Example: "Based on what you've told me, this sounds like a performance issue. Wo
 Respond: {{"response": "summary + report offer", "next_stage": "offered_report", "category": "Performance", "clarifications": {clarifications}}}"""
             
     elif stage == "offered_report":
-        return f"""Handle report offering. DO NOT ask more questions.
-If user hasn't agreed to report: Ask if they want it
-If user agreed: Ask for name and email to send report
-Respond with appropriate JSON"""
+        return f"""The user hasn't agreed to the report yet. Ask if they want it.
+Example: "Would you like me to send you a free diagnostic report?"
+Keep it brief and focused on getting their agreement.
+Respond: {{"response": "report offer", "next_stage": "offered_report", "category": "appropriate_category", "clarifications": {clarifications}}}"""
+        
+    elif stage == "hybrid_closing":
+        return f"""The user has AGREED to receive the report. Now handle the form process.
+        
+Give a brief, encouraging message about the form:
+- "Perfect! Please fill out the form that just appeared so I can send your report."
+- "Great! Just fill in your details in the form below and I'll get that report right over to you."
+- "Excellent! The form is ready - once you fill it out, I'll send your personalized diagnostic report."
+
+Keep it brief, positive, and focused on the form that will appear.
+Respond: {{"response": "brief form encouragement", "next_stage": "hybrid_closing", "category": "appropriate_category", "clarifications": {clarifications}}}"""
         
     else:
         return "Continue conversation naturally based on session state only."
