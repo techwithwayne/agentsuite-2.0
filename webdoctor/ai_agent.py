@@ -21,29 +21,6 @@ class OpenAIClientManager:
     _instance = None
     _client = None
     
-    def __new__(cls):import os
-import json
-import re
-import requests
-import time
-import hashlib
-import logging
-from functools import lru_cache
-from typing import Dict, Any, Optional
-from django.conf import settings
-from django.core.mail import send_mail
-from django.core.cache import cache
-from django.utils import timezone
-from openai import OpenAI
-from webdoctor.models import UserInteraction, DiagnosticReport
-
-logger = logging.getLogger('webdoctor')
-
-class OpenAIClientManager:
-    """Singleton OpenAI client manager"""
-    _instance = None
-    _client = None
-    
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -184,7 +161,7 @@ def get_assistant_id():
     return assistant_id
 
 def create_shirley_assistant():
-    """Simple assistant creation - let Python handle the stage logic"""
+    """Create assistant with SESSION-ONLY instructions (NO DATABASE DEPENDENCIES)"""
     client = get_openai_client()
     
     try:
@@ -194,22 +171,49 @@ def create_shirley_assistant():
             instructions="""
 You are Shirley, a friendly website doctor. 
 
-STRICTLY follow the current stage task provided in the system message. Do not deviate from it, even if you think it would be helpful. The Python system controls stages—your job is only to generate the response text as instructed for the current stage.
+CRITICAL: You are a SESSION-BASED assistant. You have NO memory of previous conversations or database records. Each conversation is completely independent and starts fresh.
 
-You MUST respond with valid JSON in this format:
+MANDATORY CONVERSATION FLOW:
+1. INITIAL: Ask what's wrong with their website
+2. CLARIFYING: Ask exactly 2-3 specific diagnostic questions (minimum 2, maximum 3)
+3. REPORT OFFERING: Only after 2+ questions, offer the diagnostic report
+4. COMPLETION: Collect details and send report
+
+SESSION-ONLY RULES:
+- You do NOT have access to any previous conversations or database records
+- You do NOT know anything about this user's history
+- You MUST ask clarifying questions regardless of what you think you might know
+- Each conversation starts completely fresh - treat every user as brand new
+
+RESPONSE FORMAT - You MUST respond with valid JSON ONLY:
 {
     "response": "your conversational message here",
-    "next_stage": "stage_will_be_set_by_system",
+    "next_stage": "clarifying|offered_report|hybrid_closing",
     "category": "Performance|Design/Layout|Functionality|Access/Errors|Update/Plugin|Security/Hack|Hosting/DNS|null",
-    "clarifications": the exact value provided in the system message CLARIFICATIONS ASKED - DO NOT CHANGE IT
+    "clarifications": 0
 }
 
-Be conversational, empathetic, and helpful WITHIN the stage task limits. Ask good diagnostic questions ONLY when instructed. DO NOT mention or offer reports unless the stage task explicitly says to.
-Repeat: DO NOT offer reports until instructed in the task for clarifications >= 3. DO NOT CHANGE THE CLARIFICATIONS VALUE; USE EXACTLY THE VALUE GIVEN IN "CLARIFICATIONS ASKED".
+CLARIFYING QUESTIONS (ALWAYS ASK 2-3):
+- "When did you first notice this problem?"
+- "Does this happen on all pages or just specific ones?" 
+- "What browser are you using?"
+- "Have you made any recent changes to your website?"
+- "Is your site WordPress-based or another platform?"
+- "Are you getting any specific error messages?"
+- "How long has your website been experiencing this issue?"
+
+STAGE PROGRESSION RULES:
+- initial -> clarifying (start asking questions)
+- clarifying -> clarifying (continue until 2+ questions asked)
+- clarifying -> offered_report (only after sufficient questions)
+- offered_report -> hybrid_closing (after sending report)
+
+NEVER SKIP THE CLARIFYING STAGE. NEVER ASSUME YOU KNOW ENOUGH.
+ALWAYS ASK AT LEAST 2 QUESTIONS BEFORE OFFERING REPORTS.
             """,
             tools=SHIRLEY_TOOLS,
-            metadata={"project": "webdoctor", "version": "3.0"},
-            temperature=0.0,
+            metadata={"project": "webdoctor", "version": "4.0", "database_independent": "true"},
+            temperature=0.3,
             response_format={"type": "json_object"}
         )
         
@@ -220,57 +224,61 @@ Repeat: DO NOT offer reports until instructed in the task for clarifications >= 
         raise ValueError(f"Could not create OpenAI assistant: {str(e)}")
 
 def force_stage_logic(stage: str, clarifications: int, user_message: str, assistant_response: str) -> tuple[str, int]:
-    """FORCE the correct conversation stage logic in Python"""
+    """
+    ENFORCED session-based stage progression - NO DATABASE DEPENDENCIES
+    This function ensures proper conversation flow using ONLY session state
+    """
     user_msg_lower = user_message.lower()
     response_lower = assistant_response.lower()
     
-    logger.info(f"STAGE LOGIC: Current stage={stage}, clarifications={clarifications}")
+    logger.info(f"SESSION-BASED STAGE LOGIC: stage={stage}, clarifications={clarifications}")
     
-    # FORCED STAGE PROGRESSION RULES - Enforce at least 3 clarifying questions
+    # RULE 1: From initial, ALWAYS go to clarifying after first user response
     if stage == "initial":
-        # After initial greeting, ALWAYS go to clarifying
+        # User has responded to greeting, move to clarifying stage
         next_stage = "clarifying"
-        next_clarifications = 0
-        logger.info("FORCED: initial -> clarifying")
+        next_clarifications = 1  # ✅ Set to 1 since we're asking first question
+        logger.info("SESSION-FORCED: initial -> clarifying (user responded to greeting)")
         
+    # RULE 2: Stay in clarifying until we have asked at least 2 questions
     elif stage == "clarifying":
-        # Stay in clarifying until we have at least 3 questions asked
-        if clarifications < 3:
+        if clarifications < 2:
+            # Continue asking questions
             next_stage = "clarifying"
             next_clarifications = clarifications + 1
-            logger.info(f"FORCED: staying in clarifying, incrementing to {next_clarifications}")
+            logger.info(f"SESSION-FORCED: staying in clarifying, question #{next_clarifications}")
         else:
-            # After 3+ clarifications, move to offered_report
+            # After 2+ questions, can offer report
             next_stage = "offered_report"
             next_clarifications = clarifications
-            logger.info("FORCED: clarifying -> offered_report")
+            logger.info("SESSION-FORCED: clarifying -> offered_report (sufficient questions asked)")
             
+    # RULE 3: Handle report offering stage
     elif stage == "offered_report":
         # Check if user said yes to report
         yes_words = ["yes", "sure", "okay", "ok", "please", "send", "absolutely", "definitely", "yeah"]
         if any(word in user_msg_lower for word in yes_words):
-            # User said yes, stay in offered_report to collect details
-            next_stage = "offered_report"
+            next_stage = "offered_report"  # Stay to collect details
             next_clarifications = clarifications
-            logger.info("FORCED: user said yes, staying in offered_report")
+            logger.info("SESSION-FORCED: user agreed to report, staying in offered_report")
         else:
-            # User said no or something else, stay in offered_report
-            next_stage = "offered_report"  
+            next_stage = "offered_report"  # Stay in offering stage
             next_clarifications = clarifications
-            logger.info("FORCED: staying in offered_report")
+            logger.info("SESSION-FORCED: staying in offered_report")
             
+    # RULE 4: Handle closing stage
     elif stage == "hybrid_closing":
-        # Stay in closing
         next_stage = "hybrid_closing"
         next_clarifications = clarifications
-        logger.info("FORCED: staying in hybrid_closing")
+        logger.info("SESSION-FORCED: staying in hybrid_closing")
         
     else:
-        # Default fallback
+        # Fallback - go to clarifying (not initial to avoid repeated greetings)
         next_stage = "clarifying"
-        next_clarifications = clarifications
-        logger.info("FORCED: fallback to clarifying")
+        next_clarifications = 1  # ✅ Start with first clarifying question
+        logger.info("SESSION-FORCED: fallback to clarifying")
     
+    logger.info(f"SESSION-BASED OUTPUT: {stage} -> {next_stage}, session clarifications: {clarifications} -> {next_clarifications}")
     return next_stage, next_clarifications
 
 def validate_tool_arguments(function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -306,7 +314,6 @@ def validate_tool_arguments(function_name: str, arguments: Dict[str, Any]) -> Di
         return {"category": category}
     
     return arguments
-
 
 def handle_tool_call(tool_call) -> Dict[str, Any]:
     """Enhanced tool call handler with validation and hardened JSON parsing"""
@@ -346,16 +353,19 @@ def handle_tool_call(tool_call) -> Dict[str, Any]:
         logger.error(f"Unexpected error in {function_name}: {str(e)}")
         return {"error": "Tool execution failed"}
 
-
-
 def handle_send_email_diagnostic(arguments: Dict[str, str]) -> Dict[str, Any]:
-    """Enhanced email diagnostic handler"""
+    """
+    ONLY DATABASE INTERACTION: This is the ONLY function that should touch the database
+    and only when actually sending the final diagnostic report
+    """
     name = arguments["name"]
     email = arguments["email"]
     issue = arguments["issue"]
     
+    logger.info(f"DATABASE INTERACTION: Creating user interaction record for {email}")
+    
     try:
-        # Create interaction record
+        # Create interaction record - THIS IS THE ONLY DATABASE WRITE DURING CONVERSATION
         interaction = UserInteraction.objects.create(
             name=name,
             email=email,
@@ -414,7 +424,7 @@ TechWithWayne Digital Solutions
             )
             
             report.mark_email_sent()
-            logger.info(f"Email sent successfully to {email}")
+            logger.info(f"DATABASE INTERACTION: Email sent successfully to {email}")
             
             return {
                 "message": "Great! Your diagnostic report has been sent to your email. Check your inbox (and spam folder) in the next few minutes.",
@@ -436,7 +446,7 @@ TechWithWayne Digital Solutions
         }
 
 def handle_recommend_fixes(arguments: Dict[str, str]) -> Dict[str, Any]:
-    """Enhanced fix recommendations"""
+    """Enhanced fix recommendations - NO DATABASE DEPENDENCY"""
     category = arguments["category"]
     
     fixes_database = {
@@ -511,7 +521,7 @@ def handle_recommend_fixes(arguments: Dict[str, str]) -> Dict[str, Any]:
         "Check with your hosting provider for guidance"
     ])
     
-    logger.info(f"Provided {len(recommendations)} fixes for {category}")
+    logger.info(f"Provided {len(recommendations)} fixes for {category} (NO DATABASE)")
     
     return {
         "fixes": recommendations,
@@ -520,14 +530,14 @@ def handle_recommend_fixes(arguments: Dict[str, str]) -> Dict[str, Any]:
     }
 
 def handle_measure_speed(arguments: Dict[str, str]) -> Dict[str, Any]:
-    """Enhanced speed measurement with caching"""
+    """Enhanced speed measurement with caching - NO DATABASE DEPENDENCY"""
     url = arguments["url"]
     
     # Check cache first
     cache_key = f"speed_test_{hashlib.md5(url.encode()).hexdigest()}"
     cached_result = cache.get(cache_key)
     if cached_result:
-        logger.info(f"Using cached speed data for {url}")
+        logger.info(f"Using cached speed data for {url} (NO DATABASE)")
         return cached_result
     
     try:
@@ -575,7 +585,7 @@ def handle_measure_speed(arguments: Dict[str, str]) -> Dict[str, Any]:
         # Cache result for 1 hour
         cache.set(cache_key, metrics, timeout=3600)
         
-        logger.info(f"Speed test completed for {url}: {score}/100")
+        logger.info(f"Speed test completed for {url}: {score}/100 (NO DATABASE)")
         return metrics
         
     except requests.exceptions.Timeout:
@@ -589,14 +599,14 @@ def handle_measure_speed(arguments: Dict[str, str]) -> Dict[str, Any]:
         return {"error": "Speed test failed due to technical issues."}
 
 def handle_get_plugin_list(arguments: Dict[str, str]) -> Dict[str, Any]:
-    """Enhanced plugin detection with caching"""
+    """Enhanced plugin detection with caching - NO DATABASE DEPENDENCY"""
     url = arguments["url"]
     
     # Check cache first
     cache_key = f"plugins_{hashlib.md5(url.encode()).hexdigest()}"
     cached_result = cache.get(cache_key)
     if cached_result:
-        logger.info(f"Using cached plugin data for {url}")
+        logger.info(f"Using cached plugin data for {url} (NO DATABASE)")
         return cached_result
     
     try:
@@ -671,7 +681,7 @@ def handle_get_plugin_list(arguments: Dict[str, str]) -> Dict[str, Any]:
         # Cache result for 6 hours
         cache.set(cache_key, result, timeout=21600)
         
-        logger.info(f"Found {len(plugins)} plugins on {url}")
+        logger.info(f"Found {len(plugins)} plugins on {url} (NO DATABASE)")
         return result
         
     except requests.exceptions.Timeout:
@@ -684,86 +694,70 @@ def handle_get_plugin_list(arguments: Dict[str, str]) -> Dict[str, Any]:
         logger.error(f"Plugin scan failed for {url}: {str(e)}")
         return {"error": "Plugin scan failed due to technical issues."}
 
+# TARGETED FIX for ai_agent.py
+# Find the get_stage_specific_prompt function and replace it with this:
+
 def get_stage_specific_prompt(stage: str, clarifications: int, category: Optional[str]) -> str:
-    """Get stage-specific prompts to force proper behavior"""
+    """Get stage-specific prompts - SESSION-BASED ONLY"""
     
     if stage == "initial":
-        return """Ask what's wrong with their website. Be friendly and move to diagnostic questions.
-Example output:
-{"response": "Hey there! I'm Shirley, your website's doctor. What seems to be the issue today?", "next_stage": "stage_will_be_set_by_system", "category": null, "clarifications": 0}"""
+        return f"""This user just described their website issue. DO NOT give another greeting.
+Move directly to asking your FIRST clarifying question.
+SESSIONS CLARIFICATIONS COUNT: {clarifications}
+Ask a specific diagnostic question like: "When did you first notice this problem?" or "Does this happen on all pages?"
+Respond: {{"response": "your diagnostic question", "next_stage": "clarifying", "category": null, "clarifications": 1}}"""
         
     elif stage == "clarifying":
-        base_examples = """
-Examples of questions:
-- 'When did you first notice this problem?'
-- 'Does this happen on all pages or just specific ones?'
-- 'What browser are you using?'
-- 'Have you made any recent changes to your website?'
-- 'Is your site WordPress-based or another platform?'
-"""
         if clarifications == 0:
-            return f"""Ask ONE specific diagnostic question about their website issue. DO NOT offer any reports yet. DO NOT mention reports at all. DO NOT summarize or categorize yet. Just ask diagnostic questions. Repeat: NO REPORTS UNTIL AFTER EXACTLY 3 QUESTIONS. {base_examples}
-STRICTLY FOLLOW THIS. Example output:
-{{"response": "I'm sorry to hear about the issue. When did you first notice your site being slow?", "next_stage": "stage_will_be_set_by_system", "category": null, "clarifications": 0}}"""
+            return f"""Ask your FIRST diagnostic question. DO NOT greet again.
+Examples: "When did you first notice this problem?" or "Does this happen on all pages?"
+Respond: {{"response": "your question", "next_stage": "clarifying", "category": null, "clarifications": 1}}"""
         elif clarifications == 1:
-            return f"""Ask ONE follow-up diagnostic question to better understand their issue. DO NOT offer any reports yet. DO NOT mention reports at all. DO NOT summarize or categorize yet. Repeat: NO REPORTS UNTIL AFTER EXACTLY 3 QUESTIONS. {base_examples}
-STRICTLY FOLLOW THIS. Example output:
-{{"response": "Thanks for that detail. Does this slowness happen on mobile devices, desktop, or both?", "next_stage": "stage_will_be_set_by_system", "category": null, "clarifications": 1}}"""
-        elif clarifications == 2:
-            return f"""Ask ONE more diagnostic question to gather more details. DO NOT offer any reports yet. DO NOT mention reports at all. DO NOT summarize or categorize yet. Repeat: NO REPORTS UNTIL AFTER EXACTLY 3 QUESTIONS. {base_examples}
-STRICTLY FOLLOW THIS. Example output:
-{{"response": "Got it. Have you made any recent changes to your website that might be causing this?", "next_stage": "stage_will_be_set_by_system", "category": null, "clarifications": 2}}"""
-        else:  # clarifications >= 3
-            return f"""Now summarize the issue based on all gathered information and identify it as a {category or 'website'} problem. Set category to the matching one. Then ask if they would like a free diagnostic report. DO NOT ask for name/email yet.
-Example output:
-{{"response": "From what you've described, it sounds like a performance issue with slow loading times. Would you like me to send you a free diagnostic report?", "next_stage": "stage_will_be_set_by_system", "category": "Performance", "clarifications": 3}}"""
+            return f"""Ask your SECOND diagnostic question.
+Examples: "What browser are you using?" or "Have you made recent changes?"
+Respond: {{"response": "your question", "next_stage": "clarifying", "category": null, "clarifications": 2}}"""
+        else:  # clarifications >= 2
+            return f"""You've asked {clarifications} questions. Now summarize and offer a diagnostic report.
+Example: "Based on what you've told me, this sounds like a performance issue. Would you like a free diagnostic report?"
+Respond: {{"response": "summary + report offer", "next_stage": "offered_report", "category": "Performance", "clarifications": {clarifications}}}"""
             
     elif stage == "offered_report":
-        return """If the user has not yet agreed to the report, ask if they want a diagnostic report. If they said yes, ask for their name and email to send it. DO NOT send the report yet—use the tool for that.
-Example output if not agreed yet:
-{"response": "Would you like a free diagnostic report emailed to you?", "next_stage": "stage_will_be_set_by_system", "category": "Performance", "clarifications": 3}
-Example output if agreed:
-{"response": "Great! To send your report, what's your name and email address?", "next_stage": "stage_will_be_set_by_system", "category": "Performance", "clarifications": 3}"""
-        
-    elif stage == "hybrid_closing":
-        return """Thank them and offer additional help or other services.
-Example output:
-{"response": "You're welcome! If you need more help, feel free to ask.", "next_stage": "stage_will_be_set_by_system", "category": "Performance", "clarifications": 3}"""
+        return f"""Handle report offering. DO NOT ask more questions.
+If user hasn't agreed to report: Ask if they want it
+If user agreed: Ask for name and email to send report
+Respond with appropriate JSON"""
         
     else:
-        return "Continue the conversation naturally."
+        return "Continue conversation naturally based on session state only."
 
 def convert_plain_text_to_json(text: str, stage: str, category: Optional[str], clarifications: int) -> Dict[str, Any]:
-    """BULLETPROOF: Convert any plain text response to valid JSON format"""
-    logger.warning(f"Converting plain text to JSON: {text[:100]}...")
+    """Convert plain text response to valid JSON format - SESSION-BASED"""
+    logger.warning(f"Converting plain text to JSON (SESSION-BASED): {text[:100]}...")
     
     # Clean the text
-    cleaned_text = text.strip()
+    cleaned_text = text.strip().replace('"', '\\"').replace('\n', ' ').replace('\r', ' ')
     
-    # Escape quotes in the text for JSON
-    escaped_text = cleaned_text.replace('"', '\\"').replace('\n', ' ').replace('\r', ' ')
+    # Force proper stage progression based on SESSION STATE ONLY
+    next_stage, next_clarifications = force_stage_logic(stage, clarifications, "", cleaned_text)
     
-    # FORCE the stage using Python logic instead of trusting the assistant
-    next_stage, next_clarifications = force_stage_logic(stage, clarifications, "", escaped_text)
-    
-    # Detect category from content
+    # Detect category from content if not set
     detected_category = category
-    if any(phrase in cleaned_text.lower() for phrase in ["slow", "loading", "performance", "speed"]):
-        detected_category = "Performance"
-    elif any(phrase in cleaned_text.lower() for phrase in ["error", "404", "500", "broken", "not working"]):
-        detected_category = "Access/Errors"
-    elif any(phrase in cleaned_text.lower() for phrase in ["mobile", "responsive", "layout", "design"]):
-        detected_category = "Design/Layout"
+    if not detected_category:
+        if any(phrase in cleaned_text.lower() for phrase in ["slow", "loading", "performance", "speed"]):
+            detected_category = "Performance"
+        elif any(phrase in cleaned_text.lower() for phrase in ["error", "404", "500", "broken", "not working"]):
+            detected_category = "Access/Errors"
+        elif any(phrase in cleaned_text.lower() for phrase in ["mobile", "responsive", "layout", "design"]):
+            detected_category = "Design/Layout"
     
-    # Create valid JSON structure
     json_response = {
-        "response": escaped_text,
+        "response": cleaned_text,
         "next_stage": next_stage,
         "category": detected_category,
         "clarifications": next_clarifications
     }
     
-    logger.info(f"Successfully converted plain text to JSON: {json_response}")
+    logger.info(f"SESSION-BASED JSON conversion: {json_response}")
     return json_response
 
 def extract_json_from_text(text: str) -> Dict[str, Any]:
@@ -809,7 +803,7 @@ def extract_json_from_text(text: str) -> Dict[str, Any]:
     return json.loads(json_text)
 
 def validate_assistant_response(parsed_json: Dict[str, Any], input_clarifications: int) -> Dict[str, Any]:
-    """Validate and sanitize assistant response"""
+    """Validate and sanitize assistant response - SESSION-BASED"""
     required_fields = ['response', 'next_stage', 'category', 'clarifications']
     
     for field in required_fields:
@@ -820,11 +814,15 @@ def validate_assistant_response(parsed_json: Dict[str, Any], input_clarification
     if not isinstance(parsed_json['response'], str) or not parsed_json['response'].strip():
         raise ValueError("Response must be a non-empty string")
     
-    # Validate next_stage
+    # Fix invalid stage values
     valid_stages = ['initial', 'clarifying', 'offered_report', 'hybrid_closing']
     if parsed_json['next_stage'] not in valid_stages:
-        logger.warning(f"Invalid stage: {parsed_json['next_stage']}, defaulting to 'clarifying'")
-        parsed_json['next_stage'] = 'clarifying'
+        if 'stage_will_be_set_by_system' in str(parsed_json['next_stage']):
+            logger.warning("Fixed 'stage_will_be_set_by_system' error - using session-based logic")
+            parsed_json['next_stage'] = 'clarifying'
+        else:
+            logger.warning(f"Invalid stage: {parsed_json['next_stage']}, defaulting to 'clarifying'")
+            parsed_json['next_stage'] = 'clarifying'
     
     # Validate category
     valid_categories = [
@@ -835,24 +833,21 @@ def validate_assistant_response(parsed_json: Dict[str, Any], input_clarification
         logger.warning(f"Invalid category: {parsed_json['category']}, setting to None")
         parsed_json['category'] = None
     
-    # Override clarifications to match input value
-    if parsed_json['clarifications'] != input_clarifications:
-        logger.warning(f"Assistant set clarifications={parsed_json['clarifications']}, overriding to input value={input_clarifications}")
-        parsed_json['clarifications'] = input_clarifications
+    # Keep clarifications consistent with session state
+    parsed_json['clarifications'] = input_clarifications
     
     return parsed_json
 
 def get_agent_response(history, stage, category, clarifications, lang='en', request=None):
-    """FORCED STAGE LOGIC main agent response function"""
+    """
+    Main agent response function - COMPLETELY SESSION-BASED
+    NO DATABASE DEPENDENCIES during conversation flow
+    """
     start_time = time.time()
+    processing_time = 0  # ✅ Initialize to prevent UnboundLocalError
+    assistant_msg = {}  # ✅ Initialize to prevent UnboundLocalError
 
     try:
-        # Adjust stage for first user message after greeting
-        if stage == "initial" and history and history[-1]["role"] == "user":
-            stage = "clarifying"
-            clarifications = 0
-            logger.info("Adjusted stage to clarifying for first user message")
-
         assistant_id = get_assistant_id()
         client = get_openai_client()
 
@@ -861,52 +856,58 @@ def get_agent_response(history, stage, category, clarifications, lang='en', requ
         if history:
             user_message = history[-1].get("content", "")
 
-        # Create thread with timeout
+        logger.info(f"SESSION-BASED PROCESSING: stage={stage}, clarifications={clarifications}, history_length={len(history)}")
+
+        # Create thread
         thread = client.beta.threads.create()
 
-        # STAGE-SPECIFIC SYSTEM MESSAGE
+        # Build session-based system message
         stage_prompt = get_stage_specific_prompt(stage, clarifications, category)
         
-        system_message = f"""You MUST respond with VALID JSON ONLY. 
+        system_message = f"""SESSION-BASED CONVERSATION (NO DATABASE HISTORY)
 
-        CURRENT STAGE: {stage}
-        CLARIFICATIONS ASKED: {clarifications}
+CURRENT SESSION STATE:
+- Stage: {stage}
+- Session Clarifications: {clarifications}
+- Session History Length: {len(history)}
+
+This is a fresh session. You have NO access to previous conversations or database records.
+Every conversation starts completely new. You MUST ask clarifying questions regardless.
+
+TASK: {stage_prompt}
+
+CRITICAL: Respond ONLY with valid JSON:
+{{"response": "your message", "next_stage": "proper_stage", "category": "category_or_null", "clarifications": {clarifications}}}
+
+NEVER use "stage_will_be_set_by_system"."""
         
-        YOUR TASK FOR THIS STAGE: {stage_prompt}
-        
-        REQUIRED FORMAT:
-        {{"response": "your message", "next_stage": "will_be_overridden", "category": "category_or_null", "clarifications": {clarifications}}}
-        
-        NO PLAIN TEXT ALLOWED. JSON ONLY. STRICTLY OUTPUT JSON ONLY. Follow the example format exactly."""
-        
-        # Add history first
-        for msg in history[-10:]:  # Limit history to last 10 messages
+        # Add conversation history (session-based only)
+        for msg in history[-8:]:  # Limit to last 8 messages in this session
             if not msg.get("content", "").strip():
                 continue
-
             client.beta.threads.messages.create(
                 thread_id=thread.id,
                 role=msg.get("role", "user"),
-                content=msg["content"][:2000]  # Limit message length
+                content=msg["content"][:1500]  # Limit length
             )
 
-        # Add system message last
+        # Add system message
         client.beta.threads.messages.create(
             thread_id=thread.id,
             role="user", 
             content=system_message
         )
 
-        # Create run with enforced JSON format
+        # Create run
         run = client.beta.threads.runs.create(
             thread_id=thread.id,
             assistant_id=assistant_id,
             tool_choice="auto",
-            response_format={"type": "json_object"}  # Force JSON
+            response_format={"type": "json_object"}
         )
 
-        # Poll run with timeout protection
-        max_polls = 60  # 60 * 2 seconds = 2 minutes max
+        # Poll run with timeout
+        max_polls = 50
         poll_count = 0
 
         while run.status in ['queued', 'in_progress', 'requires_action'] and poll_count < max_polls:
@@ -917,129 +918,100 @@ def get_agent_response(history, stage, category, clarifications, lang='en', requ
 
             if run.status == 'requires_action':
                 tool_outputs = []
-
                 for tool_call in run.required_action.submit_tool_outputs.tool_calls:
                     output = handle_tool_call(tool_call)
                     tool_outputs.append({
                         "tool_call_id": tool_call.id,
                         "output": json.dumps(output)
                     })
-
                 run = client.beta.threads.runs.submit_tool_outputs(
                     thread_id=thread.id,
                     run_id=run.id,
                     tool_outputs=tool_outputs
                 )
 
-        # Check for timeout
+        # Handle timeout
         if poll_count >= max_polls:
             logger.error("Assistant run timed out")
-            return create_fallback_response("I'm taking longer than usual to respond. Please try again.", stage, category, clarifications)
+            return create_fallback_response("I'm taking longer than usual. Please try again.", stage, category, clarifications)
 
         if run.status == 'failed':
             logger.error(f"Assistant run failed: {run.last_error}")
-            return create_fallback_response("I'm having technical difficulties. Please try again in a moment.", stage, category, clarifications)
+            return create_fallback_response("I'm having technical difficulties. Please try again.", stage, category, clarifications)
 
+        # Get response
         messages = client.beta.threads.messages.list(thread_id=thread.id)
-
         if not messages.data:
             logger.error("No assistant messages returned")
-            return create_fallback_response("I didn't receive a proper response. Please try again.", stage, category, clarifications)
+            return create_fallback_response("I didn't get a proper response. Please try again.", stage, category, clarifications)
 
-        # BULLETPROOF JSON PARSING WITH ULTIMATE FALLBACK
+        # Parse response with multiple fallback strategies
         try:
             message_obj = messages.data[0]
-            if not message_obj.content:
+            if not message_obj.content or not message_obj.content[0].text:
                 raise ValueError("No content in assistant message")
             
-            content_obj = message_obj.content[0]
-            if not hasattr(content_obj, 'text') or not content_obj.text:
-                raise ValueError("No text content in assistant message")
-            
-            raw_text = content_obj.text.value.strip()
-            if not raw_text:
-                raise ValueError("Empty assistant message content")
+            raw_text = message_obj.content[0].text.value.strip()
+            logger.debug(f"Raw session-based response: {raw_text[:200]}...")
 
-            logger.debug(f"Raw assistant response: {raw_text[:200]}...")
-
-            # BULLETPROOF PARSING STRATEGIES
             assistant_msg = None
-            parsing_errors = []
             
-            # Strategy 1: Direct JSON parsing
+            # Try direct JSON parsing
             try:
                 assistant_msg = json.loads(raw_text)
-                logger.info("JSON parsed successfully with direct parsing")
-            except json.JSONDecodeError as e:
-                parsing_errors.append(f"Direct parsing: {str(e)}")
+                logger.info("Session-based JSON parsed successfully")
+            except json.JSONDecodeError:
+                pass
             
-            # Strategy 2: Extract JSON from formatted text
+            # Try extracting JSON from formatted text
             if assistant_msg is None:
                 try:
                     assistant_msg = extract_json_from_text(raw_text)
-                    logger.info("JSON parsed successfully with extraction")
-                except json.JSONDecodeError as e:
-                    parsing_errors.append(f"Extraction parsing: {str(e)}")
+                    logger.info("Session-based JSON extracted successfully")
+                except json.JSONDecodeError:
+                    pass
             
-            # Strategy 3: Try to find and parse the first valid JSON object
+            # Final fallback: convert plain text
             if assistant_msg is None:
-                try:
-                    import re
-                    json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-                    if json_match:
-                        assistant_msg = json.loads(json_match.group(0))
-                        logger.info("JSON parsed successfully with pattern matching")
-                    else:
-                        raise json.JSONDecodeError("No JSON pattern found", doc=raw_text, pos=0)
-                except json.JSONDecodeError as e:
-                    parsing_errors.append(f"Pattern parsing: {str(e)}")
-            
-            # ULTIMATE FALLBACK: Convert plain text to JSON
-            if assistant_msg is None:
-                logger.error(f"All JSON parsing strategies failed: {parsing_errors}")
-                logger.error(f"Raw response was: {raw_text}")
-                logger.warning("USING ULTIMATE FALLBACK: Converting plain text to JSON")
-                
+                logger.warning("Session-based JSON parsing failed, using fallback conversion")
                 assistant_msg = convert_plain_text_to_json(raw_text, stage, category, clarifications)
-                logger.info("Successfully converted plain text to JSON using fallback")
 
-            # Validate the parsed JSON structure
+            # Validate response structure
             assistant_msg = validate_assistant_response(assistant_msg, clarifications)
 
-            # FORCE THE CORRECT STAGE LOGIC IN PYTHON (override assistant's stage)
+            # ENFORCE session-based stage logic (override AI decisions)
             forced_stage, forced_clarifications = force_stage_logic(stage, clarifications, user_message, assistant_msg["response"])
             assistant_msg["next_stage"] = forced_stage
             assistant_msg["clarifications"] = forced_clarifications
 
-            # Enhanced safety check for early report mentions - enforce up to 3
-            logger.info("Entering safety check: stage={}, clarifications={}, response={}".format(stage, clarifications, assistant_msg["response"]))
-            if stage in ["initial", "clarifying"] and clarifications < 3:
-                forbidden_phrases = ["diagnostic report", "send you", "free report", "email you", "report"]
+            # Session-based safety check: prevent early report offering
+            if stage in ["initial", "clarifying"] and clarifications < 2:
+                forbidden_phrases = ["diagnostic report", "send you", "free report", "email you", "would you like a report"]
                 if any(phrase in assistant_msg["response"].lower() for phrase in forbidden_phrases):
-                    logger.warning("Assistant mentioned report too early—overriding response")
+                    logger.warning("SESSION SAFETY: Assistant mentioned report too early - overriding")
+                    
+                    # Provide appropriate clarifying question based on session count
                     if clarifications == 0:
-                        assistant_msg["response"] = "I'm sorry to hear about the issue. When did you first notice your site being slow?"
+                        assistant_msg["response"] = "I understand you're having an issue. When did you first notice this problem?"
                     elif clarifications == 1:
-                        assistant_msg["response"] = "Thanks for that detail. Does this slowness happen on mobile devices, desktop, or both?"
-                    elif clarifications == 2:
-                        assistant_msg["response"] = "Got it. Have you made any recent changes to your website that might be causing this?"
+                        assistant_msg["response"] = "Thanks for that information. Does this issue happen on all pages, or just specific ones?"
+                    
                     assistant_msg["category"] = None
-                    assistant_msg["clarifications"] = clarifications  # Preserve current count
-                    logger.info("Overriding response to: {}".format(assistant_msg["response"]))
+                    assistant_msg["next_stage"] = "clarifying"
 
-        except (ValueError, KeyError, IndexError, AttributeError) as e:
-            logger.error(f"Message processing failed: {str(e)}")
+        except Exception as e:
+            logger.error(f"Session-based response processing failed: {str(e)}")
             return create_fallback_response("I had trouble processing my response. Please try again.", stage, category, clarifications)
 
-        response_text = assistant_msg.get("response", "")
-        if not response_text.strip():
+        response_text = assistant_msg.get("response", "").strip()
+        if not response_text:
             logger.error("Empty response from assistant")
             return create_fallback_response("I couldn't generate a proper response. Please try again.", stage, category, clarifications)
 
         typing_delay = max(3, min(8, len(response_text) // 25))
-
         processing_time = time.time() - start_time
-        logger.info(f"Generated response in {processing_time:.2f}s - Stage: {stage} -> {assistant_msg.get('next_stage', stage)}")
+        
+        logger.info(f"SESSION-BASED Response: {processing_time:.2f}s - {stage} -> {assistant_msg.get('next_stage')} (session clarifications: {clarifications} -> {assistant_msg.get('clarifications')})")
 
         return {
             "response": response_text,
@@ -1052,12 +1024,11 @@ def get_agent_response(history, stage, category, clarifications, lang='en', requ
 
     except Exception as e:
         processing_time = time.time() - start_time
-        logger.error(f"Agent response failed after {processing_time:.2f}s: {str(e)}")
+        logger.error(f"Session-based agent response failed after {processing_time:.2f}s: {str(e)}")
         return create_fallback_response("I'm experiencing technical difficulties. Please try again.", stage, category, clarifications)
 
-
 def create_fallback_response(message, stage, category, clarifications):
-    """Create fallback response for errors"""
+    """Create fallback response for errors - SESSION-BASED"""
     return {
         "response": message,
         "next_stage": stage,

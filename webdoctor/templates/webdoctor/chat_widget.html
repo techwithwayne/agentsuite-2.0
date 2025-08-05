@@ -11,6 +11,81 @@
     }
   </style>
 
+
+  <script>
+// ✅ ENHANCED CONVERSATION RESET - GUARANTEED TO WORK
+async function resetConversationOnLoad() {
+    console.log('🔄 Starting conversation reset...');
+    
+    try {
+        // Method 1: Call the reset endpoint
+        const response = await fetch('/agent/reset_conversation/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken()
+            },
+            body: JSON.stringify({
+                force_reset: true,
+                reason: 'page_load'
+            })
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            console.log('✅ Server-side conversation reset successful:', data);
+        } else {
+            console.warn('⚠️ Server-side reset failed, status:', response.status);
+        }
+    } catch (error) {
+        console.warn('⚠️ Server-side reset error:', error);
+    }
+    
+    // Method 2: Force reset via first message (BACKUP)
+    try {
+        console.log('🔄 Sending force reset message...');
+        const forceResetResponse = await fetch('/agent/handle_message/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken()
+            },
+            body: JSON.stringify({
+                message: '__FORCE_RESET__',
+                force_reset: true,
+                lang: 'en'
+            })
+        });
+        
+        if (forceResetResponse.ok) {
+            console.log('✅ Force reset message sent successfully');
+        }
+    } catch (error) {
+        console.warn('⚠️ Force reset message failed:', error);
+    }
+    
+    console.log('🔄 Conversation reset complete');
+}
+
+// ✅ MULTIPLE RESET TRIGGERS - GUARANTEED TO FIRE
+document.addEventListener('DOMContentLoaded', resetConversationOnLoad);
+window.addEventListener('load', resetConversationOnLoad);
+
+// Reset on page visibility change (when user comes back to tab)
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) {
+        setTimeout(resetConversationOnLoad, 100);
+    }
+});
+
+// Reset when page is shown (back/forward navigation)
+window.addEventListener('pageshow', function(event) {
+    if (event.persisted) {
+        setTimeout(resetConversationOnLoad, 100);
+    }
+});
+</script>
+
   <script>
     // ✅ Declare once and reuse throughout the page
     window.isLocal = window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost";

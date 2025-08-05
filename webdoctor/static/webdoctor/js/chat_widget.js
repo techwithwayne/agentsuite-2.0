@@ -1,4 +1,4 @@
-// JavaScript for WebDoctor Chat Widget - FIXED VERSION
+// JavaScript for WebDoctor Chat Widget - FIXED VERSION WITH SOUND
 class WebDoctorChat {
   constructor() {
     console.log("WebDoctorChat constructor called");
@@ -16,8 +16,77 @@ class WebDoctorChat {
       "Welcome! I'm Shirley. Tell me what's bugging your website and I'll help fix it.",
     ];
 
+    // ✅ Initialize audio for typing sound
+    this.initializeAudio();
+
     console.log("About to call init()");
     this.init();
+  }
+
+  // ✅ New method to initialize audio
+  initializeAudio() {
+    console.log("🔊 Initializing typing sound...");
+
+    try {
+      // Create audio element for typing sound
+      this.typingSound = new Audio();
+      this.typingSound.preload = "auto";
+
+      // Set the path to your sound file
+      // Django will serve this from static/webdoctor/sounds/bong.mp3
+      this.typingSound.src = "/static/webdoctor/sounds/bong.mp3";
+
+      // Set volume (adjust as needed - 0.0 to 1.0)
+      this.typingSound.volume = 0.3;
+
+      // Handle audio loading
+      this.typingSound.addEventListener("canplaythrough", () => {
+        console.log("✅ Typing sound loaded successfully");
+      });
+
+      this.typingSound.addEventListener("error", (e) => {
+        console.warn("⚠️ Could not load typing sound:", e);
+        console.warn(
+          "Sound file should be at: /static/webdoctor/sounds/bong.mp3"
+        );
+      });
+
+      // Preload the audio
+      this.typingSound.load();
+    } catch (error) {
+      console.warn("⚠️ Audio initialization failed:", error);
+      this.typingSound = null;
+    }
+  }
+
+  // ✅ New method to play typing sound
+  playTypingSound() {
+    if (!this.typingSound) {
+      console.log("🔇 No typing sound available");
+      return;
+    }
+
+    try {
+      // Reset audio to beginning in case it was played recently
+      this.typingSound.currentTime = 0;
+
+      // Play the sound
+      const playPromise = this.typingSound.play();
+
+      // Handle the play promise (required for modern browsers)
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            console.log("🔊 Typing sound played successfully");
+          })
+          .catch((error) => {
+            console.warn("⚠️ Could not play typing sound:", error);
+            // This is common if user hasn't interacted with page yet
+          });
+      }
+    } catch (error) {
+      console.warn("⚠️ Error playing typing sound:", error);
+    }
   }
 
   init() {
@@ -164,6 +233,8 @@ class WebDoctorChat {
 
     if (animate) {
       console.log("🎬 Starting animation...");
+      // ✅ Play typing sound when animation starts
+      this.playTypingSound();
       this.animateTyping(messageDiv, message);
     } else {
       messageDiv.innerHTML = `<strong>Shirley:</strong> ${this.escapeHtml(

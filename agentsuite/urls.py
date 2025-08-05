@@ -24,4 +24,7 @@ urlpatterns = [
     
     path('content-strategy/', include('content_strategy_generator_agent.urls')),
     
+    path('debug_conversation/', views.debug_conversation, name='debug_conversation'),
+    path('reset_conversation/', views.reset_conversation, name='reset_conversation'),
+    
 ]
