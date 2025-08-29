@@ -1,0 +1,74 @@
+/* Full-screen (inside iframe) overlay with subtle glass + neon bar */
+:root {
+  --wa-bg: rgba(12,12,12,0.82);
+  --wa-accent: #ff6c00;
+  --wa-text: #f3f3f3;
+}
+
+.wa-busy {
+  position: fixed; /* cover the iframe content area */
+  inset: 0;
+  display: none; /* toggled by JS */
+  place-items: center;
+  background: var(--wa-bg);
+  backdrop-filter: blur(6px);
+  z-index: 9999;
+}
+
+.wa-busy.active { display: grid; }
+
+.wa-busy-card {
+  width: min(92vw, 520px);
+  background: rgba(20,20,20,0.85);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+  padding: 20px 22px 18px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+.wa-busy-title {
+  font: 600 16px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial;
+  color: var(--wa-text);
+  margin: 0 0 10px 0;
+  letter-spacing: .2px;
+}
+
+.wa-busy-subtle {
+  font: 400 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial;
+  color: #c9c9c9;
+  margin: 0 0 14px 0;
+}
+
+/* Indeterminate bar with diagonal sweep */
+.wa-progress {
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.08), rgba(255,255,255,0.06));
+  overflow: hidden;
+  position: relative;
+}
+
+.wa-progress::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(120deg, transparent 0 40%, var(--wa-accent) 50%, transparent 60%),
+    linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0.06));
+  background-size: 220% 100%, 100% 100%;
+  animation: wa-scan 1.25s linear infinite;
+  filter: drop-shadow(0 0 10px rgba(255,108,0,0.45));
+}
+
+@keyframes wa-scan {
+  from { background-position: -120% 0, 0 0; }
+  to   { background-position: 120% 0, 0 0; }
+}
+
+/* Accessible only-visible-to-screen-readers region */
+.wa-sr {
+  position: absolute !important;
+  height: 1px; width: 1px;
+  overflow: hidden; clip: rect(1px, 1px, 1px, 1px);
+  white-space: nowrap; border: 0; padding: 0; margin: -1px;
+}

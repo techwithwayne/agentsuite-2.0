@@ -1,0 +1,165 @@
+/* Sleek dark UI — matches the look in your screenshot */
+:root{
+  --bg: #0f0f10;
+  --panel: #191a1f;
+  --panel-2: #1f2127;
+  --text: #f4f6f8;
+  --muted: #a9b0bb;
+  --focus: #7fd1ff;
+  --accent: #ffffff; /* white CTA like screenshot */
+  --radius-xl: 16px;
+  --radius-lg: 12px;
+  --radius-sm: 10px;
+  --shadow-1: 0 6px 22px rgba(0,0,0,.45);
+  --shadow-in: inset 0 1px 0 rgba(255,255,255,.05), inset 0 -1px 0 rgba(0,0,0,.35);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+.wa-body{
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+.wa-shell{
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.wa-card{
+  width: 100%;
+  max-width: 760px;
+  background: var(--panel);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-1);
+  padding: 18px;
+  border: 1px solid rgba(255,255,255,.06);
+}
+
+.wa-greeting{
+  background: var(--panel-2);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  box-shadow: var(--shadow-in);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.wa-emoji{ filter: saturate(110%); }
+
+.wa-form{ display: grid; gap: 12px; }
+
+/* Inputs */
+.wa-input{
+  width: 100%;
+  height: 48px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255,255,255,.08);
+  background: #23252c;
+  color: var(--text);
+  padding: 0 14px;
+  outline: none;
+  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+  box-shadow: var(--shadow-in);
+  caret-color: var(--text);
+}
+.wa-input::placeholder{ color: var(--muted); }
+.wa-input:focus{
+  border-color: rgba(127, 209, 255, .75);
+  box-shadow: 0 0 0 3px rgba(127, 209, 255, .18);
+  background: #262933;
+}
+
+/* Button — white bar look */
+.wa-btn{
+  appearance: none;
+  border: 0;
+  height: 46px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #111;
+  font-weight: 600;
+  letter-spacing: .2px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform .06s ease, filter .2s ease, opacity .2s ease;
+  user-select: none;
+}
+.wa-btn:hover{ filter: brightness(.96); }
+.wa-btn:active{ transform: translateY(1px); }
+
+/* Results */
+.wa-h1{
+  margin: 2px 2px 14px 2px;
+  font-size: 22px; font-weight: 700;
+}
+.wa-h2{
+  margin: 18px 2px 10px 2px;
+  font-size: 16px; font-weight: 600; opacity: .92;
+}
+
+.wa-meta{ color: var(--muted); margin-bottom: 10px; }
+.wa-meta a {
+    color: #ff6c00;
+}
+.wa-section{ margin-top: 8px; }
+
+.wa-list{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.wa-list li{
+  background: var(--panel-2);
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,.06);
+}
+.wa-strong{ font-weight: 600; margin-bottom: 4px; }
+.wa-muted{ color: var(--muted); }
+.wa-chip{
+  display: inline-block;
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #262a33;
+  border: 1px solid rgba(255,255,255,.08);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.wa-grid.two{
+  display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 10px;
+}
+.wa-kv{ background: var(--panel-2); border: 1px solid rgba(255,255,255,.06); border-radius: 12px; padding: 10px 12px; }
+.wa-k{ font-weight: 600; margin-bottom: 6px; }
+.wa-sublist{ margin: 0; padding-left: 18px; }
+
+.wa-mini{ display: inline-block; margin-top: 8px; font-weight: 600; }
+a.wa-mini {
+    color: #ff6c00 !important;
+}
+.wa-cta{ margin-top: 18px; display: flex; justify-content: flex-end; }
+.wa-cta-btn{
+  display: inline-flex; gap: 8px; align-items: center;
+  padding: 10px 14px;
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  text-decoration: none;
+  font-weight: 600;
+  transition: background .2s ease, transform .06s ease;
+}
+.wa-cta-btn:hover{ background: #252832; }
+.wa-cta-btn:active{ transform: translateY(1px); }
+
+@media (max-width: 420px){
+  .wa-card{ padding: 14px; }
+  .wa-greeting{ font-size: 14px; }
+}

@@ -7,14 +7,12 @@ from .utils import send_order_email_to_owner, send_order_confirmation_to_custome
 
 from django.views import View
 from django.http import JsonResponse, HttpResponse
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, render
+from django.urls import reverse
 import stripe
 from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
-from django.http import JsonResponse
 import json
-
-from django.shortcuts import render
 
 def checkout_success(request):
     return render(request, 'checkout_success.html')
@@ -26,15 +24,13 @@ stripe.api_key = settings.STRIPE_SECRET_KEY  # ✅ Initialize stripe
 
 @csrf_exempt
 def stripe_webhook(request):
-    print("✅ Stripe webhook called")  # Add this
+    print("✅ Stripe webhook called")
     payload = request.body
     sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
     endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
 
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, endpoint_secret
-        )
+        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
     except ValueError as e:
         print("⚠️ Invalid payload:", e)
         return HttpResponse(status=400)
@@ -42,14 +38,14 @@ def stripe_webhook(request):
         print("⚠️ Invalid signature:", e)
         return HttpResponse(status=400)
 
-    print(f"✅ Event received: {event['type']}")  # Add this
+    print(f"✅ Event received: {event['type']}")
 
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
-        print(f"✅ Checkout session: {session}")  # Add this
+        print(f"✅ Checkout session: {session}")
 
         order_id = session.get('metadata', {}).get('order_id')
-        print(f"✅ order_id from metadata: {order_id}")  # Add this
+        print(f"✅ order_id from metadata: {order_id}")
 
         if order_id:
             try:
@@ -101,13 +97,15 @@ def stripe_success_view(request):
 
     return render(request, "checkout_success.html", {"order": order})
 
-
-
-
 def get_stripe_publishable_key(request):
-    return JsonResponse({
-        'publishableKey': settings.STRIPE_PUBLISHABLE_KEY
-    })
+    return JsonResponse({'publishableKey': settings.STRIPE_PUBLISHABLE_KEY})
+
+# ✅ Build absolute URLs on the current host; fallback to settings.DEPLOY_BASE_URL
+def _abs(request, path: str) -> str:
+    try:
+        return request.build_absolute_uri(path)
+    except Exception:
+        return settings.DEPLOY_BASE_URL.rstrip("/") + path
 
 class CreateCheckoutSessionView(View):
     def post(self, request, *args, **kwargs):
@@ -127,32 +125,35 @@ class CreateCheckoutSessionView(View):
                     'quantity': item.get('quantity', 1),
                 })
 
-            session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=line_items,
-            mode='payment',
-            success_url=settings.STRIPE_SUCCESS_URL + "?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url=settings.STRIPE_CANCEL_URL,
-            metadata={
-                'order_id': str(order.id),
-                'pickup_time': order.pickup_time.strftime("%Y-%m-%d %H:%M"),
-                'menu_item': ', '.join(item['item'] for item in order.order_items),
-                'customer_name': f"{order.customer_first_name} {order.customer_last_name}",
-                'customer_email': order.customer_email,
-            },
-            customer_email=order.customer_email,
-        )
+            # ✅ Dynamic URLs (avoid localhost)
+            success_url = _abs(request, reverse("stripe-success")) + "?session_id={CHECKOUT_SESSION_ID}"
+            cancel_url = _abs(request, "/barista-assistant/")
 
+            session = stripe.checkout.Session.create(
+                payment_method_types=['card'],
+                line_items=line_items,
+                mode='payment',
+                success_url=success_url,
+                cancel_url=cancel_url,
+                metadata={
+                    'order_id': str(order.id),
+                    'pickup_time': order.pickup_time.strftime("%Y-%m-%d %H:%M"),
+                    'menu_item': ', '.join(item['item'] for item in order.order_items),
+                    'customer_name': f"{order.customer_first_name} {order.customer_last_name}",
+                    'customer_email': order.customer_email,
+                },
+                customer_email=order.customer_email,
+            )
 
             # ✅ Save session ID to the Order for DB lookup later
             order.stripe_session_id = session.id
             order.save()
 
-            return JsonResponse({'id': session.id})
+            # ✅ Return both id and url so the widget can open a popup
+            return JsonResponse({'id': session.id, 'url': session.url})
         except Exception as e:
             print("Stripe Checkout creation error:", str(e))
             return JsonResponse({'error': str(e)}, status=500)
-
 
 class OrderCreateView(generics.CreateAPIView):
     queryset = Order.objects.all()

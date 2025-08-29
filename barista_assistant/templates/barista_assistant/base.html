@@ -1,16 +1,15 @@
+<!-- barista_assistant/base.html -->
 {% load static %}
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>{% block title %}Barista Assistant{% endblock %}</title>
-    {% block head %}{% endblock %}
+
 </head>
 <body>
-    {% block content %}
-    <h1>Welcome to Barista Assistant</h1>
-    {% endblock %}
-    <script src="{% static 'js/barista-assistant-widget.js' %}?v=2"></script>
+    <script src="{% static 'js/barista-assistant-widget.js' %}"></script>
+    <script src="{% static 'js/checkout-popup.js' %}"></script>
+    <script src="{% static 'js/vendor/flatpickr-loader.js' %}"></script>
 </body>
 </html>

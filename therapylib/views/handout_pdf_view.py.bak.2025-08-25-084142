@@ -1,0 +1,110 @@
+"""
+CHANGE LOG
+----------
+2025-08-25 • Integrated THERAPYLIB_PDF_ENGINE default from settings.               # CHANGED:
+- PDF endpoint now checks ?engine= query param first.                              # CHANGED:
+- If not provided, falls back to settings.THERAPYLIB_PDF_ENGINE.                   # CHANGED:
+- Still uses fallback chain if chosen engine fails.                                # CHANGED:
+"""
+
+import io
+import logging
+from django.http import HttpResponse, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.conf import settings  # CHANGED: to access THERAPYLIB_PDF_ENGINE
+from django.template.loader import render_to_string
+
+# Import PDF backends
+try:
+    import weasyprint
+except ImportError:
+    weasyprint = None
+
+try:
+    from xhtml2pdf import pisa
+except ImportError:
+    pisa = None
+
+import pdfkit
+
+logger = logging.getLogger(__name__)
+
+def render_pdf_from_html(html: str, engine: str):
+    """
+    Attempt to render PDF using the specified engine.
+    Raises Exception if engine not available or fails.
+    """
+    if engine == "weasyprint":
+        if not weasyprint:
+            raise RuntimeError("WeasyPrint not installed")
+        return weasyprint.HTML(string=html).write_pdf()
+    elif engine == "xhtml2pdf":
+        if not pisa:
+            raise RuntimeError("xhtml2pdf not installed")
+        output = io.BytesIO()
+        pisa_status = pisa.CreatePDF(io.BytesIO(html.encode("utf-8")), dest=output)
+        if pisa_status.err:
+            raise RuntimeError("xhtml2pdf rendering failed")
+        return output.getvalue()
+    elif engine == "pdfkit":
+        return pdfkit.from_string(html, False)
+    else:
+        raise ValueError(f"Unknown PDF engine: {engine}")
+
+@csrf_exempt
+def handout_pdf(request, slug):
+    """
+    Endpoint: /api/therapylib/handouts/<slug>/pdf/?mode=patient|provider
+    Renders HTML handout into PDF with configurable engine + fallback.
+    """
+    mode = request.GET.get("mode", "patient")
+
+    # Render handout HTML
+    context = {"slug": slug, "mode": mode}
+    template_map = {
+        "patient": "therapylib/handouts/patient.html",
+        "provider": "therapylib/handouts/practitioner.html",  # match actual filename
+        "practitioner": "therapylib/handouts/practitioner.html",
+    }
+    template_name = template_map.get(mode, "therapylib/handouts/patient.html")
+    html = render_to_string(template_name, context)
+
+    if request.GET.get("debug"):
+        return HttpResponse(html)
+
+    # CHANGED: pick engine
+    requested_engine = request.GET.get("engine")
+    if requested_engine:
+        engine = requested_engine.lower()
+    else:
+        engine = getattr(settings, "THERAPYLIB_PDF_ENGINE", "xhtml2pdf")
+
+    tried = []
+    pdf_bytes = None
+    errors = []
+
+    # CHANGED: try selected engine first, then fallbacks
+    engines_to_try = [engine] + [e for e in ["weasyprint", "xhtml2pdf", "pdfkit"] if e != engine]
+
+    for eng in engines_to_try:
+        tried.append(eng)
+        try:
+            pdf_bytes = render_pdf_from_html(html, eng)
+            if pdf_bytes:
+                break
+        except Exception as e:
+            logger.error(f"PDF generation failed with {eng}: {e}")
+            errors.append(f"{eng}: {e}")
+
+    if not pdf_bytes:
+        return JsonResponse({
+            "error": "All PDF engines failed",
+            "tried": tried,
+            "errors": errors,
+        }, status=500)
+
+    response = HttpResponse(pdf_bytes, content_type="application/pdf")
+    response["Content-Disposition"] = f'inline; filename="{slug}-{mode}.pdf"'
+    # CHANGED: Add cache headers
+    response["Cache-Control"] = "public, max-age=86400"
+    return response

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Personal Mentor</title>
+  <link href="/static/personal_mentor/chat.css?v=1" rel="stylesheet" />
+  <link href="/static/personal_mentor/auth.css?v=2" rel="stylesheet" />
+</head>
+<body>
+  <div id="pm-app" class="pm-container">
+    <header class="pm-header">
+      <div class="pm-title">Mentor</div>
+      <button id="pm-reset" class="pm-reset" title="Reset">Reset</button>
+    </header>
+
+    <div id="pm-messages" class="pm-messages">
+      <div class="pm-group bot">
+        <div class="avatar">🤖</div>
+        <div class="bubble">Hey Wayne — I’m your Personal Mentor. What are we building today?</div>
+      </div>
+    </div>
+
+    <form id="pm-form" class="pm-form" autocomplete="off">
+      <input id="pm-input" type="text" placeholder="Type a message..." aria-label="Message to Mentor" />
+      <button type="submit" class="pm-send">Send</button>
+    </form>
+  </div>
+
+  <!-- FULLSCREEN AUTH OVERLAY -->
+  <div id="pm-auth-overlay" class="pm-auth-overlay" aria-hidden="true">
+    <div class="pm-auth-container">
+      <!-- Register -->
+      <div class="pm-auth-card" id="pm-auth-register">
+        <h2>Create your account</h2>
+        <form id="pm-auth-register-form" autocomplete="off">
+          <label for="pm-name">Name</label>
+          <input id="pm-name" name="name" type="text" placeholder="Your name" required />
+
+          <label for="pm-email">Email</label>
+          <input id="pm-email" name="email" type="email" placeholder="you@example.com" required />
+
+          <label for="pm-password">Password</label>
+          <div class="pm-input-wrap pm-has-eye">
+            <input id="pm-password" name="password" type="password" placeholder="Choose a password" required />
+            <button
+              type="button"
+              class="pm-eye"
+              aria-label="Show password"
+              aria-pressed="false"
+              data-target="pm-password"
+              title="Show password"
+            ></button>
+          </div>
+
+          <button type="submit" class="pm-auth-submit">Create account</button>
+        </form>
+        <div class="pm-auth-foot">
+          <a href="#" id="pm-link-login">User Login</a>
+        </div>
+        <div class="pm-auth-error" id="pm-auth-register-error" role="alert"></div>
+      </div>
+
+      <!-- Login -->
+      <div class="pm-auth-card" id="pm-auth-login" hidden>
+        <h2>Welcome back</h2>
+        <form id="pm-auth-login-form" autocomplete="off">
+          <label for="pm-login-email">Email</label>
+          <input id="pm-login-email" name="email" type="email" placeholder="you@example.com" required />
+
+          <label for="pm-login-password">Password</label>
+          <div class="pm-input-wrap pm-has-eye">
+            <input id="pm-login-password" name="password" type="password" placeholder="Your password" required />
+            <button
+              type="button"
+              class="pm-eye"
+              aria-label="Show password"
+              aria-pressed="false"
+              data-target="pm-login-password"
+              title="Show password"
+            ></button>
+          </div>
+
+          <button type="submit" class="pm-auth-submit">Log in</button>
+        </form>
+        <div class="pm-auth-foot">
+          <a href="#" id="pm-link-register">Create an account</a>
+        </div>
+        <div class="pm-auth-error" id="pm-auth-login-error" role="alert"></div>
+      </div>
+
+      <!-- Confirm -->
+      <div class="pm-auth-card" id="pm-auth-confirm" hidden>
+        <h2>Enter your code</h2>
+        <p class="pm-auth-sub">We sent a 6-digit code to your email. Paste it below to continue.</p>
+        <form id="pm-auth-confirm-form" autocomplete="off">
+          <label for="pm-code">Confirmation code</label>
+          <input id="pm-code" name="code" inputmode="numeric" pattern="[0-9]*" placeholder="000000" maxlength="6" required />
+          <button type="submit" class="pm-auth-submit">Confirm</button>
+        </form>
+        <div class="pm-auth-foot">
+          <button id="pm-resend" class="pm-link-button" type="button">Resend code</button>
+        </div>
+        <div class="pm-auth-error" id="pm-auth-confirm-error" role="alert"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/personal_mentor/chat.js?v=1"></script>
+  <script src="/static/personal_mentor/auth.js?v=2"></script>
+</body>
+</html>

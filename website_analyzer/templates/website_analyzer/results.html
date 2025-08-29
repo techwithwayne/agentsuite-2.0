@@ -1,104 +1,120 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+{% load static %}
 <head>
-    <title>Website Analyzer Results</title>
-    <style>
-        body { font-family: sans-serif; padding: 20px; line-height: 1.6; }
-        h1, h2 { color: #222; }
-        ul { padding-left: 20px; }
-        img { border: 1px solid #ddd; border-radius: 4px; }
-        .image-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
-        .consultation-cta {
-            background: #f0f8ff;
-            padding: 10px;
-            border-radius: 5px;
-            display: inline-block;
-            margin-top: 15px;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Website Analyzer Results</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'website_analyzer/styles.css' %}">
 </head>
-<body>
-    <h1>Results for {{ url }}</h1>
+<body class="wa-body">
+  <main class="wa-shell">
+    <section class="wa-card">
+      <h1 class="wa-h1">Scan Results</h1>
 
-    <h2>General Issues Found</h2>
-    <ul>
-        {% for issue in general_issues %}
-            <li>{{ issue }}</li>
-        {% empty %}
-            <li>No general issues found.</li>
-        {% endfor %}
-    </ul>
+      {% if page_title %}
+        <div class="wa-meta">Title detected: <strong>{{ page_title }}</strong></div>
+      {% endif %}
+      <div class="wa-meta">URL: <a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></div>
 
-    <h2>Headings Found</h2>
-    {% for tag, headings in headings_found.items %}
-        {% if headings %}
-            <h3>{{ tag.upper }} Tags</h3>
-            <ul>
-                {% for heading in headings %}
-                    <li>{{ heading }}</li>
-                {% endfor %}
-            </ul>
+      <div class="wa-section">
+        <h2 class="wa-h2">General Issues</h2>
+        {% if general_issues %}
+          <ul class="wa-list">
+            {% for item in general_issues %}
+              <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="wa-muted">No major issues detected.</div>
         {% endif %}
-    {% endfor %}
+      </div>
 
-    <h2>Broken Links</h2>
-    {% if broken_links %}
-        <ul>
-            {% for link in broken_links %}
-                <li><a href="{{ link }}" target="_blank">{{ link }}</a></li>
-            {% endfor %}
-        </ul>
-    {% else %}
-        <p>No broken links found.</p>
-    {% endif %}
-
-    {% if missing_alt_images %}
-        <h2>Images Missing Alt Text</h2>
-        <div class="image-grid">
-            {% for img_url in missing_alt_images %}
-                <img src="{{ img_url }}" alt="Missing Alt" width="350" style="height: auto;">
-            {% endfor %}
-        </div>
-    {% endif %}
-
-    <h2>Recommendations (What, Why, Urgency)</h2>
-    {% if recommendations %}
-        <ul>
+      <div class="wa-section">
+        <h2 class="wa-h2">Recommendations</h2>
+        {% if recommendations %}
+          <ul class="wa-list">
             {% for rec in recommendations %}
-                <li>
-                    <strong>What to do:</strong> {{ rec.recommendation }}<br>
-                    <strong>Why it matters:</strong> {{ rec.why }}<br>
-                    <strong>Urgency:</strong> {{ rec.urgency }}
-                </li>
+              <li>
+                <div class="wa-strong">{{ rec.recommendation }}</div>
+                <div class="wa-muted">{{ rec.why }}</div>
+                <div class="wa-chip">{{ rec.urgency }}</div>
+              </li>
             {% endfor %}
-        </ul>
-        <div class="consultation-cta">
-            👉 Need help fixing these? <a href="https://techwithwayne.com/free-consultation/" target="_blank">Get a Free Consultation</a>
+          </ul>
+        {% else %}
+          <div class="wa-muted">No recommendations.</div>
+        {% endif %}
+      </div>
+
+      <div class="wa-section">
+        <h2 class="wa-h2">Headings Found</h2>
+        <div class="wa-grid two">
+          {% for tag, texts in headings_found.items %}
+            <div class="wa-kv">
+              <div class="wa-k">{{ tag|upper }}</div>
+              <div class="wa-v">
+                {% if texts %}
+                  <ul class="wa-sublist">
+                    {% for t in texts %}
+                      <li>{{ t }}</li>
+                    {% endfor %}
+                  </ul>
+                {% else %}
+                  <span class="wa-muted">None</span>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
         </div>
-    {% else %}
-        <p>No recommendations — looking good!</p>
-    {% endif %}
+      </div>
 
-    <h2>Recommended Layout Structure (What, Why, Example)</h2>
-{% if layout_suggestions %}
-    <ul>
-        {% for suggestion in layout_suggestions %}
+      {% if missing_alt_images %}
+      <div class="wa-section">
+        <h2 class="wa-h2">Images Missing Alt</h2>
+        <ul class="wa-list">
+          {% for img in missing_alt_images %}
+            <li><a href="{{ img }}" target="_blank" rel="noopener">{{ img }}</a></li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {% if broken_links %}
+      <div class="wa-section">
+        <h2 class="wa-h2">Broken Links</h2>
+        <ul class="wa-list">
+          {% for link in broken_links %}
+            <li><a href="{{ link }}" target="_blank" rel="noopener">{{ link }}</a></li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {% if layout_suggestions %}
+      <div class="wa-section">
+        <h2 class="wa-h2">Layout Suggestions (AI)</h2>
+        <ul class="wa-list">
+          {% for s in layout_suggestions %}
             <li>
-                <strong>What to implement:</strong> {{ suggestion.what }}<br>
-                <strong>Why it matters:</strong> {{ suggestion.why }}<br>
-                <strong>Example link:</strong> <a href="{{ suggestion.example_link }}" target="_blank">{{ suggestion.example_link }}</a>
+              <div class="wa-strong">{{ s.what }}</div>
+              <div class="wa-muted">{{ s.why }}</div>
+              {% if s.example_link %}
+                <a class="wa-mini" href="{{ s.example_link }}" target="_blank" rel="noopener">Example</a>
+              {% endif %}
             </li>
-        {% endfor %}
-    </ul>
-    <div class="consultation-cta">
-        👉 Need help implementing these? <a href="https://techwithwayne.com/free-consultation/" target="_blank">Get a Free Consultation</a>
-    </div>
-{% else %}
-    <p>No layout suggestions available or GPT returned no structured results. Please retry.</p>
-{% endif %}
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
 
-
-
-    <p><a href="{% url 'home' %}">Analyze another site</a></p>
+      <div class="wa-cta">
+        <a class="wa-cta-btn" href="{% url 'home' %}">Analyze another site</a>
+      </div>
+    </section>
+  </main>
+  <script src="{% static 'website_analyzer/iframe-height.js' %}"></script>
 </body>
 </html>

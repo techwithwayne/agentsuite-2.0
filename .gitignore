@@ -35,6 +35,9 @@ secrets.json
 # System Files
 .DS_Store
 Thumbs.db
+*/wsgi.py
+api_test.py
+
 
 # Static/media
 /static/

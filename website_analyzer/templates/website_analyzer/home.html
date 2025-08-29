@@ -1,12 +1,36 @@
+
 <!DOCTYPE html>
-<html>
-<head><title>Website Analyzer</title></head>
-<body>
-  <h1>Website Analyzer</h1>
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Scan</button>
-  </form>
+<!-- WA-MARKER home.html v2025-08-10-1 -->
+{% load static %}
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Website</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'website_analyzer/styles.css' %}">
+
+  <link rel="stylesheet" href="{% static 'website_analyzer/css/wa-loader.css' %}">
+<script defer src="{% static 'website_analyzer/js/wa-loader.js' %}"></script>
+</head>
+<body class="wa-body">
+  <main class="wa-shell">
+    <section class="wa-card">
+      <div class="wa-greeting">
+        <span class="wa-emoji">👋</span>
+        <span>Hi, I’m your Website Analyzer. Paste a URL and I’ll scan it.</span>
+      </div>
+
+      <form method="post" class="wa-form" novalidate>
+        {% csrf_token %}
+        <div class="wa-field-row">
+          {{ form.url }}
+        </div>
+        <button type="submit" class="wa-btn">Scan Website</button>
+      </form>
+    </section>
+  </main>
+  <script src="{% static 'website_analyzer/iframe-height.js' %}"></script>
 </body>
 </html>

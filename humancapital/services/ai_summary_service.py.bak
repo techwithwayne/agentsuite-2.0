@@ -1,0 +1,82 @@
+"""
+AI Summary Service
+Generates a natural-language summary of assessment results using OpenAI.
+Safe version: all errors are caught, no crashes.
+"""
+
+import os
+import traceback
+from openai import OpenAI
+
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def generate_ai_summary(session, skills, cognitive, personality, behavior, motivation):
+    """
+    Create a human-readable executive summary from assessment data.
+    Always returns a string, even if AI fails.
+    """
+
+    try:
+        # Build structured prompt
+        prompt = f"""
+        Provide a concise, professional assessment summary for the following data:
+
+        Skills:
+        {", ".join([f"{s.name} ({s.rating})" for s in skills]) if skills else "No skills provided"}
+
+        Cognitive:
+        Reasoning={getattr(cognitive, "reasoning", "N/A")},
+        Memory={getattr(cognitive, "memory", "N/A")},
+        Problem-Solving={getattr(cognitive, "problem_solving", "N/A")},
+        Attention={getattr(cognitive, "attention", "N/A")}
+
+        Personality (OCEAN):
+        Openness={getattr(personality, "openness", "N/A")},
+        Conscientiousness={getattr(personality, "conscientiousness", "N/A")},
+        Extraversion={getattr(personality, "extraversion", "N/A")},
+        Agreeableness={getattr(personality, "agreeableness", "N/A")},
+        Neuroticism={getattr(personality, "neuroticism", "N/A")}
+
+        Behavior:
+        Communication={getattr(behavior, "communication", "N/A")},
+        Decision Making={getattr(behavior, "decision_making", "N/A")},
+        Leadership={getattr(behavior, "leadership", "N/A")},
+        Collaboration={getattr(behavior, "collaboration", "N/A")},
+        Conflict Handling={getattr(behavior, "conflict_handling", "N/A")}
+
+        Motivation:
+        Achievement={getattr(motivation, "achievement", "N/A")},
+        Stability={getattr(motivation, "stability", "N/A")},
+        Autonomy={getattr(motivation, "autonomy", "N/A")},
+        Recognition={getattr(motivation, "recognition", "N/A")},
+        Learning={getattr(motivation, "learning", "N/A")}
+
+        Please respond in plain English with:
+        - Key strengths
+        - Potential growth areas
+        - Team/career role recommendations
+        Make it sound professional but easy to understand.
+        """
+
+        # Make API call
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # can swap for gpt-4.1 or gpt-4o
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+
+        # Return the model's response text
+        return response.choices[0].message["content"]
+
+    except Exception as e:
+        # Log full traceback for debugging
+        print("ERROR in generate_ai_summary:", str(e))
+        traceback.print_exc()
+
+        # Return safe fallback
+        return (
+            "AI summary could not be generated at this time. "
+            "Please try again later or contact system admin."
+        )

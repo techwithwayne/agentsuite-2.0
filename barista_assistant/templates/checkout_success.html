@@ -1,26 +1,39 @@
-<h1>Thank you for your order! ☕</h1>
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Payment Successful</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <style>
+    /* Minimal styling; no external CSS required */
+    body { background:#121212; color:#f1f1f1; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    .card { background:#1e1e1e; padding:24px; border-radius:16px; max-width:520px; box-shadow:0 10px 30px rgba(0,0,0,0.4); }
+    h1 { margin:0 0 8px; font-size:24px; }
+    p { margin:6px 0; opacity:0.9; }
+    .muted { color:#bbb; font-size:14px; margin-top:12px; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Payment successful 🎉</h1>
+    {% if order %}
+      {% if order.fallback %}
+        <p><strong>Thanks, {{ order.name }}</strong>. We received your payment.</p>
+        <p class="muted">If this window doesn’t close automatically, you can close it now.</p>
+      {% else %}
+        <p><strong>Thanks, {{ order.customer_first_name }} {{ order.customer_last_name }}</strong>. We received your payment.</p>
+        <p>We emailed a receipt to <strong>{{ order.customer_email }}</strong>.</p>
+        <p class="muted">If this window doesn’t close automatically, you can close it now.</p>
+      {% endif %}
+    {% else %}
+      <p>Thanks! Your payment was processed.</p>
+      <p class="muted">If this window doesn’t close automatically, you can close it now.</p>
+    {% endif %}
+  </main>
 
-{% if order %}
-  {% if order.fallback %}
-    <p><strong>Name:</strong> {{ order.name }}</p>
-    <p><strong>Email:</strong> {{ order.email }}</p>
-    <p><strong>Menu Item:</strong> {{ order.menu_item }}</p>
-    <p><strong>Pickup Time:</strong> {{ order.pickup_time }}</p>
-    <p><strong>Total Paid:</strong> ${{ order.amount }}</p>
-    <p><em>Note: Data retrieved from Stripe fallback.</em></p>
-  {% else %}
-    <p><strong>Name:</strong> {{ order.customer_first_name }} {{ order.customer_last_name }}</p>
-    <p><strong>Email:</strong> {{ order.customer_email }}</p>
-    <p><strong>Menu Item:</strong>
-      <ul>
-        {% for item in order.order_items %}
-          <li>{{ item.item }} (x{{ item.quantity }})</li>
-        {% endfor %}
-      </ul>
-    </p>
-    <p><strong>Pickup Time:</strong> {{ order.pickup_time }}</p>
-    <p><strong>Status:</strong> {{ order.status }}</p>
-  {% endif %}
-{% else %}
-  <p>We couldn't retrieve your order. Please check your email confirmation.</p>
-{% endif %}
+  <!-- ✅ Auto-close + notify opener -->
+  <script src="{% static 'barista_assistant/js/checkout-success.js' %}"></script>
+</body>
+</html>

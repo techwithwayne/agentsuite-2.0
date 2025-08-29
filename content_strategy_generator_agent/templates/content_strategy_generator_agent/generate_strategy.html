@@ -2,24 +2,33 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Content Strategy Generator Agent</title>
-    <style>
-        body { font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; }
-        textarea { width: 100%; }
-        pre { background: #f5f5f5; padding: 10px; white-space: pre-wrap; }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Content Strategy Generator</title>
+
+  <!-- (Optional) your base stylesheet -->
+  <link rel="stylesheet" href="{% static 'content_strategy_generator_agent/css/style.css' %}">
+
+  <!-- Loader overlay (CSS + JS) -->
+  <link rel="stylesheet" href="{% static 'content_strategy_generator_agent/css/cg-loader.css' %}">
+  <script defer src="{% static 'content_strategy_generator_agent/js/cg-loader.js' %}"></script>
 </head>
 <body>
-    <h1>Content Strategy Generator Agent</h1>
-    <form method="post">
+  <main id="cg-app" class="cg-shell">
+    <section class="cg-card">
+      <form method="post" class="cg-form" novalidate>
         {% csrf_token %}
         {{ form.as_p }}
-        <button type="submit">Generate Strategy</button>
-    </form>
-    {% if result %}
-        <h2>Generated Strategy:</h2>
-        <div>{{ result|safe }}</div>
-    {% endif %}
+        <button type="submit" id="generate-button" class="cg-btn">Generate Strategy</button>
+      </form>
+    </section>
+
+    <section class="cg-results-wrap">
+      <div id="result" class="cg-results" aria-live="polite" aria-busy="false"></div>
+    </section>
+  </main>
+
+  <!-- App logic (AJAX submit + height messaging). Add a cache-buster while testing. -->
+  <script defer src="{% static 'content_strategy_generator_agent/js/content-generator.js' %}"></script>
 </body>
 </html>

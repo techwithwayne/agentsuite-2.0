@@ -1,0 +1,24 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Step 3: Cognitive Abilities</title>
+    <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
+</head>
+<body>
+    <header>
+        <h1>Step 3: Cognitive Abilities</h1>
+        <p>Please rate reasoning, memory, problem-solving, and attention.</p>
+    </header>
+
+    <main>
+        <form method="post">
+            {% csrf_token %}
+            {{ form.as_p }}
+            <button type="submit">Next</button>
+        </form>
+    </main>
+</body>
+</html>

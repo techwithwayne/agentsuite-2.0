@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ substance.name }} — Patient Handout</title>
+  <style>
+    body { font-family: DejaVu Sans, sans-serif; font-size: 12pt; line-height: 1.4; }
+    h1,h2,h3 { color: #333; margin: 0 0 8px 0; }
+    .section { margin: 10px 0 14px 0; }
+    .hr { border-top: 2px solid {{ brand_primary }}; margin: 6px 0 12px 0; }
+    ul { margin: 6px 0 0 18px; padding: 0; }
+    footer { margin-top: 16px; border-top: 1px solid #ccc; padding-top: 8px; font-size: 9pt; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>{{ substance.name }}</h1>
+  <div class="hr"></div>
+
+  {% if mv and mv.indications %}
+    <div class="section">
+      <h3>What it may help with</h3>
+      <p>{{ mv.indications }}</p>
+    </div>
+  {% endif %}
+
+  {% if doses %}
+    <div class="section">
+      <h3>Common ways to take it</h3>
+      <ul>
+        {% for d in doses %}
+          <li><strong>{{ d.form.name }}</strong> — {{ d.amount_min }}{% if d.amount_max %} to {{ d.amount_max }}{% endif %} {{ d.unit }} {{ d.frequency }}{% if d.duration %} for {{ d.duration }}{% endif %}{% if d.notes %} ({{ d.notes }}){% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% if mv and mv.dosing_overview %}<p>{{ mv.dosing_overview }}</p>{% endif %}
+    </div>
+  {% endif %}
+
+  {% if mv %}
+    {% if mv.contraindications or mv.interactions or mv.adverse_effects %}
+      <div class="section">
+        <h3>Safety notes</h3>
+        {% if mv.contraindications %}<p><strong>Do not use if:</strong> {{ mv.contraindications }}</p>{% endif %}
+        {% if mv.interactions %}<p><strong>Interactions:</strong> {{ mv.interactions }}</p>{% endif %}
+        {% if mv.adverse_effects %}<p><strong>Possible side effects:</strong> {{ mv.adverse_effects }}</p>{% endif %}
+      </div>
+    {% endif %}
+  {% endif %}
+
+  <footer>{{ disclaimer }}</footer>
+</body>
+</html>

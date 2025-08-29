@@ -1,0 +1,19 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Step 5: Behavior</title>
+  <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
+</head>
+<body>
+  <h1>Step 5: Behavior Indicators</h1>
+  <p>Please rate behavioral attributes like decision-making and collaboration.</p>
+
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Next</button>
+  </form>
+</body>
+</html>

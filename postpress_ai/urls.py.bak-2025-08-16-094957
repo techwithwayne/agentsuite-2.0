@@ -1,0 +1,19 @@
+"""
+CHANGE LOG
+----------
+2025-08-16
+- REFACTOR: This legacy module path now re-exports the canonical URL patterns       # CHANGED:
+  from the package `postpress_ai/urls/__init__.py`.                                 # CHANGED:
+- RATIONALE: Eliminates duplication and guarantees all includes hit the same        # CHANGED:
+  endpoints in `postpress_ai.views` (where normalization and logging live).         # CHANGED:
+"""
+
+from __future__ import annotations  # CHANGED:
+
+# NOTE:
+# Python import resolution prefers the package `postpress_ai.urls` (this folder)
+# over a same-named module. This file exists for compatibility but simply          # CHANGED:
+# re-exports the canonical patterns from the package initializer.                  # CHANGED:
+from .urls import urlpatterns, app_name  # CHANGED:
+
+__all__ = ["urlpatterns", "app_name"]  # CHANGED:

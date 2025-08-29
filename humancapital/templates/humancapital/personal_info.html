@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Information</title>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
+</head>
+<body>
+    <div class="container">
+        <h1>Personal Information</h1>
+
+        <form method="post">
+            {% csrf_token %}
+            {{ form.as_p }}
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">Next Step →</button>
+            </div>
+        </form>
+
+        <div class="nav-links">
+            <a href="{% url 'humancapital:welcome' %}">← Back to Welcome</a>
+        </div>
+    </div>
+</body>
+</html>

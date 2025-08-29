@@ -1,0 +1,90 @@
+/* =============================
+   Human Capital Assessment Styles
+   Brand: Dark Theme (#121212) + Accent (#ff6c00)
+   ============================= */
+
+/* General layout */
+body {
+    background-color: #121212;
+    color: #f0f0f0;
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 0;
+    padding: 20px;
+    line-height: 1.6;
+}
+
+h1, h2, h3 {
+    color: #ff6c00;
+    margin-bottom: 10px;
+}
+
+a {
+    color: #ff6c00;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* Forms */
+form {
+    margin: 20px 0;
+    padding: 15px;
+    background: #1e1e1e;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(255, 108, 0, 0.2);
+}
+
+form input, form select, form textarea {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 12px;
+    border: 1px solid #333;
+    border-radius: 6px;
+    background: #2a2a2a;
+    color: #fff;
+}
+
+form button {
+    background: #ff6c00;
+    color: #121212;
+    border: none;
+    padding: 10px 18px;
+    font-size: 16px;
+    font-weight: bold;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+form button:hover {
+    background: #e65a00;
+}
+
+/* Lists */
+ul {
+    padding-left: 20px;
+}
+
+ul li {
+    margin-bottom: 5px;
+}
+
+/* Chart containers */
+canvas {
+    background: #1e1e1e;
+    border-radius: 8px;
+    padding: 10px;
+    margin: 20px 0;
+}
+
+/* Summary page sections */
+main {
+    margin-top: 20px;
+}
+
+section {
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #333;
+}

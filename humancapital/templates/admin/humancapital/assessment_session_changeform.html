@@ -1,0 +1,54 @@
+{% extends "admin/change_form.html" %}
+{% load static %}
+
+{% block after_related_objects %}
+  {{ block.super }}
+
+  <h2>📊 Visualizations</h2>
+  <canvas id="skillsChart" width="400" height="200"></canvas>
+  <canvas id="personalityChart" width="400" height="200"></canvas>
+
+  <script src="{% static 'humancapital/js/chart.min.js' %}"></script>
+  <script>
+    // Example Skills Bar Chart
+    const ctxSkills = document.getElementById("skillsChart");
+    if (ctxSkills) {
+      new Chart(ctxSkills, {
+        type: "bar",
+        data: {
+          labels: [{% for skill in original.skills.all %}"{{ skill.name }}",{% endfor %}],
+          datasets: [{
+            label: "Skill Ratings",
+            data: [{% for skill in original.skills.all %}{{ skill.rating }},{% endfor %}],
+            backgroundColor: "#ff6c00"
+          }]
+        }
+      });
+    }
+
+    // Example Personality Radar Chart
+    const ctxPersonality = document.getElementById("personalityChart");
+    if (ctxPersonality) {
+      new Chart(ctxPersonality, {
+        type: "radar",
+        data: {
+          labels: ["Openness", "Conscientiousness", "Extraversion", "Agreeableness", "Neuroticism"],
+          datasets: [{
+            label: "Personality",
+            data: [
+              {% if original.personality_profiles.first %}
+              {{ original.personality_profiles.first.openness }},
+              {{ original.personality_profiles.first.conscientiousness }},
+              {{ original.personality_profiles.first.extraversion }},
+              {{ original.personality_profiles.first.agreeableness }},
+              {{ original.personality_profiles.first.neuroticism }}
+              {% else %}0,0,0,0,0{% endif %}
+            ],
+            backgroundColor: "rgba(255,108,0,0.4)",
+            borderColor: "#ff6c00"
+          }]
+        }
+      });
+    }
+  </script>
+{% endblock %}

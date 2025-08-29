@@ -1,0 +1,239 @@
+# agentsuite/postpress_ai/views.py
+from __future__ import annotations
+
+import json
+import logging
+from typing import Tuple
+from urllib.parse import urljoin
+
+import requests
+from django.conf import settings
+from django.http import JsonResponse, HttpRequest
+from django.views.decorators.csrf import csrf_exempt
+
+# Simple version stamp to verify which code is live
+VERSION = "postpress-ai.store-v2.1-2025-08-14"
+
+logger = logging.getLogger("postpress_ai")
+
+
+def _normalize_wp_api_base(raw: str) -> str:
+    """
+    Normalize a WordPress base URL to the REST v2 base.
+
+    Accepts examples like:
+      https://site.com
+      https://site.com/
+      https://site.com/wp-json
+      https://site.com/wp-json/
+      https://site.com/wp-json/wp/v2
+
+    Always returns:
+      https://site.com/wp-json/wp/v2
+    """
+    if not raw:
+        return ""
+    base = raw.strip().rstrip("/")
+    if base.endswith("/wp-json/wp/v2"):
+        return base
+    if base.endswith("/wp-json"):
+        return base + "/wp/v2"
+    return base + "/wp-json/wp/v2"
+
+
+def _auth_ok(req: HttpRequest) -> Tuple[bool, str]:
+    """
+    Simple shared-key auth. Expects:
+      - Header: X-PPA-Key
+      - Django setting: PPA_SHARED_KEY
+    """
+    provided = req.headers.get("X-PPA-Key", "")
+    expected = getattr(settings, "PPA_SHARED_KEY", "")
+    if not expected or provided != expected:
+        return False, "Unauthorized: bad or missing X-PPA-Key"
+    return True, ""
+
+
+@csrf_exempt
+def preview(request: HttpRequest):
+    """
+    Stable Preview contract (no DB writes):
+
+    Request (JSON):
+      { "subject": str, "genre": str?, "tone": str? }
+
+    Response (JSON):
+      {
+        "ok": true,
+        "result": {
+          "title": str,       # subject echoed as title here
+          "html": str,        # HTML for preview pane
+          "summary": str
+        },
+        "token_usage": {...}?,  # optional
+        "quota": {...}?,        # optional
+        "ver": VERSION
+      }
+    """
+    ok, msg = _auth_ok(request)
+    if not ok:
+        return JsonResponse({"ok": False, "error": msg, "ver": VERSION}, status=401)
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except Exception as e:
+        return JsonResponse({"ok": False, "error": f"Invalid JSON: {e}", "ver": VERSION}, status=400)
+
+    subject = (payload.get("subject") or "").strip()
+    genre = (payload.get("genre") or "").strip()
+    tone = (payload.get("tone") or "").strip()
+
+    if not subject:
+        return JsonResponse({"ok": False, "error": "Subject is required", "ver": VERSION}, status=400)
+
+    # Minimal readable HTML stub (replace with model output as needed)
+    html = (
+        f'<div class="ppa-preview">\n'
+        f'  <h1>{subject}</h1>\n'
+        f'  <p><em>Tone: {tone or "—"} • Genre: {genre or "—"}</em></p>\n'
+        f'  <p>This is a generated preview article about <strong>{subject}</strong>.\n'
+        f'     Replace this stub with live Assistant output. Keep semantic HTML for SEO.</p>\n'
+        f'</div>'
+    )
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "result": {
+                "title": subject,
+                "html": html,
+                "summary": f"Preview summary for {subject} in {genre or '—'} with {tone or '—'} tone.",
+            },
+            "token_usage": {"prompt": 0, "completion": 0, "total": 0},
+            "ver": VERSION,
+        }
+    )
+
+
+@csrf_exempt
+def store(request: HttpRequest):
+    """
+    Create a WordPress post via REST (Application Passwords / Basic Auth).
+
+    Request (JSON):
+      { "title": str, "html": str, "status": "draft"|"publish"|... }
+
+    Success response:
+      {
+        "ok": true,
+        "stored": true,
+        "id": <int>,
+        "mode": "created",
+        "target_used": "<wp_json_base>",
+        "wp_status": 201|200,
+        "ver": VERSION
+      }
+
+    Failure response (non-2xx from WP):
+      {
+        "ok": true,
+        "stored": false,
+        "id": null,
+        "mode": "failed",
+        "target_used": "<wp_json_base>",
+        "wp_status": <int>,
+        "wp_body": "<first 600 chars of WP response>",
+        "ver": VERSION
+      }
+
+    Error response (bad auth/json/etc. at this view):
+      { "ok": false, "error": "...", "ver": VERSION } with 4xx status
+    """
+    ok, msg = _auth_ok(request)
+    if not ok:
+        return JsonResponse({"ok": False, "error": msg, "ver": VERSION}, status=401)
+
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "Method not allowed", "ver": VERSION}, status=405)
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except Exception as e:
+        return JsonResponse({"ok": False, "error": f"Invalid JSON: {e}", "ver": VERSION}, status=400)
+
+    title = (payload.get("title") or "").strip()
+    html = payload.get("html") or ""
+    status_val = (payload.get("status") or "draft").strip() or "draft"
+
+    if not title or not html:
+        return JsonResponse(
+            {"ok": False, "error": "Missing required fields: title and html", "ver": VERSION},
+            status=400,
+        )
+
+    # Normalize WP base and build target endpoint
+    wp_base = _normalize_wp_api_base(getattr(settings, "PPA_WP_API_URL", ""))
+    posts_url = urljoin(wp_base + "/", "posts")
+
+    data = {
+        "title": title,
+        "status": status_val,
+        "content": html,  # raw HTML goes to WP "content"
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "PostPressAI/0.1 (+apps.techwithwayne.com)",
+    }
+
+    try:
+        resp = requests.post(
+            posts_url,
+            headers=headers,
+            json=data,
+            auth=(getattr(settings, "PPA_WP_USER", ""), getattr(settings, "PPA_WP_PASS", "")),
+            timeout=15,
+        )
+        logger.info("[PPA][store] POST %s -> %s", posts_url, resp.status_code)
+        if 200 <= resp.status_code < 300:
+            try:
+                j = resp.json()
+            except Exception:
+                j = {}
+            return JsonResponse(
+                {
+                    "ok": True,
+                    "stored": True,
+                    "id": j.get("id"),
+                    "mode": "created",
+                    "target_used": wp_base,
+                    "wp_status": resp.status_code,
+                    "ver": VERSION,
+                }
+            )
+        else:
+            body_preview = resp.text[:600] if resp.text else ""
+            return JsonResponse(
+                {
+                    "ok": True,
+                    "stored": False,
+                    "id": None,
+                    "mode": "failed",
+                    "target_used": wp_base,
+                    "wp_status": resp.status_code,
+                    "wp_body": body_preview,
+                    "ver": VERSION,
+                }
+            )
+    except requests.RequestException as e:
+        logger.warning("[PPA][store] Error posting to WP: %s", e)
+        return JsonResponse(
+            {
+                "ok": True,
+                "stored": False,
+                "id": None,
+                "mode": "error",
+                "target_used": wp_base,
+                "error": str(e),
+                "ver": VERSION,
+            }
+        )

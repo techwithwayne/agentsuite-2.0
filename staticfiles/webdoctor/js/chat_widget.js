@@ -1,319 +1,931 @@
-// Array of greeting messages for the chatbot agent Shirley
-const greetings = [
-  "Hey, I'm Shirley—sorry your website's giving you trouble. Let's sort it out together. What can I do for you today?"
-];
+// JavaScript for WebDoctor Chat Widget - COMPLETE VERSION WITH HEIGHT MANAGEMENT
+// File: static/webdoctor/js/chat_widget.js
 
-// Function to select a random greeting from the array
-function getRandomGreeting() {
-  return greetings[Math.floor(Math.random() * greetings.length)];
-}
+class WebDoctorChat {
+  constructor() {
+    console.log("WebDoctorChat constructor called");
 
-// Function to calculate and send the current height of the chat widget to the parent window (for iframe resizing)
-function sendHeight() {
-  // Attempt to find the main chat widget container; fallback to document body if not found
-  const chatWidget = document.getElementById('chat-widget') || document.body;
-  // Initialize height with the scroll height of the widget
-  let height = chatWidget.scrollHeight;
+    this.isTyping = false;
+    this.messageCount = 0;
+    this.currentStage = "initial";
+    this.formOffered = false;
+    this.formAccepted = false;
+    this.sendInProgress = false; // prevent double-sending
+    this.audioEnabled = false;   // track audio state
+    this.userHasInteracted = false; // track user interaction
 
-  // If no main widget container is found, manually sum heights of individual sections
-  if (!document.getElementById('chat-widget')) {
-    const chatBody = document.getElementById('chat-body');
-    const chatInput = document.getElementById('chat-input');
-    const formSection = document.getElementById('form-section');
-    height = 0;
-    // Add chat body height if element exists
-    if (chatBody) height += chatBody.scrollHeight;
-    // Add chat input height if element exists
-    if (chatInput) height += chatInput.scrollHeight;
-    // Add form section height if element exists and is visible
-    if (formSection && formSection.style.display !== 'none') height += formSection.scrollHeight;
+    this.greetings = [
+      "Hey there! I'm Shirley, your website's doctor. What seems to be the issue today?",
+      "Hi! Shirley here—ready to help diagnose your website troubles. What's going on?",
+      "Welcome! I'm Shirley. Tell me what's bugging your website and I'll help fix it.",
+    ];
+
+    // Initialize audio for typing sound
+    this.initializeAudio();
+
+    console.log("About to call init()");
+    this.init();
   }
 
-  // Add extra padding to ensure the input area remains visible
-  height += 70;
-  // Send the height via postMessage to the parent window for resizing the iframe
-  window.parent.postMessage({ height: height }, 'https://showcase.techwithwayne.com/');
-  // Log the sent height for debugging purposes
-  console.log('Sent height to parent:', height);
-}
+  // Initialize audio with autoplay attempt; silent fallback on first interaction
+  initializeAudio() {
+    console.log("🔊 Initializing typing sound...");
 
-// Event listener for when the DOM content has fully loaded
-document.addEventListener("DOMContentLoaded", () => {
-  // Detect the user's language from the browser settings (first part before hyphen)
-  const userLang = navigator.language.split("-")[0];
-  // Get the language selector element
-  const langSelector = document.getElementById("language-select");
+    this.audioEnabled = false;
+    this.userHasInteracted = false;
 
-  // Set the language selector value to user's language if supported, otherwise default to English
-  if (langSelector) {
-    langSelector.value = ["en", "es", "fr"].includes(userLang) ? userLang : "en";
+    try {
+      this.typingSound = new Audio();
+      this.typingSound.preload = "auto";
+      this.typingSound.src = "/static/webdoctor/sounds/bong.mp3";
+      this.typingSound.volume = 0.3;
+
+      this.typingSound.addEventListener("canplaythrough", () => {
+        console.log("✅ Typing sound loaded successfully");
+      });
+
+      this.typingSound.addEventListener("error", (e) => {
+        console.warn("⚠️ Could not load typing sound:", e);
+        console.warn("Sound file should be at: /static/webdoctor/sounds/bong.mp3");
+      });
+
+      const tryEnableAutoplay = () => {
+        if (this.audioEnabled || !this.typingSound) return;
+        this.typingSound
+          .play()
+          .then(() => {
+            this.typingSound.pause();
+            this.typingSound.currentTime = 0;
+            this.audioEnabled = true;
+            this.userHasInteracted = true;
+            console.log("🔊 Audio enabled automatically (autoplay permitted).");
+          })
+          .catch((err) => {
+            console.log("🔇 Autoplay blocked; will enable on first interaction.", err?.message || "");
+            this.setupUserInteractionDetection();
+          });
+      };
+
+      this.typingSound.load();
+
+      if (document.readyState === "complete" || document.readyState === "interactive") {
+        tryEnableAutoplay();
+      } else {
+        document.addEventListener("DOMContentLoaded", tryEnableAutoplay, { once: true });
+      }
+
+      const visHandler = () => {
+        if (!document.hidden && !this.audioEnabled) {
+          tryEnableAutoplay();
+          document.removeEventListener("visibilitychange", visHandler);
+        }
+      };
+      document.addEventListener("visibilitychange", visHandler);
+    } catch (error) {
+      console.warn("⚠️ Audio initialization failed:", error);
+      this.typingSound = null;
+    }
   }
 
-  // Get the form section element
-  const formSection = document.getElementById("form-section");
-  // Hide the form section initially if it exists
-  if (formSection) {
-    formSection.style.display = "none";
+  // Detect user interaction and enable audio silently
+  setupUserInteractionDetection() {
+    const enableAudio = () => {
+      if (this.audioEnabled || !this.typingSound) return;
+
+      this.typingSound
+        .play()
+        .then(() => {
+          this.typingSound.pause();
+          this.typingSound.currentTime = 0;
+          this.audioEnabled = true;
+          this.userHasInteracted = true;
+          console.log("🔊 Audio enabled successfully after first interaction");
+          detach();
+        })
+        .catch(() => {
+          // keep listeners; some browsers need a different interaction event
+        });
+    };
+
+    const interactionEvents = ["click", "keydown", "touchstart", "mousedown", "pointerdown", "scroll", "focus"];
+    const detach = () => interactionEvents.forEach((eventType) => {
+      document.removeEventListener(eventType, enableAudio, true);
+    });
+
+    interactionEvents.forEach((eventType) => {
+      document.addEventListener(eventType, enableAudio, true);
+    });
+
+    setTimeout(() => {
+      const userInput = document.getElementById("user-input");
+      if (userInput) {
+        try { userInput.focus({ preventScroll: true }); } catch (e) {}
+      }
+    }, 300);
   }
 
-  // Use a short delay to ensure DOM is settled before injecting the greeting
-  setTimeout(() => {
-    // Get the chat body element where messages are displayed
-    const chatBody = document.getElementById("chat-body");
-    // If chat body not found, log a warning and skip greeting injection
-    if (!chatBody) {
-      console.warn("chat-body not found. Skipping greeting injection.");
+  // Play typing sound with autoplay handling
+  playTypingSound() {
+    if (!this.typingSound) {
+      console.log("🔇 No typing sound available");
+      return;
+    }
+    if (!this.audioEnabled) {
+      console.log("🔇 Audio not enabled yet (browser policy)");
       return;
     }
 
-    // Select a random greeting message
-    const greeting = getRandomGreeting();
-    // Append the greeting as a bot message bubble to the chat body
-    chatBody.innerHTML += `
-      <div class="chat-bubble bot">
-        <strong>Shirley:</strong> ${greeting}
-      </div>
-    `;
-    // Log the injected greeting for debugging
-    console.log("Greeting injected:", greeting);
-    // Update the widget height after adding the greeting
-    sendHeight();
-    // Dispatch a custom event to signal chat update
-    document.dispatchEvent(new Event('chatUpdated'));
-  }, 100);
-
-  // Create a ResizeObserver to monitor size changes and update height accordingly
-  const observer = new ResizeObserver(() => {
-    // Call sendHeight on resize
-    sendHeight();
-  });
-  // Select the element to observe (chat widget, chat body, or body as fallback)
-  const chatWidget = document.getElementById('chat-widget') || document.getElementById('chat-body') || document.body;
-  // Start observing the selected element
-  observer.observe(chatWidget);
-});
-
-// Asynchronous function to handle sending user messages and receiving bot responses
-async function sendMessage() {
-  // Get the user input element
-  const input = document.getElementById("user-input");
-  // Get the chat body element
-  const chatBody = document.getElementById("chat-body");
-
-  // If required elements are missing, log warning and exit
-  if (!input || !chatBody) {
-    console.warn("Chat elements not found. Cannot send message.");
-    return;
-  }
-
-  // Trim the user's message input
-  const message = input.value.trim();
-  // Exit if message is empty
-  if (!message) return;
-
-  // Get current time for timestamp
-  const now = new Date();
-  // Format timestamp as HH:MM (24-hour format)
-  const timestamp = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-  // Append the user's message as a bubble with timestamp to the chat body
-  chatBody.innerHTML += `
-    <div class="chat-bubble user">
-      ${message}
-      <div class="timestamp">${timestamp}</div>
-    </div>
-  `;
-  // Clear the input field
-  input.value = "";
-  // Scroll to the bottom of the chat body
-  chatBody.scrollTop = chatBody.scrollHeight;
-  // Update widget height after adding message
-  sendHeight();
-  // Dispatch chat update event
-  document.dispatchEvent(new Event('chatUpdated'));
-
-  // Create and append a typing indicator bubble
-  const typingDiv = document.createElement("div");
-  typingDiv.className = "typing-bubble";
-  typingDiv.innerHTML = "Shirley is typing...";
-  chatBody.appendChild(typingDiv);
-  // Scroll to bottom after adding typing indicator
-  chatBody.scrollTop = chatBody.scrollHeight;
-
-  // Try block for handling the API request to send message
-  try {
-    // Send POST request to handle_message endpoint with user message
-    const response = await fetch("/webdoctor/handle_message/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
-    });
-
-    // Parse the JSON response from the server
-    const data = await response.json();
-    // Remove the typing indicator
-    typingDiv.remove();
-
-    // Get current time for bot timestamp
-    const botTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-    // Append the bot's response as a bubble with timestamp
-    chatBody.innerHTML += `
-      <div class="chat-bubble bot">
-        ${data.response}
-        <div class="timestamp">${botTime}</div>
-      </div>
-    `;
-    // Scroll to bottom after adding response
-    chatBody.scrollTop = chatBody.scrollHeight;
-    // Update widget height
-    sendHeight();
-    // Dispatch chat update event
-    document.dispatchEvent(new Event('chatUpdated'));
-
-    // Check if the stage requires showing the form (offered_report)
-    if (String(data.stage).trim() === "offered_report") {
-      // Get the chat input section
-      const chatInput = document.getElementById("chat-input");
-      // Hide chat input if exists
-      if (chatInput) {
-        chatInput.style.display = "none";
+    try {
+      this.typingSound.currentTime = 0;
+      const playPromise = this.typingSound.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => console.log("🔊 Typing sound played successfully"))
+          .catch((error) => {
+            console.log("🔇 Could not play typing sound:", error.message);
+            this.audioEnabled = false;
+            this.setupUserInteractionDetection();
+          });
       }
-      // Get the form section
-      const formSection = document.getElementById("form-section");
-      // Show form section if exists
-      if (formSection) {
-        formSection.style.display = "flex";
-      }
-      // Update widget height after visibility change
-      sendHeight();
-      // Dispatch chat update event
-      document.dispatchEvent(new Event('chatUpdated'));
+    } catch (error) {
+      console.warn("⚠️ Error playing typing sound:", error);
+      this.audioEnabled = false;
     }
-  // Catch block for handling errors in message sending
-  } catch (error) {
-    // Remove typing indicator on error
-    typingDiv.remove();
-    // Append an error message bubble
-    chatBody.innerHTML += `<div class="chat-bubble bot">Oops! Something went wrong.</div>`;
-    // Log the error for debugging
-    console.error("Error in sendMessage:", error);
-    // Update widget height
-    sendHeight();
-    // Dispatch chat update event
-    document.dispatchEvent(new Event('chatUpdated'));
-  }
-}
-
-// Asynchronous function to handle form submission for diagnostic report
-async function submitForm() {
-  // Get form name input element
-  const nameEl = document.getElementById("form-name");
-  // Get form email input element
-  const emailEl = document.getElementById("form-email");
-  // Get user input element (fallback for issue description)
-  const inputEl = document.getElementById("user-input");
-
-  // If required form elements missing, log warning and exit
-  if (!nameEl || !emailEl) {
-    console.warn("Form elements not found. Cannot submit form.");
-    return;
   }
 
-  // Get name value from form
-  const name = nameEl.value;
-  // Get email value from form
-  const email = emailEl.value;
-  // Get issue description from user input or default
-  const issue = (inputEl ? inputEl.value : "") || "General issue";
+  init() {
+    console.log("🔧 Init method called");
+    try {
+      this.bindEvents();
+      console.log("✅ Events bound successfully");
 
-  // Try block for handling form submission API request
-  try {
-    // Send POST request to submit_form endpoint with form data
-    const response = await fetch("/webdoctor/submit_form/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, issue }),
+      this.showInitialGreeting();
+      console.log("✅ Initial greeting scheduled");
+
+      this.focusInput();
+      console.log("✅ Input focus scheduled");
+    } catch (error) {
+      console.error("❌ Error in init:", error);
+    }
+  }
+
+  bindEvents() {
+    console.log("🔗 Binding events...");
+
+    const sendBtn = document.getElementById("send-button");
+    const userInput = document.getElementById("user-input");
+    const submitBtn = document.getElementById("submit-button");
+
+    console.log("📋 Elements found:", {
+      sendBtn: !!sendBtn,
+      userInput: !!userInput,
+      submitBtn: !!submitBtn,
     });
 
-    // Parse JSON response
-    const data = await response.json();
-    // Get chat body element
-    const chatBody = document.getElementById("chat-body");
+    if (sendBtn) {
+      console.log("🔘 Binding send button click event");
+      sendBtn.addEventListener("click", (e) => {
+        console.log("🖱️ Send button clicked!");
+        e.preventDefault();
+        this.sendMessage();
+      });
+      sendBtn.style.backgroundColor = "#ff6c00";
+      console.log("🎨 Send button styled successfully");
+    } else {
+      console.error("❌ Send button not found!");
+    }
 
-    // If chat body not found, log warning and exit
+    if (userInput) {
+      console.log("⌨️ Binding input events");
+      userInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          console.log("⏎ Enter key pressed");
+          e.preventDefault();
+          this.sendMessage();
+        }
+      });
+
+      userInput.addEventListener("input", this.handleInputChange.bind(this));
+    } else {
+      console.error("❌ User input not found!");
+    }
+
+    if (submitBtn) {
+      console.log("📝 Binding submit button");
+      submitBtn.addEventListener("click", (e) => {
+        console.log("📤 Submit button clicked");
+        e.preventDefault();
+        this.submitForm();
+      });
+    } else {
+      console.error("❌ Submit button not found!");
+    }
+  }
+
+  handleInputChange(e) {
+    const sendBtn = document.getElementById("send-button");
+    if (sendBtn) {
+      sendBtn.style.opacity = e.target.value.trim() ? "1" : "0.6";
+    }
+  }
+
+  showInitialGreeting() {
+    console.log("Scheduling initial greeting...");
+
+    setTimeout(() => {
+      console.log("Timeout fired - showing greeting");
+      const greeting = this.greetings[Math.floor(Math.random() * this.greetings.length)];
+      console.log("Selected greeting:", greeting);
+
+      try {
+        this.addBotMessage(greeting, true);
+        console.log("Greeting added successfully");
+      } catch (error) {
+        console.error("Error adding greeting:", error);
+      }
+    }, 500);
+  }
+
+  focusInput() {
+    console.log("🎯 Focusing input...");
+    const userInput = document.getElementById("user-input");
+    if (userInput) {
+      setTimeout(() => {
+        userInput.focus();
+        console.log("✅ Input focused");
+      }, 100);
+    } else {
+      console.error("❌ Cannot focus - input not found");
+    }
+  }
+
+  addUserMessage(message) {
+    console.log("👤 Adding user message:", message);
+
+    const chatBody = document.getElementById("chat-body");
     if (!chatBody) {
-      console.warn("chat-body not found. Cannot update chat after form submission.");
+      console.error("❌ Chat body not found!");
       return;
     }
 
-    // Get form section and hide it
+    const messageDiv = document.createElement("div");
+    messageDiv.className = "chat-bubble user";
+    messageDiv.innerHTML = `<strong>You:</strong> ${this.escapeHtml(message)}`;
+    chatBody.appendChild(messageDiv);
+    this.scrollToBottom();
+    this.messageCount++;
+
+    // Trigger height update after adding message
+    if (window.iframeHeightManager) {
+      window.iframeHeightManager.triggerHeightUpdate();
+    }
+
+    console.log("✅ User message added, total messages:", this.messageCount);
+  }
+
+  // Add bot message with optional typing animation and callback
+  addBotMessage(message, animate = false, callback = null) {
+    console.log("🤖 Adding bot message:", message, "animate:", animate);
+
+    const chatBody = document.getElementById("chat-body");
+    if (!chatBody) {
+      console.error("❌ Chat body not found for bot message!");
+      return;
+    }
+
+    const messageDiv = document.createElement("div");
+    messageDiv.className = "chat-bubble bot";
+
+    if (animate) {
+      console.log("🎬 Starting animation...");
+      this.playTypingSound();
+      this.animateTyping(messageDiv, message, callback);
+    } else {
+      messageDiv.innerHTML = `<strong>Shirley:</strong> ${this.escapeHtml(message)}`;
+      chatBody.appendChild(messageDiv);
+      this.scrollToBottom();
+      console.log("✅ Bot message added instantly");
+
+      if (callback) setTimeout(callback, 100);
+
+      if (window.iframeHeightManager) {
+        window.iframeHeightManager.triggerHeightUpdate();
+      }
+    }
+  }
+
+  // Typing animation with height updates and optional callback
+  animateTyping(messageDiv, message, callback = null) {
+    console.log("⌨️ Animating typing for message:", message);
+
+    const chatBody = document.getElementById("chat-body");
+    messageDiv.innerHTML = '<strong>Shirley:</strong> <span class="typing-text"></span>';
+    chatBody.appendChild(messageDiv);
+
+    const typingSpan = messageDiv.querySelector(".typing-text");
+    if (!typingSpan) {
+      console.error("❌ Typing span not found!");
+      return;
+    }
+
+    let index = 0;
+    const delay = Math.max(30, Math.min(50, 1000 / message.length));
+    console.log("⏱️ Typing delay:", delay);
+
+    const typeInterval = setInterval(() => {
+      if (index < message.length) {
+        typingSpan.textContent += message.charAt(index);
+        index++;
+        this.scrollToBottom();
+
+        // Periodic height updates during typing
+        if (window.iframeHeightManager && index % 10 === 0) {
+          window.iframeHeightManager.triggerHeightUpdate();
+        }
+      } else {
+        console.log("✅ Typing animation complete");
+        clearInterval(typeInterval);
+        this.isTyping = false;
+
+        if (window.iframeHeightManager) {
+          window.iframeHeightManager.triggerHeightUpdate();
+        }
+
+        this.checkForFormTrigger(message);
+
+        if (callback) setTimeout(callback, 50);
+      }
+    }, delay);
+  }
+
+  showTypingIndicator() {
+    console.log("💭 Showing typing indicator...");
+
+    const chatBody = document.getElementById("chat-body");
+    if (!chatBody) return;
+
+    const typingDiv = document.createElement("div");
+    typingDiv.className = "chat-bubble bot typing-bubble";
+    typingDiv.id = "typing-indicator";
+    typingDiv.innerHTML = '<strong>Shirley:</strong> <span class="dots"><span>•</span><span>•</span><span>•</span></span>';
+    chatBody.appendChild(typingDiv);
+    this.scrollToBottom();
+
+    if (window.iframeHeightManager) {
+      window.iframeHeightManager.triggerHeightUpdate();
+    }
+
+    console.log("✅ Typing indicator shown");
+    return typingDiv;
+  }
+
+  removeTypingIndicator() {
+    const typingIndicator = document.getElementById("typing-indicator");
+    if (typingIndicator) {
+      typingIndicator.remove();
+      console.log("✅ Typing indicator removed");
+
+      if (window.iframeHeightManager) {
+        window.iframeHeightManager.triggerHeightUpdate();
+      }
+    }
+  }
+
+  checkForFormTrigger(message) {
+    const reportOffers = [
+      "diagnostic report",
+      "free report",
+      "send you",
+      "email you",
+      "would you like",
+      "want me to send",
+      "report with",
+    ];
+
+    const messageText = message.toLowerCase();
+    const offeredReport = reportOffers.some((phrase) => messageText.includes(phrase));
+
+    if (offeredReport) {
+      this.formOffered = true;
+      console.log("📋 Form trigger detected");
+    }
+  }
+
+  showForm() {
+    console.log("📝 Showing form...");
+    const formSection = document.getElementById("form-section");
+    if (formSection) {
+      formSection.style.display = "flex";
+      setTimeout(() => {
+        const nameInput = document.getElementById("form-name");
+        if (nameInput) nameInput.focus();
+
+        if (window.iframeHeightManager) {
+          setTimeout(() => {
+            window.iframeHeightManager.triggerHeightUpdate();
+          }, 300);
+        }
+      }, 300);
+      console.log("✅ Form shown");
+    }
+  }
+
+  hideForm() {
+    console.log("📝 Hiding form...");
     const formSection = document.getElementById("form-section");
     if (formSection) {
       formSection.style.display = "none";
+
+      if (window.iframeHeightManager) {
+        setTimeout(() => {
+          window.iframeHeightManager.triggerHeightUpdate();
+        }, 100);
+      }
+
+      console.log("✅ Form hidden");
     }
-    // Get chat input and show it
-    const chatInput = document.getElementById("chat-input");
-    if (chatInput) {
-      chatInput.style.display = "flex";
+  }
+
+  // Send message with height management hooks
+  async sendMessage() {
+    console.log("Send message called, isTyping:", this.isTyping, "sendInProgress:", this.sendInProgress);
+
+    if (this.isTyping || this.sendInProgress) {
+      console.log("Already processing, skipping...");
+      return;
     }
 
-    // Append success message to chat body
-    chatBody.innerHTML += `
-      <div class="chat-bubble bot">
-        <strong>Shirley:</strong> Your report has been sent. Here are some options if you need more help:
-      </div>
-    `;
+    const userInput = document.getElementById("user-input");
+    const message = userInput?.value.trim();
 
-    // Create container for CTA buttons
-    const ctaContainer = document.createElement("div");
-    // Style the CTA container for layout
-    ctaContainer.style.display = "flex";
-    ctaContainer.style.gap = "10px";
-    ctaContainer.style.marginTop = "10px";
-    ctaContainer.style.flexWrap = "wrap";
+    console.log("Message to send:", message);
 
-    // Create link button for free site review
-    const siteReviewBtn = document.createElement("a");
-    siteReviewBtn.href = "https://techwithwayne.com/free-site-review";
-    siteReviewBtn.target = "_blank";
-    siteReviewBtn.className = "cta-button";
-    siteReviewBtn.textContent = "Free Site Review";
+    if (!message) {
+      console.log("Empty message, skipping...");
+      return;
+    }
 
-    // Create link button for free consultation
-    const consultBtn = document.createElement("a");
-    consultBtn.href = "https://techwithwayne.com/free-consultation";
-    consultBtn.target = "_blank";
-    consultBtn.className = "cta-button";
-    consultBtn.textContent = "Free Consultation";
+    this.isTyping = true;
+    this.sendInProgress = true;
+    console.log("Set flags: isTyping=true, sendInProgress=true");
 
-    // Append buttons to CTA container
-    ctaContainer.appendChild(siteReviewBtn);
-    ctaContainer.appendChild(consultBtn);
-    // Append CTA container to chat body
-    chatBody.appendChild(ctaContainer);
+    this.addUserMessage(message);
+    userInput.value = "";
 
-    // Scroll to bottom of chat body
-    chatBody.scrollTop = chatBody.scrollHeight;
-    // Update widget height
-    sendHeight();
-    // Dispatch chat update event
-    document.dispatchEvent(new Event('chatUpdated'));
-  // Catch block for handling errors in form submission
-  } catch (err) {
-    // Log error for debugging
-    console.error("Error in submitForm:", err);
-    // Get chat body
+    const sendBtn = document.getElementById("send-button");
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.style.opacity = "0.6";
+      console.log("Send button disabled");
+    }
+
+    let isAcceptingReport = false;
+    if (this.formOffered && !this.formAccepted) {
+      const acceptanceWords = ["yes","sure","okay","ok","please","send","email","absolutely","definitely"];
+      const userResponse = message.toLowerCase();
+      if (acceptanceWords.some((word) => userResponse.includes(word))) {
+        isAcceptingReport = true;
+        this.formAccepted = true;
+        console.log("✅ Form acceptance detected - will show form after AI response");
+      }
+    }
+
+    const typingIndicator = this.showTypingIndicator();
+
+    try {
+      const targetUrl = window.webdoctorUrls?.handleMessage || "/agent/handle_message/";
+      console.log("🌐 Making fetch request to:", targetUrl);
+
+      const csrfToken = this.getCsrfToken();
+      console.log("🔐 CSRF token:", csrfToken ? "Found" : "Missing");
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      const response = await fetch(targetUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrfToken,
+        },
+        body: JSON.stringify({ message, lang: "en" }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      console.log("📡 Response status:", response.status);
+      console.log("📡 Response ok:", response.ok);
+
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+      let data;
+      try { data = await response.json(); }
+      catch (jsonError) {
+        console.error("❌ JSON parsing error:", jsonError);
+        throw new Error("Invalid response format from server");
+      }
+
+      console.log("📦 Response data:", data);
+
+      this.removeTypingIndicator();
+
+      if (data.response && data.response.trim()) {
+        this.currentStage = data.stage || this.currentStage;
+
+        this.addBotMessage(data.response, true, () => {
+          if (data.show_form || isAcceptingReport) {
+            console.log("✅ Showing form after AI response");
+            setTimeout(() => this.showForm(), 500);
+          }
+        });
+
+        console.log("✅ Bot response added");
+      } else {
+        this.addBotMessage("Sorry, I didn't get that. Could you try rephrasing?");
+        console.log("⚠️ No response in data, showing fallback");
+        this.isTyping = false;
+      }
+    } catch (error) {
+      console.error("❌ Error in sendMessage:", error);
+      this.removeTypingIndicator();
+
+      let errorMessage;
+      if (error.name === "AbortError") {
+        errorMessage = "Request timed out. Please try again.";
+      } else if (error.message.includes("NetworkError") || error.message.includes("Failed to fetch")) {
+        errorMessage = "Connection problem. Please check your internet and try again.";
+      } else {
+        errorMessage = "Oops! Something went wrong. Please try again.";
+      }
+
+      this.addBotMessage(errorMessage);
+      this.isTyping = false;
+    } finally {
+      this.sendInProgress = false;
+      if (sendBtn) {
+        sendBtn.disabled = false;
+        sendBtn.style.opacity = "1";
+        console.log("🔓 Send button re-enabled");
+      }
+      console.log("🔓 Set sendInProgress to false");
+    }
+
+    this.focusInput();
+  }
+
+  async submitForm() {
+    console.log("📋 Submit form called");
+
+    const nameInput = document.getElementById("form-name");
+    const emailInput = document.getElementById("form-email");
+    const submitBtn = document.getElementById("submit-button");
+
+    const name = nameInput?.value.trim();
+    const email = emailInput?.value.trim();
+
+    console.log("📋 Form data:", { name, email });
+
+    if (!name || !email) {
+      this.addBotMessage("Please fill in both your name and email address.");
+      return;
+    }
+
+    if (!this.isValidEmail(email)) {
+      this.addBotMessage("Please enter a valid email address.");
+      return;
+    }
+
     const chatBody = document.getElementById("chat-body");
-    // If chat body exists, append error message
+    const userMessages = Array.from(chatBody.querySelectorAll(".chat-bubble.user"))
+      .map((msg) => msg.textContent.replace("You: ", ""))
+      .join(" | ");
+
+    const originalButtonText = submitBtn.textContent;
+    submitBtn.textContent = "Sending...";
+    submitBtn.disabled = true;
+
+    try {
+      const targetUrl = "/agent/submit_form/";
+      console.log("🌐 Submitting form to:", targetUrl);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      const response = await fetch(targetUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": this.getCsrfToken(),
+        },
+        body: JSON.stringify({
+          name,
+          email,
+          issue: userMessages || "General website consultation",
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      let data;
+      try { data = await response.json(); }
+      catch (jsonError) {
+        console.error("❌ Form response JSON parsing error:", jsonError);
+        throw new Error("Invalid response format");
+      }
+
+      console.log("📋 Form response:", data);
+
+      if (response.ok && data.message) {
+        const firstName = (name || "").trim().split(" ")[0] || name || "";
+        const finalMsg = firstName ? `Thanks ${firstName}! 🎉 ${data.message}` : data.message;
+
+        this.addBotMessage(finalMsg);
+        this.hideForm();
+      } else {
+        throw new Error(data.error || "Failed to send report");
+      }
+    } catch (error) {
+      console.error("❌ Form submission error:", error);
+
+      let errorMessage;
+      if (error.name === "AbortError") {
+        errorMessage = "Form submission timed out. Please try again.";
+      } else if (error.message.includes("NetworkError") || error.message.includes("Failed to fetch")) {
+        errorMessage = "Connection problem. Please check your internet and try again.";
+      } else {
+        errorMessage = "Sorry, there was an issue sending your report. Please try again.";
+      }
+
+      this.addBotMessage(errorMessage);
+    } finally {
+      submitBtn.textContent = originalButtonText;
+      submitBtn.disabled = false;
+    }
+  }
+
+  // Hard reset the conversation safely
+  async forceReset() {
+    try {
+      console.log("🔄 Sending force reset message...");
+
+      const csrf = this.getCsrfToken
+        ? this.getCsrfToken()
+        : document.cookie.match(/csrftoken=([^;]+)/)?.[1] || "";
+
+      const resp = await fetch("/agent/handle_message/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": csrf },
+        body: JSON.stringify({ message: "__FORCE_RESET__", force_reset: true, lang: "en" }),
+      });
+
+      if (!resp.ok) {
+        const txt = await resp.text();
+        console.error("Reset failed:", resp.status, txt);
+        this.addBotMessage("Reset failed. Please refresh and try again.");
+        return;
+      }
+
+      const data = await resp.json();
+      console.log("✅ Reset result:", data);
+
+      const chatBody = document.getElementById("chat-body");
+      if (chatBody) chatBody.innerHTML = "";
+      this.currentStage = "initial";
+      this.formOffered = false;
+      this.formAccepted = false;
+      this.messageCount = 0;
+
+      this.showInitialGreeting();
+    } catch (e) {
+      console.error("Reset error:", e);
+      this.addBotMessage("Reset error. Please refresh the page.");
+    }
+  }
+
+  isValidEmail(email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  }
+
+  getCsrfToken() {
+    console.log("Getting CSRF token...");
+
+    if (window.csrfToken) {
+      console.log("CSRF token from window variable: Found");
+      return window.csrfToken;
+    }
+
+    const csrfInput = document.querySelector('input[name="csrfmiddlewaretoken"]');
+    if (csrfInput && csrfInput.value) {
+      console.log("CSRF token from hidden input: Found");
+      return csrfInput.value;
+    }
+
+    const metaToken = document.querySelector('meta[name="csrf-token"]');
+    if (metaToken) {
+      const token = metaToken.getAttribute("content");
+      console.log("CSRF token from meta tag:", token ? "Found" : "Empty");
+      return token;
+    }
+
+    const cookieValue = document.cookie.split("; ").find((row) => row.startsWith("csrftoken="))?.split("=")[1];
+    if (cookieValue) {
+      console.log("CSRF token from cookie: Found");
+      return cookieValue;
+    }
+
+    console.warn("CSRF token not found - this may cause request failures");
+    return "";
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  scrollToBottom() {
+    const chatBody = document.getElementById("chat-body");
     if (chatBody) {
-      chatBody.innerHTML += `<div class="chat-bubble bot"><strong>Shirley:</strong> Sorry, there was an issue submitting your request.</div>`;
-      // Update height
-      sendHeight();
-      // Dispatch chat update event
-      document.dispatchEvent(new Event('chatUpdated'));
+      setTimeout(() => {
+        chatBody.scrollTop = chatBody.scrollHeight;
+      }, 50);
     }
   }
 }
 
-// Expose sendMessage and submitForm functions to global scope for HTML onclick events
-window.sendMessage = sendMessage;
-window.submitForm = submitForm;
+// Iframe Height Manager Class (FIXED: no window.innerHeight; clamped range)
+class IframeHeightManager {
+  constructor() {
+    this.lastHeight = 0;
+    this.resizeObserver = null;
+    this.debounceTimeout = null;
+
+    // sane bounds for column layout
+    this.MIN = 420;
+    this.MAX = 620;
+    this.BUFFER = 16;
+    this.CHANGE_THRESHOLD = 8;
+
+    this.init();
+  }
+
+  init() {
+    console.log("📏 Initializing iframe height manager");
+
+    this.startHeightMonitoring();
+
+    // Initial sends
+    setTimeout(() => this.sendHeightToParent(), 300);
+    window.addEventListener("load", () => this.sendHeightToParent());
+  }
+
+  startHeightMonitoring() {
+    if (window.ResizeObserver) {
+      this.resizeObserver = new ResizeObserver(() => this.debounceHeightUpdate());
+      const chatWidget = document.querySelector(".chat-widget");
+      if (chatWidget) this.resizeObserver.observe(chatWidget);
+      this.resizeObserver.observe(document.body);
+    }
+
+    const observer = new MutationObserver(() => this.debounceHeightUpdate());
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style", "class"],
+    });
+
+    // light periodic sanity check
+    setInterval(() => this.sendHeightToParent(), 4000);
+  }
+
+  debounceHeightUpdate() {
+    if (this.debounceTimeout) clearTimeout(this.debounceTimeout);
+    this.debounceTimeout = setTimeout(() => this.sendHeightToParent(), 120);
+  }
+
+  getOptimalHeight() {
+    // Measure CONTENT, not viewport — removes feedback loop with parent.
+    const bodyScrollHeight = document.body.scrollHeight || 0;
+    const documentHeight = document.documentElement.scrollHeight || 0;
+
+    let widgetHeight = 0;
+    const chatWidget = document.querySelector(".chat-widget");
+    if (chatWidget) {
+      const rect = chatWidget.getBoundingClientRect();
+      widgetHeight = Math.ceil(rect.height);
+    }
+
+    const content = Math.max(bodyScrollHeight, documentHeight, widgetHeight);
+    const unclamped = Math.ceil(content + this.BUFFER);
+    const clamped = Math.max(this.MIN, Math.min(unclamped, this.MAX));
+    return clamped;
+  }
+
+  sendHeightToParent() {
+    const newHeight = this.getOptimalHeight();
+
+    if (Math.abs(newHeight - this.lastHeight) > this.CHANGE_THRESHOLD) {
+      this.lastHeight = newHeight;
+
+      try {
+        const msg = { type: "resize", height: newHeight, timestamp: Date.now(), source: "webdoctor-widget" };
+        window.parent.postMessage(msg, "*");
+        window.parent.postMessage({ type: "iframeResize", height: newHeight, timestamp: Date.now(), source: "webdoctor-widget" }, "*");
+        console.log(`📤 Sent height to parent: ${newHeight}px`);
+      } catch (error) {
+        console.warn("Failed to send height to parent:", error);
+      }
+    }
+  }
+
+  triggerHeightUpdate() {
+    setTimeout(() => this.sendHeightToParent(), 100);
+  }
+
+  forceHeightUpdate() {
+    this.lastHeight = 0;
+    this.sendHeightToParent();
+  }
+}
+
+// Enhanced initialization with DOM ready check
+console.log("Script loaded, checking DOM state...");
+console.log("Document ready state:", document.readyState);
+
+function initializeChat() {
+  console.log("Initializing WebDoctorChat...");
+
+  try {
+    const chat = new WebDoctorChat();
+    console.log("WebDoctorChat initialized successfully:", chat);
+
+    // Store reference globally for debugging
+    window.webdoc = chat;
+    window.webdoctorChat = chat;
+
+    // Initialize height manager
+    setTimeout(() => {
+      window.iframeHeightManager = new IframeHeightManager();
+      console.log("✅ Iframe height manager initialized");
+    }, 500);
+
+    // Visual test for send button briefly
+    setTimeout(() => {
+      const sendBtn = document.getElementById("send-button");
+      if (sendBtn) {
+        console.log("Testing send button after initialization...");
+        sendBtn.style.border = "2px solid #ff0000";
+        setTimeout(() => { sendBtn.style.border = ""; }, 1000);
+      }
+    }, 1000);
+  } catch (error) {
+    console.error("Failed to initialize WebDoctorChat:", error);
+  }
+}
+
+// DOM ready detection
+if (document.readyState === "loading") {
+  console.log("DOM still loading, waiting for DOMContentLoaded...");
+  document.addEventListener("DOMContentLoaded", initializeChat);
+} else {
+  console.log("DOM already ready, initializing immediately...");
+  setTimeout(initializeChat, 100);
+}
+
+// Handle visibility changes
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    const userInput = document.getElementById("user-input");
+    if (userInput) setTimeout(() => userInput.focus(), 100);
+
+    if (window.iframeHeightManager) {
+      setTimeout(() => { window.iframeHeightManager.forceHeightUpdate(); }, 200);
+    }
+  }
+});
+
+// Handle window resize
+window.addEventListener("resize", () => {
+  if (window.iframeHeightManager) {
+    window.iframeHeightManager.triggerHeightUpdate();
+  }
+});
+
+// Global unhandled promise rejection logging
+window.addEventListener("unhandledrejection", function (event) {
+  console.error("Unhandled promise rejection:", event.reason);
+  event.preventDefault();
+});
+
+// Handle page show (back/forward cache)
+window.addEventListener("pageshow", function (event) {
+  if (event.persisted && window.iframeHeightManager) {
+    setTimeout(() => { window.iframeHeightManager.forceHeightUpdate(); }, 300);
+  }
+});
+
+console.log("Script execution complete");

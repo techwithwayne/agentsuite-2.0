@@ -1,0 +1,268 @@
+.
+├── agentsuite
+│   ├── __init__.py
+│   ├── asgi.py
+│   ├── settings.py
+│   ├── settings.py.bak.1755200630
+│   ├── urls.py
+│   └── wsgi.py
+├── barista_assistant
+│   ├── menu
+│   │   ├── migrations
+│   │   │   ├── 0001_initial.py
+│   │   │   ├── 0002_initial.py
+│   │   │   └── __init__.py
+│   │   ├── __init__.py
+│   │   ├── admin.py
+│   │   ├── apps.py
+│   │   ├── models.py
+│   │   ├── serializers.py
+│   │   ├── tests.py
+│   │   ├── urls.py
+│   │   └── views.py
+│   ├── menu_images
+│   │   └── caramel-macchiato-frappe.ca285047.jpg
+│   ├── orders
+│   │   ├── migrations
+│   │   │   ├── 0001_initial.py
+│   │   │   └── __init__.py
+│   │   ├── __init__.py
+│   │   ├── admin.py
+│   │   ├── apps.py
+│   │   ├── models.py
+│   │   ├── serializers.py
+│   │   ├── tests.py
+│   │   ├── urls.py
+│   │   ├── utils.py
+│   │   ├── views.py
+│   │   └── webhooks.py
+│   ├── static
+│   │   └── js
+│   │       ├── vendor
+│   │       │   └── flatpickr-loader.js
+│   │       ├── barista-assistant-widget.js
+│   │       ├── barista.js
+│   │       ├── checkout-popup.js
+│   │       └── checkout-success.js
+│   ├── templates
+│   │   ├── barista_assistant
+│   │   │   ├── base.html
+│   │   │   ├── cancel.html
+│   │   │   ├── email_customer_confirmation.html
+│   │   │   ├── email_owner_notification.html
+│   │   │   └── success.html
+│   │   ├── menu
+│   │   │   └── barista_assistant_test.html
+│   │   ├── orders
+│   │   │   ├── email_customer_confirmation.html
+│   │   │   ├── email_owner_notification.html
+│   │   │   └── stripe_success.html
+│   │   ├── checkout_cancel.html
+│   │   └── checkout_success.html
+│   ├── __init__.py
+│   ├── admin.py
+│   ├── api_urls.py
+│   ├── apps.py
+│   ├── models.py
+│   ├── urls.py
+│   └── views.py
+├── content_strategy_generator_agent
+│   ├── migrations
+│   │   ├── 0001_initial.py
+│   │   └── __init__.py
+│   ├── static
+│   │   └── content_strategy_generator_agent
+│   │       ├── css
+│   │       │   ├── cg-loader.css
+│   │       │   └── style.css
+│   │       └── js
+│   │           ├── cg-loader.js
+│   │           └── content-generator.js
+│   ├── templates
+│   │   └── content_strategy_generator_agent
+│   │       └── generate_strategy.html
+│   ├── __init__.py
+│   ├── admin.py
+│   ├── apps.py
+│   ├── cs.zip
+│   ├── forms.py
+│   ├── models.py
+│   ├── tests.py
+│   ├── urls.py
+│   └── views.py
+├── logs
+├── personal_mentor
+│   ├── management
+│   │   └── commands
+│   │       └── send_test_email.py
+│   ├── migrations
+│   │   ├── 0001_initial.py
+│   │   └── __init__.py
+│   ├── static
+│   │   └── personal_mentor
+│   │       ├── auth.css
+│   │       ├── auth.js
+│   │       ├── chat.css
+│   │       └── chat.js
+│   ├── templates
+│   │   └── personal_mentor
+│   │       └── chat.html
+│   ├── __init__.py
+│   ├── admin.py
+│   ├── apps.py
+│   ├── assistant.py
+│   ├── middleware.py
+│   ├── models.py
+│   ├── pm_v3.zip
+│   ├── tests.py
+│   ├── tools.py
+│   ├── urls.py
+│   ├── views.py
+│   └── views_auth.py
+├── postpress_ai
+│   ├── migrations
+│   │   ├── 0001_initial.py
+│   │   └── __init__.py
+│   ├── models
+│   │   ├── __init__.py
+│   │   └── article.py
+│   ├── services
+│   │   ├── __init__.py
+│   │   ├── generator.py
+│   │   └── openai_client.py
+│   ├── static
+│   │   └── postpress_ai
+│   │       ├── css
+│   │       │   └── admin_preview.css
+│   │       └── js
+│   │           └── admin_preview.js
+│   ├── tests
+│   │   ├── __init__.py
+│   │   └── test_api.py
+│   ├── urls
+│   │   ├── __init__.py
+│   │   └── routes_legacy.py
+│   ├── views
+│   │   ├── __init__.py
+│   │   ├── preview_post.py
+│   │   └── store_post_legacy.py
+│   ├── __init__.py
+│   ├── admin.py
+│   ├── apps.py
+│   ├── assistant_runner.py
+│   ├── models.py
+│   ├── pa_1.zip
+│   ├── pa_v2.zip
+│   ├── postpress_ai_django.zip
+│   ├── tests.py
+│   ├── urls.py
+│   └── views.py.bak
+├── promptopilot
+│   ├── agensuite-home-directory-files
+│   │   ├── settings.py
+│   │   └── urls.py
+│   ├── migrations
+│   │   ├── 0001_initial.py
+│   │   └── __init__.py
+│   ├── static
+│   │   └── promptopilot
+│   │       ├── css
+│   │       │   ├── ad_builder.css
+│   │       │   └── widget-floating.css
+│   │       └── js
+│   │           ├── ad_builder.js
+│   │           └── widget-floating.js
+│   ├── templates
+│   │   └── promptopilot
+│   │       ├── ad_builder.html
+│   │       └── widget_frame.html
+│   ├── __init__.py
+│   ├── admin.py
+│   ├── apps.py
+│   ├── llm.py
+│   ├── models.py
+│   ├── promptopilot.zip
+│   ├── tests.py
+│   ├── urls.py
+│   └── views.py
+├── tools
+│   └── ppa_client.py
+├── webdoctor
+│   ├── migrations
+│   │   ├── 0001_initial.py
+│   │   └── __init__.py
+│   ├── static
+│   │   ├── webdoctor
+│   │   │   ├── css
+│   │   │   │   └── chat_widget.css
+│   │   │   ├── js
+│   │   │   │   ├── chat_bootstrap.js
+│   │   │   │   ├── chat_widget.js
+│   │   │   │   └── reset_conversation.js
+│   │   │   └── sounds
+│   │   │       ├── bong.mp3
+│   │   │       └── pop.mp3
+│   │   └── favicon.ico
+│   ├── templates
+│   │   ├── agent
+│   │   │   └── widget_frame.html
+│   │   ├── webdoctor
+│   │   │   ├── chat_widget.html
+│   │   │   └── widget.html
+│   │   └── test_widget.html
+│   ├── __init__.py
+│   ├── admin.py
+│   ├── ai_agent.py
+│   ├── apps.py
+│   ├── assistant_runner_del.py
+│   ├── irrelevant_phrases.json
+│   ├── models.py
+│   ├── tests.py
+│   ├── urls.py
+│   ├── views.py
+│   └── webdoctor.zip
+├── website_analyzer
+│   ├── migrations
+│   │   ├── 0001_initial.py
+│   │   └── __init__.py
+│   ├── static
+│   │   └── website_analyzer
+│   │       ├── css
+│   │       │   └── wa-loader.css
+│   │       ├── js
+│   │       │   └── wa-loader.js
+│   │       ├── iframe-height.js
+│   │       └── styles.css
+│   ├── templates
+│   │   └── website_analyzer
+│   │       ├── home.html
+│   │       └── results.html
+│   ├── __init__.py
+│   ├── admin.py
+│   ├── apps.py
+│   ├── fetcher.py
+│   ├── forms.py
+│   ├── middleware.py
+│   ├── models.py
+│   ├── openai_client.py
+│   ├── tests.py
+│   ├── urls.py
+│   ├── validators.py
+│   ├── views.py
+│   ├── war.zip
+│   └── web_analyzer_fresh.zip
+├── .env
+├── .env.bak.1755197013
+├── .gitignore
+├── MANIFEST.in
+├── README.md
+├── agentsuite_tree.txt
+├── api_test.py
+├── db.sqlite3
+├── db.sqlite3.bu
+├── django_project_tree.txt
+├── manage.py
+├── requirements.txt
+└── setup.py
+
+70 directories, 195 files

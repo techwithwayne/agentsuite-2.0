@@ -1,0 +1,246 @@
+/* =========================
+   Personal Mentor — Auth UI
+   Clean, brand-aligned, overflow-safe
+   ========================= */
+
+/* 1) Global fixes so inputs never overflow */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* 2) Color tokens (brand) */
+:root {
+  --bg-overlay: rgba(18, 18, 18, 0.57); /* lighter overlay */
+  --text: #ffffff;
+  --muted: #bfbfbf;
+  --accent: #ff6c00;    /* brand orange */
+  --accent-ink: #111111;
+  --link: #ffb384;
+  --error: #ffadad;
+  --input-bg: #0f0f0f;
+  --input-border: #2b2b2b;
+  --input-border-focus: #ff6c00;
+}
+
+/* 3) Fullscreen overlay (mentor visible behind) */
+.pm-auth-overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(18 18 18 / 57%);  /* lighter opacity */
+  -webkit-backdrop-filter: blur(0px);
+  backdrop-filter: blur(0px);       /* no blur */
+  z-index: 9999;
+  padding: 16px; /* breathing room on small screens */
+  color: var(--text);
+  font-synthesis-weight: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 4) Center container */
+.pm-auth-container {
+  width: 100%;
+  max-width: 520px; /* slightly wider for comfort */
+}
+
+/* 5) Card — transparent per request */
+.pm-auth-card {
+  background: none; /* transparent */
+  border: none;
+  border-radius: 14px;
+  padding: 20px;
+  color: #fff;
+  box-shadow: none;
+}
+
+/* Titles & help text */
+.pm-auth-card h2 {
+  margin: 0 0 14px;
+  font-size: 1.55rem;
+  line-height: 1.2;
+}
+.pm-auth-sub {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
+/* 6) Form layout — prevents overflow cleanly */
+#pm-auth-register-form,
+#pm-auth-login-form,
+#pm-auth-confirm-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+/* Labels */
+.pm-auth-card label {
+  font-size: 0.95rem;
+  margin-bottom: 4px;
+}
+
+/* Inputs */
+.pm-auth-card input {
+  width: 100%;
+  min-height: 44px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 12px;
+  color: var(--text);
+  padding: 10px 12px;
+  outline: none;
+  line-height: 1.25;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.pm-auth-card input::placeholder {
+  color: #9a9a9a;
+}
+
+.pm-auth-card input:focus {
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 3px rgba(255, 108, 0, 0.18);
+  background: #121212;
+}
+
+/* 6b) Input wrapper with eye button */
+.pm-input-wrap {
+  position: relative;
+}
+.pm-input-wrap.pm-has-eye input {
+  padding-right: 46px; /* space for eye button */
+}
+
+/* Eye button */
+.pm-eye {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #d7d7d7;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.pm-eye:hover {
+  color: #ffffff;
+  border-color: #2f2f2f;
+  background: rgba(255, 255, 255, 0.04);
+}
+.pm-eye:focus {
+  outline: 2px solid rgba(255, 108, 0, 0.6);
+  outline-offset: 2px;
+}
+
+/* Minimal icon via text (no external assets) */
+.pm-eye::before {
+  content: "👁";
+  font-size: 16px;
+  line-height: 1;
+}
+.pm-eye.is-showing::before {
+  content: "🙈";
+}
+
+/* 7) Submit buttons */
+.pm-auth-submit {
+  width: 100%;
+  margin-top: 6px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: 0;
+  border-radius: 12px;
+  font-weight: 800;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: transform 80ms ease, filter 120ms ease, box-shadow 120ms ease;
+  box-shadow: 0 6px 14px rgba(255, 108, 0, 0.25);
+}
+.pm-auth-submit:hover {
+  filter: brightness(1.02);
+}
+.pm-auth-submit:active {
+  transform: translateY(1px);
+}
+
+/* 7b) Minimal loading state (spinner at right) */
+.pm-auth-submit.is-loading {
+  position: relative;
+  opacity: 0.95;
+  pointer-events: none;
+}
+.pm-auth-submit.is-loading::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(17, 17, 17, 0.4);
+  border-top-color: var(--accent-ink);
+  animation: pm-spin 0.7s linear infinite;
+}
+@keyframes pm-spin {
+  to { transform: translateY(-50%) rotate(360deg); }
+}
+
+/* 8) Footer links */
+.pm-auth-foot {
+  margin-top: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pm-auth-foot a,
+.pm-link-button {
+  background: transparent;
+  border: 0;
+  color: var(--link);
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+  font: inherit;
+}
+
+/* 9) Error text */
+.pm-auth-error {
+  color: var(--error);
+  margin-top: 6px;
+  min-height: 1.2em;
+}
+
+/* 10) Card spacing between sections (when switching steps) */
+.pm-auth-card + .pm-auth-card {
+  margin-top: 16px;
+}
+
+/* 11) Responsive tweaks */
+@media (max-width: 520px) {
+  .pm-auth-container { max-width: 560px; }
+  .pm-auth-card { padding: 18px; }
+  .pm-auth-card h2 { font-size: 1.4rem; }
+}
+
+/* 12) Focus ring for keyboard users */
+.pm-auth-foot a:focus,
+.pm-link-button:focus,
+.pm-auth-submit:focus {
+  outline: 2px solid rgba(255, 108, 0, 0.6);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
