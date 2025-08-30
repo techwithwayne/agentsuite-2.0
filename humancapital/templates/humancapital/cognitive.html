@@ -2,23 +2,30 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Step 3: Cognitive Abilities</title>
-    <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
+  <meta charset="UTF-8">
+  <title>Step 4: Cognitive</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
 </head>
-<body>
-    <header>
-        <h1>Step 3: Cognitive Abilities</h1>
-        <p>Please rate reasoning, memory, problem-solving, and attention.</p>
-    </header>
+<body style="background:#121212;color:#fff;">
+  <main>
+    <h1 style="color:#ff6c00;">Step 4: Cognitive</h1>
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit">Add Cognitive Ability</button>
+    </form>
 
-    <main>
-        <form method="post">
-            {% csrf_token %}
-            {{ form.as_p }}
-            <button type="submit">Next</button>
-        </form>
-    </main>
+    <h2>Cognitive Entries</h2>
+    <ul>
+      {% for c in cognitive_list %}
+        <li>{{ c.metric }} --- Score: {{ c.score }}</li>
+      {% empty %}
+        <li>No cognitive entries yet.</li>
+      {% endfor %}
+    </ul>
+
+    <p><a href="/humancapital/personality/">Next Step (Personality) →</a></p>
+  </main>
 </body>
 </html>

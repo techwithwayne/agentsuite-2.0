@@ -3,17 +3,30 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Step 5: Behavior</title>
+  <title>Step 6: Behavior</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
 </head>
-<body>
-  <h1>Step 5: Behavior Indicators</h1>
-  <p>Please rate behavioral attributes like decision-making and collaboration.</p>
+<body style="background:#121212;color:#fff;">
+  <main style="max-width:800px;margin:2rem auto;padding:1rem;">
+    <h1 style="color:#ff6c00;">Step 6: Behavior</h1>
 
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Next</button>
-  </form>
+    <form method="post" style="margin-bottom:1.5rem;">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit">Add Behavior</button>
+    </form>
+
+    <h2>Behavior Entries</h2>
+    <ul>
+      {% for b in behavior_list %}
+        <li>{{ b.behavior }}{% if b.level %} — Level: {{ b.level }}{% endif %}</li>
+      {% empty %}
+        <li>No behavior data yet.</li>
+      {% endfor %}
+    </ul>
+
+    <p style="margin-top:1.5rem;"><a href="/humancapital/motivation/">Next Step (Motivation) →</a></p>
+  </main>
 </body>
 </html>

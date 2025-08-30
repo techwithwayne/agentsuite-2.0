@@ -3,17 +3,30 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Step 6: Motivation</title>
+  <title>Step 7: Motivation</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
 </head>
-<body>
-  <h1>Step 6: Motivation Drivers</h1>
-  <p>Please rate your motivation levels for achievement, stability, autonomy, recognition, and learning.</p>
+<body style="background:#121212;color:#fff;">
+  <main style="max-width:800px;margin:2rem auto;padding:1rem;">
+    <h1 style="color:#ff6c00;">Step 7: Motivation</h1>
 
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Finish</button>
-  </form>
+    <form method="post" style="margin-bottom:1.5rem;">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit">Add Motivation</button>
+    </form>
+
+    <h2>Motivation Entries</h2>
+    <ul>
+      {% for m in motivation_list %}
+        <li>{{ m.factor }}{% if m.level %} — Level: {{ m.level }}{% endif %}</li>
+      {% empty %}
+        <li>No motivation data yet.</li>
+      {% endfor %}
+    </ul>
+
+    <p style="margin-top:1.5rem;"><a href="/humancapital/summary/">Next Step (Summary) →</a></p>
+  </main>
 </body>
 </html>

@@ -3,17 +3,29 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Step 4: Personality</title>
+  <title>Step 5: Personality</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
 </head>
-<body>
-  <h1>Step 4: Personality Traits</h1>
-  <p>Please rate yourself on the Big Five (OCEAN) personality traits.</p>
+<body style="background:#121212;color:#fff;">
+  <main>
+    <h1 style="color:#ff6c00;">Step 5: Personality</h1>
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit">Add Personality</button>
+    </form>
 
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Next</button>
-  </form>
+    <h2>Personality Traits</h2>
+    <ul>
+      {% for p in personality_list %}
+        <li>{{ p.trait }} --- Level: {{ p.level }}</li>
+      {% empty %}
+        <li>No personality data yet.</li>
+      {% endfor %}
+    </ul>
+
+    <p><a href="/humancapital/behavior/">Next Step (Behavior) →</a></p>
+  </main>
 </body>
 </html>

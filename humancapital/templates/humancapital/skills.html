@@ -2,32 +2,30 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Step 2: Skills</title>
-    <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
+  <meta charset="UTF-8">
+  <title>Step 3: Skills</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
 </head>
-<body>
-    <header>
-        <h1>Step 2: Technical & Professional Skills</h1>
-    </header>
+<body style="background:#121212;color:#fff;">
+  <main>
+    <h1 style="color:#ff6c00;">Step 3: Skills</h1>
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit">Add Skill</button>
+    </form>
 
-    <main>
-        <form method="post">
-            {% csrf_token %}
-            {{ form.as_p }}
-            <button type="submit">Add Skill</button>
-        </form>
+    <h2>Skills Entered</h2>
+    <ul>
+      {% for s in skills_list %}
+        <li>{{ s.name }} --- Level: {{ s.level }}</li>
+      {% empty %}
+        <li>No skills added yet.</li>
+      {% endfor %}
+    </ul>
 
-        <h2>Skills Entered:</h2>
-        <ul>
-            {% for skill in skills %}
-                <li>{{ skill.category }} - {{ skill.name }} (Rating: {{ skill.rating }})</li>
-            {% empty %}
-                <li>No skills entered yet.</li>
-            {% endfor %}
-        </ul>
-       <a href="{% url 'cognitive_form' %}">Next Step (Cognitive) →</a>
-    </main>
+    <p><a href="/humancapital/cognitive/">Next Step (Cognitive) →</a></p>
+  </main>
 </body>
 </html>

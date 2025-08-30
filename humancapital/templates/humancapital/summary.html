@@ -3,141 +3,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Assessment Summary</title>
+  <title>Step 8: Summary</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="{% static 'humancapital/css/style.css' %}">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body>
-  <header>
-    <h1>Assessment Summary for {{ session.user.full_name }}</h1>
-  </header>
-
+<body style="background:#121212;color:#fff;">
   <main>
-    <!-- Skills -->
-    <section>
-      <h2>Skills</h2>
-      <ul>
-        {% for skill in skills %}
-          <li>{{ skill.category }} - {{ skill.name }} (Rating: {{ skill.rating }})</li>
-        {% empty %}
-          <li>No skills entered.</li>
-        {% endfor %}
-      </ul>
-      <canvas id="skillsChart" width="400" height="200"></canvas>
-    </section>
-
-    <!-- Cognitive -->
-    <section>
-      <h2>Cognitive Abilities</h2>
-      {% if cognitive %}
-        <p>Reasoning: {{ cognitive.reasoning }}</p>
-        <p>Memory: {{ cognitive.memory }}</p>
-        <p>Problem Solving: {{ cognitive.problem_solving }}</p>
-        <p>Attention: {{ cognitive.attention }}</p>
-      {% else %}
-        <p>No cognitive data entered.</p>
-      {% endif %}
-    </section>
-
-    <!-- Personality -->
-    <section>
-      <h2>Personality (OCEAN)</h2>
-      {% if personality %}
-        <canvas id="personalityChart" width="400" height="400"></canvas>
-      {% else %}
-        <p>No personality data entered.</p>
-      {% endif %}
-    </section>
-
-    <!-- Behavior -->
-    <section>
-      <h2>Behavior</h2>
-      {% if behavior %}
-        <p>Communication: {{ behavior.communication }}</p>
-        <p>Decision Making: {{ behavior.decision_making }}</p>
-        <p>Leadership: {{ behavior.leadership }}</p>
-        <p>Collaboration: {{ behavior.collaboration }}</p>
-        <p>Conflict Handling: {{ behavior.conflict_handling }}</p>
-      {% else %}
-        <p>No behavior data entered.</p>
-      {% endif %}
-    </section>
-
-    <!-- Motivation -->
-    <section>
-      <h2>Motivation</h2>
-      {% if motivation %}
-        <p>Achievement: {{ motivation.achievement }}</p>
-        <p>Stability: {{ motivation.stability }}</p>
-        <p>Autonomy: {{ motivation.autonomy }}</p>
-        <p>Recognition: {{ motivation.recognition }}</p>
-        <p>Learning: {{ motivation.learning }}</p>
-      {% else %}
-        <p>No motivation data entered.</p>
-      {% endif %}
-    </section>
-<section>
-  <h2>AI-Powered Insights</h2>
-  <p>{{ ai_summary|linebreaks }}</p>
-</section>
-
+    <h1 style="color:#ff6c00;">Summary</h1>
+    <pre style="white-space:pre-wrap;background:#1b1b1b;padding:1rem;border-radius:8px;">
+{{ ai_summary }}
+    </pre>
+    <p><a href="/humancapital/personal-info/">← Start Over</a></p>
   </main>
-
-  <!-- Chart Scripts -->
-  <script>
-    // Skills Chart
-    {% if skills %}
-    const skillsLabels = [{% for skill in skills %}"{{ skill.name }}",{% endfor %}];
-    const skillsData = [{% for skill in skills %}{{ skill.rating }},{% endfor %}];
-
-    new Chart(document.getElementById('skillsChart'), {
-      type: 'bar',
-      data: {
-        labels: skillsLabels,
-        datasets: [{
-          label: 'Skill Ratings',
-          data: skillsData,
-          backgroundColor: 'rgba(255, 108, 0, 0.7)',
-          borderColor: '#ff6c00',
-          borderWidth: 2
-        }]
-      },
-      options: {
-        scales: {
-          y: { beginAtZero: true, max: 100 }
-        }
-      }
-    });
-    {% endif %}
-
-    // Personality Radar Chart
-    {% if personality %}
-    new Chart(document.getElementById('personalityChart'), {
-      type: 'radar',
-      data: {
-        labels: ["Openness", "Conscientiousness", "Extraversion", "Agreeableness", "Neuroticism"],
-        datasets: [{
-          label: 'Personality Profile',
-          data: [
-            {{ personality.openness }},
-            {{ personality.conscientiousness }},
-            {{ personality.extraversion }},
-            {{ personality.agreeableness }},
-            {{ personality.neuroticism }}
-          ],
-          backgroundColor: 'rgba(255, 108, 0, 0.2)',
-          borderColor: '#ff6c00',
-          pointBackgroundColor: '#ff6c00',
-          borderWidth: 2
-        }]
-      },
-      options: {
-        scales: {
-          r: { beginAtZero: true, max: 100 }
-        }
-      }
-    });
-    {% endif %}
-  </script>
 </body>
 </html>
