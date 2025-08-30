@@ -1,0 +1,43 @@
+# CHANGE LOG
+# Aug 29, 2025 — Hardened motivation_form to prevent 500s when session_id missing/stale.
+# CHANGED: Gracefully redirect to personal_info if session_id not set or session missing.
+# CHANGED: Stay on page after POST and pass motivation_list for display.
+
+from django.shortcuts import render, redirect  # CHANGED
+from humancapital.forms.motivation_form import MotivationForm  # CHANGED
+from humancapital.models.assessment_session import AssessmentSession  # CHANGED
+from humancapital.models.motivation import Motivation  # CHANGED
+from django.db.models import QuerySet  # CHANGED
+
+def motivation_form(request):
+    """
+    Step 6: Motivation Assessment
+    - GET: show form + list of motivations tied to current AssessmentSession
+    - POST: save motivation, then reload same page to show updated list
+    """
+    # CHANGED: Defensive session handling
+    session_id = request.session.get("session_id")  # CHANGED
+    if not session_id:  # CHANGED
+        return redirect("humancapital:personal_info")  # CHANGED
+
+    try:  # CHANGED
+        session = AssessmentSession.objects.get(id=session_id)  # CHANGED
+    except AssessmentSession.DoesNotExist:  # CHANGED
+        return redirect("humancapital:personal_info")  # CHANGED
+
+    if request.method == "POST":  # CHANGED
+        form = MotivationForm(request.POST)  # CHANGED
+        if form.is_valid():  # CHANGED
+            motivation = form.save(commit=False)  # CHANGED
+            motivation.session = session  # CHANGED
+            motivation.save()  # CHANGED
+            return redirect("humancapital:motivation_form")  # CHANGED
+    else:  # CHANGED
+        form = MotivationForm()  # CHANGED
+
+    motivations: QuerySet[Motivation] = Motivation.objects.filter(session=session).order_by("-id")  # CHANGED
+    return render(  # CHANGED
+        request,
+        "humancapital/motivation.html",
+        {"form": form, "motivation_list": motivations},  # CHANGED
+    )

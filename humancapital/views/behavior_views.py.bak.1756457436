@@ -1,0 +1,41 @@
+# CHANGE LOG
+# Aug 29, 2025 — Hardened view to eliminate namespace reverses and missing-session 500s.
+# CHANGED: Self-bootstrap AssessmentSession if session_id missing/stale.
+# CHANGED: Absolute-path redirects only (no namespaced reverse).
+# CHANGED: Stay on page after POST and pass behavior_list.
+
+from django.shortcuts import render, redirect
+from humancapital.forms.behavior_form import BehaviorForm
+from humancapital.models.assessment_session import AssessmentSession
+from humancapital.models.behavior import Behavior
+
+def behavior_form(request):
+    # Ensure an AssessmentSession exists for this visitor
+    sid = request.session.get("session_id")
+    if not sid:
+        s = AssessmentSession.objects.create()  # CHANGED
+        request.session["session_id"] = s.id   # CHANGED
+        sid = s.id                              # CHANGED
+    try:
+        session = AssessmentSession.objects.get(id=sid)
+    except AssessmentSession.DoesNotExist:
+        s = AssessmentSession.objects.create()  # CHANGED
+        request.session["session_id"] = s.id    # CHANGED
+        session = s                              # CHANGED
+
+    if request.method == "POST":
+        form = BehaviorForm(request.POST)
+        if form.is_valid():
+            obj = form.save(commit=False)
+            obj.session = session
+            obj.save()
+            return redirect("/humancapital/behavior/")  # CHANGED: absolute path
+    else:
+        form = BehaviorForm()
+
+    behavior_list = Behavior.objects.filter(session=session).order_by("-id")
+    return render(
+        request,
+        "humancapital/behavior.html",
+        {"form": form, "behavior_list": behavior_list},
+    )

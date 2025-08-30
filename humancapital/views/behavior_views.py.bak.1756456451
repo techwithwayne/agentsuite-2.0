@@ -1,0 +1,43 @@
+# CHANGE LOG
+# Aug 29, 2025 — Hardened behavior_form to prevent 500s when session_id missing/stale.
+# CHANGED: Gracefully redirect to personal_info if session_id not set or session missing.
+# CHANGED: Stay on page after POST and pass behavior_list for display.
+
+from django.shortcuts import render, redirect  # CHANGED
+from humancapital.forms.behavior_form import BehaviorForm  # CHANGED
+from humancapital.models.assessment_session import AssessmentSession  # CHANGED
+from humancapital.models.behavior import Behavior  # CHANGED
+from django.db.models import QuerySet  # CHANGED
+
+def behavior_form(request):
+    """
+    Step 5: Behavior Assessment
+    - GET: show form + list of behaviors tied to current AssessmentSession
+    - POST: save behavior, then reload same page to show updated list
+    """
+    # CHANGED: Defensive session handling
+    session_id = request.session.get("session_id")  # CHANGED
+    if not session_id:  # CHANGED
+        return redirect('/humancapital/personal-info/')  # CHANGED
+
+    try:  # CHANGED
+        session = AssessmentSession.objects.get(id=session_id)  # CHANGED
+    except AssessmentSession.DoesNotExist:  # CHANGED
+        return redirect('/humancapital/personal-info/')  # CHANGED
+
+    if request.method == "POST":  # CHANGED
+        form = BehaviorForm(request.POST)  # CHANGED
+        if form.is_valid():  # CHANGED
+            behavior = form.save(commit=False)  # CHANGED
+            behavior.session = session  # CHANGED
+            behavior.save()  # CHANGED
+            return redirect('/humancapital/behavior/')  # CHANGED
+    else:  # CHANGED
+        form = BehaviorForm()  # CHANGED
+
+    behaviors: QuerySet[Behavior] = Behavior.objects.filter(session=session).order_by("-id")  # CHANGED
+    return render(  # CHANGED
+        request,
+        "humancapital/behavior.html",
+        {"form": form, "behavior_list": behaviors},  # CHANGED
+    )

@@ -1,0 +1,39 @@
+# CHANGE LOG
+# Aug 29, 2025 — Remove namespace redirects; self-bootstrap AssessmentSession; stay on page.
+
+from django.shortcuts import render, redirect
+from django.http import HttpResponse  # CHANGED
+from humancapital.forms.behavior_form import BehaviorForm
+from humancapital.models.assessment_session import AssessmentSession
+from humancapital.models.behavior import Behavior
+
+def behavior_form(request):
+    return HttpResponse('BEHAVIOR-OK')  # CHANGED HARD TEST
+    # Bootstrap session_id if missing or stale
+    sid = request.session.get("session_id")
+    if not sid:
+        s = AssessmentSession.objects.create()
+        request.session["session_id"] = s.id
+        sid = s.id
+    else:
+        try:
+            AssessmentSession.objects.get(id=sid)
+        except AssessmentSession.DoesNotExist:
+            s = AssessmentSession.objects.create()
+            request.session["session_id"] = s.id
+            sid = s.id
+
+    session = AssessmentSession.objects.get(id=sid)
+
+    if request.method == "POST":
+        form = BehaviorForm(request.POST)
+        if form.is_valid():
+            obj = form.save(commit=False)
+            obj.session = session
+            obj.save()
+            return redirect("/humancapital/behavior/")  # self-reload
+    else:
+        form = BehaviorForm()
+
+    behavior_list = Behavior.objects.filter(session=session).order_by("-id")
+    return render(request, "humancapital/behavior.html", {"form": form, "behavior_list": behavior_list})
