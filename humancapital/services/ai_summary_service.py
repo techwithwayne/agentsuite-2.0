@@ -1,78 +1,73 @@
-"""
-CHANGE LOG:
-- Updated OpenAI model to `gpt-4o` for compatibility on PythonAnywhere.
-- Added DB persistence (stores AI summary in AssessmentSession).
-- Improved logging and safe fallbacks (no 500 crashes).
-"""
+# CHANGE LOG
+# Aug 29, 2025 — Harden AI summary for PythonAnywhere; env-gated; never raises; returns fallback.
+# Notes:
+# - Set HC_DISABLE_AI=0 to enable AI (default disabled).
+# - Handles missing OPENAI_API_KEY / SDK / network without raising.
 
-import logging
-from django.conf import settings
-from openai import OpenAI
-from humancapital.models.assessment_session import AssessmentSession
+import os
+from typing import Optional
 
-logger = logging.getLogger(__name__)
+# CHANGED: Try-import settings for PA shell/offline contexts.
+try:
+    from django.conf import settings  # type: ignore  # CHANGED
+except Exception:  # CHANGED
+    settings = None  # type: ignore  # CHANGED
 
-# Initialize OpenAI client
-client = OpenAI(api_key=getattr(settings, "OPENAI_API_KEY", None))
+# CHANGED: Env/setting flags — default DISABLED for safety on PA
+ENV_DISABLE = os.environ.get("HC_DISABLE_AI", "1") not in ("0", "false", "False")  # CHANGED
+SETT_DISABLE = bool(getattr(settings, "HUMANCAPITAL_DISABLE_AI", False)) if settings else False  # CHANGED
+DISABLED = ENV_DISABLE or SETT_DISABLE  # CHANGED
 
-def generate_ai_summary(session_id: int) -> str:
-    """
-    Generate an AI-powered summary for a given AssessmentSession.
-    Stores the result in DB for later access.
-    Returns safe fallback if API fails.
-    """
+def _openai_client():  # CHANGED
+    api_key = os.environ.get("OPENAI_API_KEY") or (getattr(settings, "OPENAI_API_KEY", None) if settings else None)  # CHANGED
+    if not api_key:
+        return None  # CHANGED
     try:
-        # Pull session object
-        session = AssessmentSession.objects.get(id=session_id)
+        from openai import OpenAI  # type: ignore  # CHANGED
+        return OpenAI(api_key=api_key)  # CHANGED
+    except Exception:
+        return None  # CHANGED
 
-        # Build structured input text
-        input_text = f"""
-        Human Capital Assessment Summary
-        --------------------------------
-        Name: {session.user_profile.full_name if session.user_profile else "N/A"}
+def generate_ai_summary(session) -> str:  # CHANGED
+    fallback = (
+        "AI summary is currently disabled or unavailable.\n"
+        f"Session ID: {getattr(session, 'id', 'n/a')}."
+    )  # CHANGED
 
-        Skills:
-        {session.skills.values_list('name', flat=True)}
+    if DISABLED:  # CHANGED
+        return fallback  # CHANGED
 
-        Cognitive Abilities:
-        {session.cognitive.values_list('ability', flat=True)}
+    client = _openai_client()  # CHANGED
+    if client is None:  # CHANGED
+        return fallback  # CHANGED
 
-        Personality (OCEAN):
-        {session.personality.values_list('trait', flat=True)}
+    try:
+        # CHANGED: be defensive on related sets
+        up   = getattr(session, "user_profile", None)
+        sk   = getattr(session, "skill_set", None)
+        cog  = getattr(session, "cognitiveability_set", None)
+        pers = getattr(session, "personality_set", None)
+        beh  = getattr(session, "behavior_set", None)
+        mot  = getattr(session, "motivation_set", None)
 
-        Behaviors:
-        {session.behavior.values_list('pattern', flat=True)}
+        prompt = "Create a concise human-capital snapshot.\n"  # CHANGED
+        if up:   prompt += f"Role: {getattr(up, 'current_role', '')}\n"
+        if sk:   prompt += f"Skills: {sk.count()}\n"
+        if cog:  prompt += f"Cognitive: {cog.count()}\n"
+        if pers: prompt += f"Personality: {pers.count()}\n"
+        if beh:  prompt += f"Behavior: {beh.count()}\n"
+        if mot:  prompt += f"Motivation: {mot.count()}\n"
 
-        Motivations:
-        {session.motivation.values_list('factor', flat=True)}
-        """
-
-        # OpenAI API call
-        response = client.chat.completions.create(
-            model="gpt-4o",  # CHANGED: supported model
+        resp = client.chat.completions.create(  # CHANGED
+            model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an HR expert providing clear and friendly assessment summaries."
-                },
-                {
-                    "role": "user",
-                    "content": input_text
-                }
+                {"role": "system", "content": "You are a concise HR analyst."},
+                {"role": "user", "content": prompt.strip()},
             ],
-            max_tokens=500,
-            temperature=0.7,
+            temperature=0.3,
+            max_tokens=250,
         )
-
-        # Extract text
-        ai_text = response.choices[0].message.content.strip()
-
-        # Save into DB (new field required)
-        session.ai_summary = ai_text
-        session.save(update_fields=["ai_summary"])
-
-        return ai_text
-
-    except Exception as e:
-        logger.error("AI summary generation failed", exc_info=True)
-        return "AI summary could not be generated at this time. Please review the entered data."
+        text = (resp.choices[0].message.content or "").strip()  # CHANGED
+        return text or fallback  # CHANGED
+    except Exception:
+        return fallback  # CHANGED

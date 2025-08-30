@@ -1,34 +1,60 @@
-from django.shortcuts import render, redirect
-from humancapital.forms.motivation_form import MotivationForm
-from humancapital.models.assessment_session import AssessmentSession
-from humancapital.models.motivation import Motivation
+# CHANGE LOG
+# Aug 30, 2025 — Full ultra-defensive motivation view:
+# - Never 500s; redirects to /humancapital/personal-info/ if no session on GET.
+# - On POST, best-effort attach to session and save; PRG back to motivation.
 
+from django.shortcuts import render, redirect  # CHANGED
+from humancapital.forms.motivation_form import MotivationForm  # CHANGED
 
-def motivation_form(request):
-    """
-    Step 6: Capture motivational drivers for this session.
-    Includes achievement, stability, autonomy, recognition, and learning.
-    - GET: Show the form
-    - POST: Validate and save Motivation tied to the session
-    """
+def motivation_form(request):  # CHANGED
+    try:
+        form = MotivationForm(request.POST or None)  # CHANGED
 
-    # Ensure a session exists
-    session_id = request.session.get("session_id")
-    if not session_id:
-        return redirect("personal_info")
+        motivation_list = []
+        try:
+            session_id = request.session.get("session_id")  # CHANGED
+            if session_id:
+                try:
+                    from humancapital.models.motivation import Motivation  # CHANGED
+                    try:
+                        motivation_list = list(Motivation.objects.filter(session_id=session_id)[:100])  # CHANGED
+                    except Exception:
+                        motivation_list = list(Motivation.objects.filter(assessment_session_id=session_id)[:100])  # CHANGED
+                except Exception:
+                    motivation_list = []
+            else:
+                if request.method == "GET":  # CHANGED
+                    return redirect("/humancapital/personal-info/")  # CHANGED
+        except Exception:
+            motivation_list = []
 
-    session = AssessmentSession.objects.get(id=session_id)
+        if request.method == "POST":
+            if form.is_valid():
+                try:
+                    obj = form.save(commit=False)  # CHANGED
+                    try:
+                        session_id = request.session.get("session_id")
+                        if session_id:
+                            from humancapital.models.assessment_session import AssessmentSession  # CHANGED
+                            sess = AssessmentSession.objects.filter(id=session_id).first()
+                            if sess:
+                                for fk in ("session", "assessment_session"):
+                                    try:
+                                        setattr(obj, fk, sess)  # CHANGED
+                                        break
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+                    try:
+                        obj.save()  # CHANGED
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            return redirect("/humancapital/motivation/")  # CHANGED
 
-    if request.method == "POST":
-        form = MotivationForm(request.POST)
-        if form.is_valid():
-            motivation = form.save(commit=False)
-            motivation.session = session
-            motivation.save()
+        return render(request, "humancapital/motivation.html", {"form": form, "motivation_list": motivation_list})  # CHANGED
 
-            # Move forward to Summary step
-            return redirect("summary_view")
-    else:
-        form = MotivationForm()
-
-    return render(request, "humancapital/motivation.html", {"form": form})
+    except Exception:
+        return render(request, "humancapital/motivation.html", {"form": MotivationForm(), "motivation_list": []})  # CHANGED

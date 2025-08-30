@@ -62,5 +62,5 @@ urlpatterns = [
     #      namespace="postpress_ai")),  # would have shadowed the canonical include   # CHANGED:
 
     path("api/therapylib/", include("therapylib.urls")),
-    path("humancapital/", include("humancapital.urls")),
+    path("humancapital/", include(("humancapital.urls", "humancapital"), namespace="humancapital")),
 ]
