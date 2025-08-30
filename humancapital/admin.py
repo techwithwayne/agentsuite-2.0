@@ -1,12 +1,16 @@
-"""
-CHANGE LOG:
-- Removed duplicate `admin.site.register(AssessmentSession)`.
-- All models registered cleanly with `@admin.register`.
-- Added inline admins for Skills, Cognitive, Personality, Behavior, Motivation so everything shows up in AssessmentSession.
-"""
+# CHANGE LOG
+# Aug 30, 2025 — Admin polish:
+# - Inlines for related models
+# - ai_summary read-only
+# - Chart.js snapshot on session change page
+# - Custom POST endpoint: "Regenerate summary"
+# - CHANGED: Safe list_display accessors (avoid 500 if model lacks created_at/updated_at)
 
-from django.contrib import admin
-from humancapital.models.user_profile import UserProfile
+from django.contrib import admin, messages
+from django.urls import path, reverse
+from django.shortcuts import redirect, get_object_or_404
+from django.core.exceptions import PermissionDenied
+
 from humancapital.models.assessment_session import AssessmentSession
 from humancapital.models.skill import Skill
 from humancapital.models.cognitive import CognitiveAbility
@@ -15,145 +19,152 @@ from humancapital.models.behavior import Behavior
 from humancapital.models.motivation import Motivation
 
 
-# ----------------------------
-# Inline Classes
-# ----------------------------
-
+# ----- Inlines -----
 class SkillInline(admin.TabularInline):
     model = Skill
     extra = 0
-    fields = ("category", "name", "rating", "weight", "created_at")
-    readonly_fields = ("created_at",)
+    show_change_link = True
 
 
-class CognitiveAbilityInline(admin.TabularInline):
+class CognitiveInline(admin.TabularInline):
     model = CognitiveAbility
     extra = 0
-    fields = ("reasoning", "memory", "problem_solving", "attention", "notes", "created_at")
-    readonly_fields = ("created_at",)
+    show_change_link = True
 
 
 class PersonalityInline(admin.TabularInline):
     model = Personality
     extra = 0
-    fields = (
-        "openness",
-        "conscientiousness",
-        "extraversion",
-        "agreeableness",
-        "neuroticism",
-        "notes",
-        "created_at",
-    )
-    readonly_fields = ("created_at",)
+    show_change_link = True
 
 
 class BehaviorInline(admin.TabularInline):
     model = Behavior
     extra = 0
-    fields = (
-        "communication",
-        "decision_making",
-        "leadership",
-        "collaboration",
-        "conflict_handling",
-        "notes",
-        "created_at",
-    )
-    readonly_fields = ("created_at",)
+    show_change_link = True
 
 
 class MotivationInline(admin.TabularInline):
     model = Motivation
     extra = 0
-    fields = ("achievement", "stability", "autonomy", "recognition", "learning", "notes", "created_at")
-    readonly_fields = ("created_at",)
+    show_change_link = True
 
 
-# ----------------------------
-# Admin Registrations
-# ----------------------------
+def _safe_count(rel_manager):
+    try:
+        return rel_manager.count()
+    except Exception:
+        try:
+            return len(list(rel_manager.all()))
+        except Exception:
+            return 0
 
-@admin.register(UserProfile)
-class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ("id", "full_name", "email", "created_at")
-    search_fields = ("full_name", "email")
-    list_filter = ("created_at",)
+
+def _rel_count(obj, candidates):
+    for name in candidates:
+        try:
+            rel = getattr(obj, name)
+        except Exception:
+            rel = None
+        if rel is not None:
+            c = _safe_count(rel)
+            if c >= 0:
+                return c
+    return 0
 
 
 @admin.register(AssessmentSession)
 class AssessmentSessionAdmin(admin.ModelAdmin):
-    list_display = (
-        "id",
-        "user_profile",
-        "started_at",
-        "completed_at",
-        "ai_summary",
-    )
-    list_filter = ("completed_at", "started_at")
-    search_fields = ("user_profile__full_name",)
+    change_form_template = "admin/humancapital/assessmentsession/change_form.html"
     readonly_fields = ("ai_summary",)
 
-    inlines = [SkillInline, CognitiveAbilityInline, PersonalityInline, BehaviorInline, MotivationInline]
+    # CHANGED: Use safe methods instead of raw field names to avoid 500s
+    list_display = ("id", "created_ts", "updated_ts")
+
+    search_fields = ("id",)
+    inlines = [SkillInline, CognitiveInline, PersonalityInline, BehaviorInline, MotivationInline]
+
+    # --- Safe accessors so missing fields won't 500 the changelist ---
+    def created_ts(self, obj):
+        for name in ("created_at", "created", "created_on", "timestamp"):
+            val = getattr(obj, name, None)
+            if val:
+                return val
+        return ""
+
+    created_ts.short_description = "Created"
+
+    def updated_ts(self, obj):
+        for name in ("updated_at", "updated", "modified_at", "modified"):
+            val = getattr(obj, name, None)
+            if val:
+                return val
+        # Fall back to created value if no explicit updated
+        return self.created_ts(obj)
+
+    updated_ts.short_description = "Updated"
+
+    # --- Custom admin URL: regenerate summary for a single session ---
+    def get_urls(self):
+        urls = super().get_urls()
+        my_urls = [
+            path(
+                "<path:object_id>/regenerate-summary/",
+                self.admin_site.admin_view(self.regenerate_summary),
+                name="humancapital_assessmentsession_regen",
+            )
+        ]
+        return my_urls + urls
+
+    def regenerate_summary(self, request, object_id, *args, **kwargs):
+        if not self.has_change_permission(request):
+            raise PermissionDenied
+        if request.method != "POST":
+            return redirect(reverse("admin:humancapital_assessmentsession_change", args=[object_id]))
+
+        obj = get_object_or_404(AssessmentSession, pk=object_id)
+
+        from humancapital.services.ai_summary_service import generate_ai_summary, DISABLED
+
+        try:
+            text = generate_ai_summary(obj)
+            obj.ai_summary = text
+            obj.save(update_fields=["ai_summary"])
+            note = "AI summary regenerated."
+            if DISABLED:
+                note += " (AI disabled; fallback text saved.)"
+            messages.success(request, note)
+        except Exception as e:
+            messages.error(request, f"Could not regenerate summary: {e}")
+
+        return redirect(reverse("admin:humancapital_assessmentsession_change", args=[object_id]))
 
 
 @admin.register(Skill)
 class SkillAdmin(admin.ModelAdmin):
-    list_display = ("id", "session", "category", "name", "rating", "weight", "created_at")
-    list_filter = ("category", "rating")
-    search_fields = ("name", "category")
+    list_display = ("id", "name", "level")
+    search_fields = ("name",)
 
 
 @admin.register(CognitiveAbility)
 class CognitiveAbilityAdmin(admin.ModelAdmin):
-    list_display = ("id", "session", "reasoning", "memory", "problem_solving", "attention", "created_at")
-    list_filter = ("reasoning", "memory", "problem_solving", "attention")
-    search_fields = ("session__id",)
+    list_display = ("id", "metric", "score")
+    search_fields = ("metric",)
 
 
 @admin.register(Personality)
 class PersonalityAdmin(admin.ModelAdmin):
-    list_display = (
-        "id",
-        "session",
-        "openness",
-        "conscientiousness",
-        "extraversion",
-        "agreeableness",
-        "neuroticism",
-        "created_at",
-    )
-    list_filter = ("openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism")
-    search_fields = ("session__id",)
+    list_display = ("id", "trait", "level")
+    search_fields = ("trait",)
 
 
 @admin.register(Behavior)
 class BehaviorAdmin(admin.ModelAdmin):
-    list_display = (
-        "id",
-        "session",
-        "communication",
-        "decision_making",
-        "leadership",
-        "collaboration",
-        "conflict_handling",
-        "created_at",
-    )
-    list_filter = ("communication", "decision_making", "leadership", "collaboration", "conflict_handling")
-    search_fields = ("session__id",)
+    list_display = ("id", "behavior", "level")
+    search_fields = ("behavior",)
 
 
 @admin.register(Motivation)
 class MotivationAdmin(admin.ModelAdmin):
-    list_display = (
-        "id",
-        "session",
-        "achievement",
-        "stability",
-        "autonomy",
-        "recognition",
-        "learning",
-        "created_at",
-    )
-    list_filter = ("achievement", "stability", "autonomy", "recognition", "learning")
-    search_fields = ("session__id",)
+    list_display = ("id", "factor", "level")
+    search_fields = ("factor",)

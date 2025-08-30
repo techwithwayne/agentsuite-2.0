@@ -1,0 +1,41 @@
+{% extends "admin/change_form.html" %}
+{% load static %}
+
+{# CHANGE LOG
+   Aug 30, 2025 — Add "Regenerate summary" button on session change page.
+#}
+
+{% block extrahead %}
+  {{ block.super }}
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="{% static 'humancapital/js/session_charts.js' %}"></script>
+{% endblock %}
+
+{% block after_field_sets %}
+  {{ block.super }}
+
+  <div class="inline-group" style="margin-top:16px;">
+    <fieldset class="module aligned">
+      <h2>Assessment Snapshot</h2>
+      <p class="help">Quick glance at how many entries are attached to this session.</p>
+      <canvas id="hc-session-chart"
+              data-skills="{{ hc_counts.skills|default:0 }}"
+              data-cognitive="{{ hc_counts.cognitive|default:0 }}"
+              data-personality="{{ hc_counts.personality|default:0 }}"
+              data-behavior="{{ hc_counts.behavior|default:0 }}"
+              data-motivation="{{ hc_counts.motivation|default:0 }}"
+              height="120"></canvas>
+    </fieldset>
+  </div>
+
+  <div class="inline-group" style="margin-top:16px;">
+    <fieldset class="module aligned">
+      <h2>AI Summary</h2>
+      <p class="help">Regenerate the AI summary for this session. This overwrites the existing text.</p>
+      <form method="post" action="{% url 'admin:humancapital_assessmentsession_regen' original.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="button default">Regenerate summary</button>
+      </form>
+    </fieldset>
+  </div>
+{% endblock %}
