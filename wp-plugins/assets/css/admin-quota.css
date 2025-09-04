@@ -1,0 +1,43 @@
+/**
+ * PostPress AI — Quota Banner Styles
+ * Path: wp-content/plugins/postpress-ai/assets/css/admin-quota.css
+ *
+ * Purpose:
+ * - Show a slim status banner about plan/quota above the Preview pane
+ * - Non-invasive, dark UI friendly
+ */
+
+#ppa-quota-banner[hidden] { display: none !important; }
+
+#ppa-quota-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin: 6px 0 10px 0;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+#ppa-quota-banner .ppa-plan { text-transform: capitalize; font-weight: 600; opacity: 0.9; }
+#ppa-quota-banner .ppa-upgrade {
+  margin-left: auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.25);
+  text-decoration: none;
+  color: #fff;
+}
+
+#ppa-quota-banner[data-status="warn"]     { background: rgba(255, 165, 0, 0.12);  border-color: rgba(255, 165, 0, 0.35); }
+#ppa-quota-banner[data-status="critical"] { background: rgba(255, 69, 58, 0.12);  border-color: rgba(255, 69, 58, 0.35); }
+#ppa-quota-banner[data-status="exhausted"]{
+  background: rgba(255, 69, 58, 0.18);
+  border-color: rgba(255, 69, 58, 0.45);
+}
+
+.is-disabled { opacity: 0.6; pointer-events: none; }

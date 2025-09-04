@@ -1,0 +1,671 @@
+/**
+ * PostPress AI — Admin Styles (Composer consolidated)
+ * Path: /home/customer/www/techwithwayne.com/public_html/wp-content/plugins/postpress-ai/assets/css/admin.css
+ *
+ * CHANGE LOG
+ * ----------
+ * 2025-08-24: Moved all Composer inline <style> into this file. Scoped to body.postpress-ai_page_ppa-composer. # CHANGED:
+ */
+
+body.postpress-ai_page_ppa-composer div#wpcontent {
+  background: #121212;
+  color: #ffffff;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* Grid + Card layout */
+body.postpress-ai_page_ppa-composer .ppa-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+@media (max-width: 1200px) {
+  body.postpress-ai_page_ppa-composer .ppa-grid { grid-template-columns: 1fr; }
+}
+body.postpress-ai_page_ppa-composer .ppa-card {
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  padding: 18px;
+  margin: 18px 0;
+  box-shadow: 0 2px 10px rgba(0,0,0,.35);
+  color: #ffffff;
+}
+body.postpress-ai_page_ppa-composer h1,
+body.postpress-ai_page_ppa-composer h2,
+body.postpress-ai_page_ppa-composer h3 {
+  color: #ffffff;
+}
+
+/* Form */
+body.postpress-ai_page_ppa-composer .ppa-form label {
+  color: #dddddd;
+  display: block;
+  margin-bottom: 6px;
+}
+body.postpress-ai_page_ppa-composer .ppa-form input[type="text"],
+body.postpress-ai_page_ppa-composer .ppa-form input[type="number"],
+body.postpress-ai_page_ppa-composer .ppa-form textarea,
+body.postpress-ai_page_ppa-composer .ppa-form select {
+  width: 100%;
+  background: #ffffff;
+  color: #000000;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+body.postpress-ai_page_ppa-composer .ppa-form input:focus,
+body.postpress-ai_page_ppa-composer .ppa-form select:focus,
+body.postpress-ai_page_ppa-composer .ppa-form textarea:focus {
+  border-color: #ff6c00;
+  box-shadow: 0 0 0 2px rgba(255,108,0,0.4);
+  outline: none;
+}
+
+/* Buttons */
+body.postpress-ai_page_ppa-composer .button.button-primary {
+  background: linear-gradient(180deg,#ff8a33,#ff6c00);
+  border-color: #cc5a00;
+  color: #0b0b0b;
+  border-radius: 12px;
+  font-weight: 600;
+}
+body.postpress-ai_page_ppa-composer .button.button-secondary {
+  background: #1c1c1c;
+  border-color: #2a2a2a;
+  color: #ffffff;
+  border-radius: 12px;
+}
+
+/* Preview Window */
+body.postpress-ai_page_ppa-composer #ppa-preview-window {
+  position: relative;
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  min-height: 300px;
+  padding: 16px;
+  overflow: auto;
+}
+body.postpress-ai_page_ppa-composer #ppa-preview-window h1,
+body.postpress-ai_page_ppa-composer #ppa-preview-window h2,
+body.postpress-ai_page_ppa-composer #ppa-preview-window h3 {
+  color: #ff8a33;
+}
+body.postpress-ai_page_ppa-composer #ppa-preview-window p,
+body.postpress-ai_page_ppa-composer #ppa-preview-window li {
+  color: #ffffff;
+}
+
+/* Loader Overlay */
+body.postpress-ai_page_ppa-composer #ppa-preview-window .ppa-preloader {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgba(18,18,18,0.75);
+  backdrop-filter: blur(2px);
+  border-radius: inherit;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 14px;
+  z-index: 5;
+}
+body.postpress-ai_page_ppa-composer #ppa-preview-window.ppa-is-loading .ppa-preloader {
+  display: flex;
+}
+body.postpress-ai_page_ppa-composer .ppa-preloader-label {
+  color: #dadde3;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  opacity: .9;
+}
+
+/* Spinner */
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner {
+  display: inline-block;
+  position: relative;
+  width: 64px;
+  height: 64px;
+}
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div {
+  transform-origin: 32px 32px;
+  animation: ppa-lds-spinner 1.2s linear infinite;
+}
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:after {
+  content: " ";
+  display: block;
+  position: absolute;
+  top: 3px;
+  left: 29px;
+  width: 6px;
+  height: 14px;
+  border-radius: 3px;
+  background: #ff6c00;
+  box-shadow: 0 0 1px rgba(0,0,0,.35);
+}
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(1)  { transform: rotate(0deg);   animation-delay: -1.1s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(2)  { transform: rotate(30deg);  animation-delay: -1.0s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(3)  { transform: rotate(60deg);  animation-delay: -0.9s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(4)  { transform: rotate(90deg);  animation-delay: -0.8s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(5)  { transform: rotate(120deg); animation-delay: -0.7s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(6)  { transform: rotate(150deg); animation-delay: -0.6s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(7)  { transform: rotate(180deg); animation-delay: -0.5s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(8)  { transform: rotate(210deg); animation-delay: -0.4s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(9)  { transform: rotate(240deg); animation-delay: -0.3s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(10) { transform: rotate(270deg); animation-delay: -0.2s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(11) { transform: rotate(300deg); animation-delay: -0.1s; }
+body.postpress-ai_page_ppa-composer .ppa-lds-spinner div:nth-child(12) { transform: rotate(330deg); animation-delay: 0s; }
+
+@keyframes ppa-lds-spinner {
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* =======================================================================
+   APPEND-ONLY AMENDMENTS — Autocomplete UI (no changes to your styles)
+   ======================================================================= */
+
+/* Autocomplete dropdown container */
+body.postpress-ai_page_ppa-composer .ppa-autocomplete-list {
+  position: absolute;
+  z-index: 100;                 /* stays above inputs/cards but below modals */
+  width: min(520px, 100%);
+  max-height: 280px;
+  overflow: auto;
+  margin-top: 6px;
+  padding: 4px;
+  list-style: none;
+  background: #0f1317;          /* dark to match your cards */
+  color: #ffffff;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.45);
+}
+
+/* Each suggestion item */
+body.postpress-ai_page_ppa-composer .ppa-autocomplete-list li {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+
+/* Hover/keyboard-selected state */
+body.postpress-ai_page_ppa-composer .ppa-autocomplete-list li:hover,
+body.postpress-ai_page_ppa-composer .ppa-autocomplete-list li[aria-selected="true"] {
+  background: linear-gradient(90deg, rgba(255,108,0,.18), rgba(255,138,51,.10));
+  color: #ffffff;
+}
+
+/* Optional: ensure the three inputs play nicely with the dropdown */
+body.postpress-ai_page_ppa-composer .ppa-form input#ppa-tone,
+body.postpress-ai_page_ppa-composer .ppa-form input#ppa-audience,
+body.postpress-ai_page_ppa-composer .ppa-form input#ppa-keywords {
+  caret-color: #ff6c00;           /* subtle brand detail */
+}
+
+/* =======================================================================
+   APPEND-ONLY AMENDMENTS — Rodeo Drive Luxury Vibe
+   - Slick, sleek, razor-sharp finish
+   - Dark velvet backgrounds, orange trims, subtle glow accents
+   - Buttons, inputs, and preview panel polished without refactor
+   ======================================================================= */
+
+body.postpress-ai_page_ppa-composer div#wpcontent {
+  background: #0b0e10; /* deeper velvet background */
+}
+
+/* Inputs with subtle gloss and sharp contrast */
+body.postpress-ai_page_ppa-composer .ppa-form input[type="text"],
+body.postpress-ai_page_ppa-composer .ppa-form input[type="number"],
+body.postpress-ai_page_ppa-composer .ppa-form textarea,
+body.postpress-ai_page_ppa-composer .ppa-form select {
+  background: linear-gradient(180deg,#1a1a1a,#121212); /* dark gloss */
+  color: #ffffff;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+body.postpress-ai_page_ppa-composer .ppa-form input:focus,
+body.postpress-ai_page_ppa-composer .ppa-form select:focus,
+body.postpress-ai_page_ppa-composer .ppa-form textarea:focus {
+  border-color: #ff6c00;
+  box-shadow: 0 0 0 3px rgba(255,108,0,0.3);
+}
+
+/* Rodeo Buttons: gradient, glow, elegant rounding */
+body.postpress-ai_page_ppa-composer .button.button-primary {
+  background: linear-gradient(135deg,#ff6c00,#ff8a33);
+  border-color: #ff6c00;
+  color: #0b0b0b;
+  font-weight: 700;
+  letter-spacing: .3px;
+  box-shadow: 0 4px 16px rgba(255,108,0,.35);
+  transition: all .2s ease;
+}
+body.postpress-ai_page_ppa-composer .button.button-primary:hover {
+  filter: brightness(1.05);
+  box-shadow: 0 6px 20px rgba(255,138,51,.45);
+}
+body.postpress-ai_page_ppa-composer .button.button-secondary {
+  background: linear-gradient(180deg,#1c1c1c,#121212);
+  border-color: #2a2a2a;
+  color: #f5f5f5;
+  font-weight: 600;
+  box-shadow: 0 3px 10px rgba(0,0,0,.4);
+  transition: all .2s ease;
+}
+body.postpress-ai_page_ppa-composer .button.button-secondary:hover {
+  background: #222222;
+  border-color: #444444;
+}
+
+/* Preview panel — editorial luxury finish */
+body.postpress-ai_page_ppa-composer #ppa-preview-window {
+  background: linear-gradient(180deg,#141414,#0b0e10);
+  border: 1px solid #2a2a2a;
+  box-shadow: 0 8px 28px rgba(0,0,0,.55);
+}
+body.postpress-ai_page_ppa-composer #ppa-preview-window h1,
+body.postpress-ai_page_ppa-composer #ppa-preview-window h2,
+body.postpress-ai_page_ppa-composer #ppa-preview-window h3 {
+  font-family: "Helvetica Neue",Arial,sans-serif;
+  letter-spacing: .4px;
+  font-weight: 700;
+  color: #ff6c00; /* razor-sharp accent for headings */
+}
+body.postpress-ai_page_ppa-composer #ppa-preview-window p,
+body.postpress-ai_page_ppa-composer #ppa-preview-window li {
+  line-height: 1.65;
+  font-size: 15px;
+  color: #f1f1f1;
+}
+
+/* =======================================================================
+   APPEND-ONLY AMENDMENT — Fix select dropdown contrast (Rodeo theme)
+   ======================================================================= */
+
+/* Style the select itself */
+body.postpress-ai_page_ppa-composer .ppa-form select {
+  background: #1a1a1a;             /* dark velvet background */
+  color: #ffffff;                  /* high contrast text */
+  border: 1px solid #ff6c00;       /* orange Rodeo trim */
+  border-radius: 6px;
+  padding: 8px 12px;
+  appearance: none;                /* remove native arrow styling */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+}
+
+/* Style the dropdown options */
+body.postpress-ai_page_ppa-composer .ppa-form select option {
+  background: #1a1a1a;             /* match select background */
+  color: #ffffff;                  /* white text for contrast */
+}
+
+/* Style the active/hovered option */
+body.postpress-ai_page_ppa-composer .ppa-form select option:checked,
+body.postpress-ai_page_ppa-composer .ppa-form select option:hover {
+  background: #ff6c00;             /* orange highlight */
+  color: #0b0b0b;                  /* dark text for contrast on orange */
+}
+
+/* =======================================================================
+   APPEND-ONLY AMENDMENT — Custom Rodeo Arrow for Select Dropdown
+   ======================================================================= */
+
+body.postpress-ai_page_ppa-composer .ppa-form select {
+  position: relative;
+  background: #1a1a1a;
+  color: #ffffff;
+  border: 1px solid #ff6c00;
+  border-radius: 6px;
+  padding: 8px 36px 8px 12px; /* extra right padding for arrow */
+  font-size: 14px;
+  cursor: pointer;
+
+  /* Hide native arrow */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+
+  /* Custom arrow as background image */
+  background-image:
+    linear-gradient(45deg, transparent 50%, #ff6c00 50%),
+    linear-gradient(135deg, #ff6c00 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) center,
+    calc(100% - 11px) center;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+/* Adjust on hover/focus */
+body.postpress-ai_page_ppa-composer .ppa-form select:hover,
+body.postpress-ai_page_ppa-composer .ppa-form select:focus {
+  border-color: #ff8a33;
+  box-shadow: 0 0 0 2px rgba(255,108,0,0.35);
+}
+
+/* Ensure dropdown list items remain legible */
+body.postpress-ai_page_ppa-composer .ppa-form select option {
+  background: #1a1a1a;
+  color: #ffffff;
+}
+body.postpress-ai_page_ppa-composer .ppa-form select option:checked,
+body.postpress-ai_page_ppa-composer .ppa-form select option:hover {
+  background: #ff6c00;
+  color: #0b0b0b;
+}
+
+/* =======================================================================
+   APPEND-ONLY AMENDMENT — Animated Rodeo Arrow for Select Dropdown
+   ======================================================================= */
+
+/* Wrap selects in a relative container (safe if already inside .ppa-form) */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+/* Style the select itself */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap select {
+  width: 100%;
+  background: #1a1a1a;
+  color: #ffffff;
+  border: 1px solid #ff6c00;
+  border-radius: 6px;
+  padding: 8px 36px 8px 12px; /* room for arrow */
+  font-size: 14px;
+  cursor: pointer;
+
+  /* Remove native arrow */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+}
+
+/* Custom arrow via pseudo-element */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  width: 8px;
+  height: 8px;
+  pointer-events: none;
+  transform: translateY(-50%) rotate(45deg);
+  border-right: 2px solid #ff6c00;
+  border-bottom: 2px solid #ff6c00;
+  transition: transform .25s ease, border-color .25s ease;
+}
+
+/* Animate arrow (rotate up on focus/open) */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap:focus-within::after {
+  transform: translateY(-50%) rotate(-135deg);
+  border-color: #ff8a33; /* brighter accent on focus */
+}
+
+/* Ensure options stay readable */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap select option {
+  background: #1a1a1a;
+  color: #ffffff;
+}
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap select option:checked,
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap select option:hover {
+  background: #ff6c00;
+  color: #0b0b0b;
+}
+
+/* =======================================================================
+   APPEND-ONLY HOTFIX — Align Rodeo select arrow
+   ======================================================================= */
+
+/* Ensure wrapper positions the arrow correctly */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+  line-height: 1.4; /* normalize baseline */
+}
+
+/* Normalize select padding so text and arrow align */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap select {
+  padding-right: 40px;  /* room for arrow */
+  line-height: 1.4;
+}
+
+/* Position and size the arrow pseudo-element */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap::after {
+  top: 50%;
+  right: 14px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid #ff6c00;
+  border-bottom: 2px solid #ff6c00;
+  transform: translateY(-50%) rotate(45deg);
+}
+
+/* =======================================================================
+   APPEND-ONLY HOTFIX — Full-width container aware arrow positioning
+   ======================================================================= */
+
+/* The wrapper must be a true 100%-wide block so ::after anchors correctly */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap {
+  position: relative;
+  display: block;          /* was inline-block; block guarantees full row width */
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Make sure the select actually fills the wrapper and leaves room for the arrow */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap select,
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap select.regular-text {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding-right: 34px !important;   /* space for arrow inside a 100% container */
+  line-height: 1.4;
+}
+
+/* Place the arrow relative to the right edge of the full-width wrapper */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 12px;                       /* inside the container, not hanging off the edge */
+  width: 8px;
+  height: 8px;
+  border: solid #ff6c00;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-50%) rotate(45deg);
+  pointer-events: none;
+  transition: transform .25s ease, border-color .25s ease;
+}
+
+/* Rotate (open/focus visual) */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-select-wrap:focus-within::after {
+  transform: translateY(-50%) rotate(-135deg);
+  border-color: #ff8a33;
+}
+
+/* =======================================================================
+   APPEND-ONLY — Rodeo polish: form UX, controls, notices, selection, scrollbars
+   ======================================================================= */
+
+/* 1) Placeholders + focus rings (keep contrast high on dark) */
+body.postpress-ai_page_ppa-composer .ppa-form ::placeholder {
+  color: #b7b7b7;
+  opacity: 1; /* Firefox */
+}
+body.postpress-ai_page_ppa-composer .ppa-form input:focus,
+body.postpress-ai_page_ppa-composer .ppa-form select:focus,
+body.postpress-ai_page_ppa-composer .ppa-form textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255,108,0,0.30);
+  border-color: #ff6c00;
+}
+
+/* Disabled fields + disabled buttons (readable but clearly inactive) */
+body.postpress-ai_page_ppa-composer .ppa-form input[disabled],
+body.postpress-ai_page_ppa-composer .ppa-form select[disabled],
+body.postpress-ai_page_ppa-composer .ppa-form textarea[disabled] {
+  background: #191919 !important;
+  color: #8c8c8c !important;
+  border-color: #2a2a2a !important;
+  cursor: not-allowed;
+}
+body.postpress-ai_page_ppa-composer .button:disabled,
+body.postpress-ai_page_ppa-composer .button[disabled] {
+  opacity: .6;
+  filter: grayscale(.1);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* 2) Checkboxes & radios — Rodeo accent (native, accessible) */
+body.postpress-ai_page_ppa-composer .ppa-form input[type="checkbox"],
+body.postpress-ai_page_ppa-composer .ppa-form input[type="radio"] {
+  accent-color: #ff6c00;
+}
+
+/* 3) Composer-only Admin Notices (success/error/info) */
+body.postpress-ai_page_ppa-composer div#wpcontent .notice {
+  background: #151515;
+  border-radius: 10px;
+  border: 1px solid #2a2a2a;
+  color: #e9e9e9;
+  box-shadow: 0 4px 14px rgba(0,0,0,.35);
+}
+body.postpress-ai_page_ppa-composer div#wpcontent .notice a { color: #ff8a33; }
+body.postpress-ai_page_ppa-composer div#wpcontent .notice.notice-success,
+body.postpress-ai_page_ppa-composer div#wpcontent .updated {
+  border-color: #1f7a3b;
+  background: linear-gradient(180deg, #162019, #101410);
+  color: #d9f3e3;
+}
+body.postpress-ai_page_ppa-composer div#wpcontent .notice.notice-error,
+body.postpress-ai_page_ppa-composer div#wpcontent .error {
+  border-color: #7a1f1f;
+  background: linear-gradient(180deg, #201616, #141010);
+  color: #ffd6d6;
+}
+body.postpress-ai_page_ppa-composer div#wpcontent .notice.notice-warning {
+  border-color: #7a5a1f;
+  background: linear-gradient(180deg, #201c16, #14120e);
+  color: #ffe7bf;
+}
+
+/* 4) Selection color (brand accent when selecting text in preview/inputs) */
+body.postpress-ai_page_ppa-composer ::selection {
+  background: rgba(255,108,0,0.55);
+  color: #0b0b0b;
+}
+body.postpress-ai_page_ppa-composer ::-moz-selection {
+  background: rgba(255,108,0,0.55);
+  color: #0b0b0b;
+}
+
+/* Branded scrollbars for preview & any scrollable cards (WebKit/Chromium only) */
+body.postpress-ai_page_ppa-composer #ppa-preview-window::-webkit-scrollbar,
+body.postpress-ai_page_ppa-composer .ppa-card::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+body.postpress-ai_page_ppa-composer #ppa-preview-window::-webkit-scrollbar-track,
+body.postpress-ai_page_ppa-composer .ppa-card::-webkit-scrollbar-track {
+  background: #0f0f0f;
+  border-radius: 8px;
+}
+body.postpress-ai_page_ppa-composer #ppa-preview-window::-webkit-scrollbar-thumb,
+body.postpress-ai_page_ppa-composer .ppa-card::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #ff8a33, #ff6c00);
+  border-radius: 8px;
+  border: 2px solid #0f0f0f;
+}
+body.postpress-ai_page_ppa-composer #ppa-preview-window::-webkit-scrollbar-thumb:hover,
+body.postpress-ai_page_ppa-composer .ppa-card::-webkit-scrollbar-thumb:hover {
+  filter: brightness(1.05);
+}
+
+/* Focus-visible ring for buttons (keyboard a11y, Rodeo color) */
+body.postpress-ai_page_ppa-composer .button.button-primary:focus-visible,
+body.postpress-ai_page_ppa-composer .button.button-secondary:focus-visible {
+  outline: 2px solid #ff8a33;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px rgba(255,108,0,0.25);
+}
+/* =======================================================================
+   APPEND-ONLY — Composer field error state (Rodeo-friendly)
+   - Works with either .is-error wrapper or aria-invalid="true" on the control
+   - Keeps your existing dark/Rodeo styling; only overrides on error
+   ======================================================================= */
+
+/* Subtle label tint on error */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error > label,
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field [aria-invalid="true"] ~ label {
+  color: #ffd6d6;
+}
+
+/* Inputs/Textareas/Selects — error ring */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error input[type="text"],
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error input[type="number"],
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error input[type="search"],
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error textarea,
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error select,
+body.postpress-ai_page_ppa-composer .ppa-form [aria-invalid="true"] {
+  border-color: #c43b3b !important;
+  box-shadow: 0 0 0 3px rgba(196,59,59,0.28) !important;
+}
+
+/* Keep a strong cue when focusing an errored field */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error input:focus,
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error textarea:focus,
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error select:focus,
+body.postpress-ai_page_ppa-composer .ppa-form [aria-invalid="true"]:focus {
+  border-color: #d64f4f !important;
+  box-shadow: 0 0 0 3px rgba(214,79,79,0.35) !important;
+}
+
+/* Helper text (error) */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-help-error {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #ffb3b3;
+}
+
+/* Optional base helper text (non-error) to match your theme */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-help {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #b7b7b7;
+}
+
+/* Error icon accent (lightweight, no markup required) */
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error {
+  position: relative;
+}
+body.postpress-ai_page_ppa-composer .ppa-form .ppa-field.is-error::before {
+  content: "!";
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 0 6px;
+  line-height: 18px;
+  color: #0b0b0b;
+  background: #ff6c00;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(255,108,0,.35);
+  pointer-events: none;
+}
+

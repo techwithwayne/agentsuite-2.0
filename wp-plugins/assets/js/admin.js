@@ -1,0 +1,733 @@
+(() => {
+  // assets/js/src/config.js
+  var CFG = window.PPA || {};
+  var AJAX_URL = CFG.ajax_url || CFG.ajaxUrl || (typeof ajaxurl !== "undefined" ? ajaxurl : "/wp-admin/admin-ajax.php");
+  var NONCE = CFG.nonce || "";
+  var DEBUG = !!CFG.debug;
+  var $ = (sel, root) => (root || document).querySelector(sel);
+  var $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  function log(...args) {
+    if (DEBUG && window.console) console.log("[PPA]", ...args);
+  }
+  function warn(...args) {
+    if (window.console) console.warn("[PPA]", ...args);
+  }
+  function getNonce() {
+    if (NONCE) return NONCE;
+    const dom = $("#ppa-nonce");
+    return dom ? String(dom.value || "") : "";
+  }
+  function resolveAssetUrl(rel) {
+    const r = String(rel || "").replace(/^\/+/, "");
+    if (CFG.assets_url) return CFG.assets_url.replace(/\/+$/, "/") + r;
+    if (CFG.pluginUrl) return CFG.pluginUrl.replace(/\/+$/, "/") + r;
+    if (CFG.plugin_url) return CFG.plugin_url.replace(/\/+$/, "/") + r;
+    const PLUGIN_SEG = "/wp-content/plugins/postpress-ai/";
+    try {
+      const cs = document.currentScript && document.currentScript.src;
+      if (cs && cs.includes(PLUGIN_SEG)) {
+        const u = new URL(cs, window.location.origin);
+        const base = u.origin + u.pathname.slice(0, u.pathname.indexOf(PLUGIN_SEG) + PLUGIN_SEG.length);
+        return base.replace(/\/+$/, "/") + r;
+      }
+    } catch (_) {
+    }
+    try {
+      const scripts = document.getElementsByTagName("script");
+      for (let i = scripts.length - 1; i >= 0; i--) {
+        const src = scripts[i].src || "";
+        if (!src) continue;
+        if (src.includes(PLUGIN_SEG)) {
+          const u = new URL(src, window.location.origin);
+          const base = u.origin + u.pathname.slice(0, u.pathname.indexOf(PLUGIN_SEG) + PLUGIN_SEG.length);
+          return base.replace(/\/+$/, "/") + r;
+        }
+      }
+    } catch (_) {
+    }
+    try {
+      return window.location.origin.replace(/\/+$/, "") + PLUGIN_SEG + r;
+    } catch (_) {
+      return PLUGIN_SEG + r;
+    }
+  }
+
+  // assets/js/src/fields.js
+  function findFormRoot() {
+    return $("#ppa-composer") || $(".ppa-composer") || $("#ppa-composer-form") || document;
+  }
+  function collectFields() {
+    const root = findFormRoot();
+    const out = {};
+    const set = (k, v) => {
+      if (v == null) return;
+      const s = String(v).trim();
+      if (s !== "") out[k] = s;
+    };
+    const idMap = {
+      subject: ["#ppa-subject", "#ppa_subject", '[name="subject"]', '[name="ppa_subject"]'],
+      genre: ["#ppa-genre", "#ppa_genre", '[name="genre"]', '[name="ppa_genre"]'],
+      tone: ["#ppa-tone", "#ppa_tone", '[name="tone"]', '[name="ppa_tone"]'],
+      title: ["#ppa-title", '[name="title"]', '[name="post_title"]', '[name="ppa_title"]'],
+      keywords: ["#ppa-keywords", '[name="keywords"]', '[name="ppa_keywords"]'],
+      audience: ["#ppa-audience", '[name="audience"]', '[name="target_audience"]', '[name="ppa_audience"]'],
+      length: ["#ppa-length", '[name="length"]', '[name="ppa_length"]'],
+      cta: ["#ppa-cta", '[name="cta"]', '[name="call_to_action"]', '[name="ppa_cta"]'],
+      summary: ["#ppa-summary", '[name="summary"]', '[name="ppa_summary"]'],
+      description: ["#ppa-description", '[name="description"]', '[name="ppa_description"]'],
+      excerpt: ["#ppa-excerpt", '[name="excerpt"]', '[name="post_excerpt"]', '[name="ppa_excerpt"]'],
+      slug: ["#ppa-slug", '[name="slug"]', '[name="post_name"]', '[name="ppa_slug"]'],
+      content: ["#ppa-content", '[name="content"]', '[name="post_content"]', '[name="ppa_content"]']
+    };
+    for (const [key, sels] of Object.entries(idMap)) {
+      for (const sel of sels) {
+        const el = $(sel, root);
+        if (!el) continue;
+        if (key === "content") {
+          try {
+            if (window.tinymce && tinymce.get && el.id && tinymce.get(el.id)) {
+              const ed = tinymce.get(el.id);
+              set("content", ed.getContent({ format: "html" }));
+              break;
+            }
+          } catch (_) {
+          }
+        }
+        const val = (el.value != null ? String(el.value) : el.textContent) || "";
+        set(key, val);
+        break;
+      }
+    }
+    $$("[data-field]", root).forEach((el) => {
+      const k = String(el.getAttribute("data-field") || "").trim();
+      if (!k || out[k]) return;
+      const v = (el.value != null ? String(el.value) : el.textContent) || "";
+      set(k, v);
+    });
+    if (out.subject && !out.title) out.title = out.subject;
+    if (out.title && !out.subject) out.subject = out.title;
+    return out;
+  }
+  function appendFieldsToFormData(fd, fields) {
+    if (!fields || typeof fields !== "object") return;
+    Object.keys(fields).forEach((k) => {
+      const v = fields[k];
+      if (v == null) return;
+      fd.append(`fields[${k}]`, String(v));
+    });
+  }
+
+  // assets/js/src/ajax.js
+  async function postAjax(action, extra = {}) {
+    const nonce = getNonce();
+    if (!nonce) throw new Error("Missing nonce");
+    const fd = new FormData();
+    fd.append("action", action);
+    fd.append("nonce", nonce);
+    if (extra.mode) fd.append("mode", String(extra.mode));
+    appendFieldsToFormData(fd, extra.fields || {});
+    const res = await fetch(AJAX_URL, {
+      method: "POST",
+      credentials: "same-origin",
+      body: fd,
+      headers: { "X-Requested-With": "XMLHttpRequest" }
+    });
+    let json;
+    try {
+      json = await res.json();
+    } catch (e) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Bad JSON (${res.status}): ${text.slice(0, 280)}`);
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${JSON.stringify(json).slice(0, 280)}`);
+    return json;
+  }
+
+  // assets/js/src/preview.js
+  function findPreviewPane() {
+    const cands = ["#ppa-preview-window", "#ppa-preview-pane", ".ppa-preview-pane", "#ppa-preview", ".ppa-preview"];
+    for (const sel of cands) {
+      const el = $(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+  function extractPreviewHTML(json) {
+    if (!json) return "";
+    if (typeof json === "string") return json;
+    const g = (obj, path) => {
+      try {
+        return path.split(".").reduce((a, k) => a && a[k] != null ? a[k] : void 0, obj);
+      } catch (_) {
+        return void 0;
+      }
+    };
+    const candidates = [
+      "result.html",
+      "result.content",
+      "result.body",
+      "data.html",
+      "html",
+      "wp_body",
+      "body",
+      "payload.output.html",
+      "output.html",
+      "content.rendered",
+      "rendered",
+      "markup",
+      "preview_html"
+    ];
+    for (const p of candidates) {
+      const v = g(json, p);
+      if (typeof v === "string" && v.trim()) return v;
+    }
+    if (json.result && typeof json.result === "object") {
+      for (const v of Object.values(json.result)) {
+        if (typeof v === "string" && /<\/(p|div|h\d|article|section)>/i.test(v)) return v;
+      }
+    }
+    const msg = g(json, "message") || g(json, "error") || g(json, "result.message");
+    if (typeof msg === "string" && msg.trim()) return `<p><em>${msg}</em></p>`;
+    return "";
+  }
+  function renderPreviewHTMLFromJSON(json) {
+    const pane = findPreviewPane();
+    if (!pane) {
+      warn("Preview pane not found");
+      return;
+    }
+    const html = extractPreviewHTML(json);
+    pane.innerHTML = html && html.trim() ? html : "<p><em>No preview HTML returned.</em></p>";
+  }
+
+  // assets/js/src/loader.js
+  function ensurePreviewLoader() {
+    const pane = findPreviewPane();
+    if (!pane) return null;
+    let overlay = pane.querySelector(".ppa-preloader");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "ppa-preloader";
+      overlay.setAttribute("aria-hidden", "true");
+      const spinner = document.createElement("div");
+      spinner.className = "ppa-lds-spinner";
+      for (let i = 0; i < 12; i++) spinner.appendChild(document.createElement("div"));
+      const label = document.createElement("div");
+      label.className = "ppa-preloader-label";
+      label.textContent = "Generating preview\u2026";
+      overlay.appendChild(spinner);
+      overlay.appendChild(label);
+      pane.appendChild(overlay);
+    }
+    return overlay;
+  }
+  function setPreviewLoaderLabel(text) {
+    const pane = findPreviewPane();
+    if (!pane) return;
+    const overlay = ensurePreviewLoader();
+    if (!overlay) return;
+    let label = overlay.querySelector(".ppa-preloader-label");
+    if (!label) {
+      label = document.createElement("div");
+      label.className = "ppa-preloader-label";
+      overlay.appendChild(label);
+    }
+    label.textContent = String(text || "").trim() || "Working\u2026";
+  }
+  function showPreviewLoader(labelText) {
+    const pane = findPreviewPane();
+    if (!pane) return;
+    ensurePreviewLoader();
+    if (labelText) setPreviewLoaderLabel(labelText);
+    pane.classList.add("ppa-is-loading");
+    pane.setAttribute("aria-busy", "true");
+  }
+  function hidePreviewLoader() {
+    const pane = findPreviewPane();
+    if (!pane) return;
+    pane.classList.remove("ppa-is-loading");
+    pane.removeAttribute("aria-busy");
+  }
+
+  // assets/js/src/workingTab.js
+  var BRAND_BG = "#121212";
+  var BRAND_ACCENT = "#ff6c00";
+  function writeWorkingHTML(doc, heading, sub) {
+    doc.open();
+    doc.write(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>PostPress AI \u2014 ${heading ? String(heading) : "Working\u2026"}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root { --bg:${BRAND_BG}; --accent:${BRAND_ACCENT}; --text:#f2f2f2; --muted:#bcbcbc; }
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;display:grid;place-items:center}
+.wrap{max-width:720px;padding:24px;text-align:center}
+h1{margin:0 0 8px;font-size:22px;letter-spacing:.2px}
+p{margin:8px 0 0;color:var(--muted)}
+.ring{position:relative;width:58px;height:58px;margin:20px auto 14px;border-radius:50%;
+border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-right-color:#ff8a33;animation:spin .8s linear infinite;box-shadow:0 0 0 2px rgba(0,0,0,.18) inset}
+.dots::after{content:".";animation:dots 1.2s steps(3,end) infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes dots{0%{content:"."}33%{content:".."}66%{content:"..."}100%{content:"."}}
+.brand{display:inline-block;margin-top:6px;font-weight:700;color:#ffb27a}
+</style></head>
+<body><div class="wrap">
+<div class="ring" aria-hidden="true"></div>
+<h1 id="ppa-status">${heading ? String(heading) : "Working"}<span class="dots"></span></h1>
+<p id="ppa-sub">${sub ? String(sub) : "Please keep this tab open \u2014 we will take you to the WordPress editor as soon as your post is ready."}</p>
+<div class="brand">PostPress&nbsp;AI</div>
+</div></body></html>`);
+    doc.close();
+  }
+  function openWorkingTab() {
+    let w = null;
+    try {
+      w = window.open("about:blank", "_blank");
+      if (w && w.document) writeWorkingHTML(w.document, "Preparing", "Initializing\u2026");
+    } catch (_) {
+    }
+    return w;
+  }
+  function updateWorkingTab(w, heading, sub) {
+    if (!w || w.closed) return;
+    try {
+      const d = w.document, s = d.getElementById("ppa-status"), p = d.getElementById("ppa-sub");
+      if (s && heading) s.textContent = String(heading);
+      if (p && sub) p.textContent = String(sub);
+      if (s) {
+        const span = d.createElement("span");
+        span.className = "dots";
+        s.appendChild(span);
+      }
+    } catch (_) {
+    }
+  }
+
+  // assets/js/src/actions.js
+  async function onPreviewClick(ev) {
+    ev && ev.preventDefault && ev.preventDefault();
+    showPreviewLoader("Generating preview\u2026");
+    try {
+      const fields = collectFields();
+      const json = await postAjax("ppa_preview", { fields });
+      renderPreviewHTMLFromJSON(json);
+    } catch (e) {
+      warn("Preview error", e);
+      setPreviewLoaderLabel("Something went wrong \u2014 see console.");
+    } finally {
+      hidePreviewLoader();
+    }
+  }
+  async function onStoreClick(mode, ev) {
+    ev && ev.preventDefault && ev.preventDefault();
+    let openedTab = openWorkingTab();
+    showPreviewLoader("Generating preview\u2026");
+    try {
+      const fieldsBase = collectFields();
+      let fields = Object.assign({}, fieldsBase, { quality: "final", mode });
+      try {
+        updateWorkingTab(openedTab, "Generating preview", "Asking AI for final content\u2026");
+        const previewJson = await postAjax("ppa_preview", { fields });
+        renderPreviewHTMLFromJSON(previewJson);
+        const rr = previewJson && previewJson.result || {};
+        fields = Object.assign({}, fields, {
+          title: rr.title || fields.title || fieldsBase.title || fieldsBase.subject || "",
+          html: rr.html || fields.html || fieldsBase.html || "",
+          summary: rr.summary || fields.summary || fieldsBase.summary || ""
+        });
+      } catch (e) {
+        log("Final-quality preview failed; continuing to store.", e);
+      }
+      setPreviewLoaderLabel("Saving draft\u2026");
+      updateWorkingTab(openedTab, "Saving draft", "Creating your post in WordPress\u2026");
+      const json = await postAjax("ppa_store", { mode, fields });
+      let editUrl = json && (json.edit_url || json.edit_url_note) || "";
+      if (!editUrl) {
+        try {
+          const id = json && json.result && json.result.id;
+          const base = (window?.ajaxurl || AJAX_URL || "").replace(/\/admin-ajax\.php$/, "/post.php");
+          if (id && base) editUrl = `${base}?post=${encodeURIComponent(id)}&action=edit`;
+        } catch (_) {
+        }
+      }
+      if (editUrl) {
+        setPreviewLoaderLabel("Opening editor\u2026");
+        updateWorkingTab(openedTab, "Opening editor", "Redirecting to the WordPress post editor\u2026");
+        try {
+          if (openedTab && !openedTab.closed) {
+            openedTab.location.replace(editUrl);
+            openedTab.focus();
+          } else {
+            window.open(editUrl, "_blank", "noopener");
+          }
+        } catch (_) {
+          window.open(editUrl, "_blank", "noopener");
+        }
+      } else {
+        log("Store completed without edit_url.");
+      }
+    } catch (e) {
+      warn("Store error", e);
+      setPreviewLoaderLabel("Something went wrong \u2014 see console.");
+    } finally {
+      hidePreviewLoader();
+    }
+  }
+
+  // assets/js/src/autocomplete.js
+  var AC_TARGET_IDS = ["ppa-tone", "ppa-audience", "ppa-keywords"];
+  var DEBOUNCE_MS = 180;
+  var AUTOCOMPLETE_DATA = null;
+  var DEFAULT_AUTOCOMPLETE = {
+    tone: [
+      "Friendly",
+      "Professional",
+      "Persuasive",
+      "Technical",
+      "Casual",
+      "Storytelling",
+      "Inspirational",
+      "Luxury",
+      "Minimalist",
+      "Playful",
+      "Serious",
+      "Conversational",
+      "Educational",
+      "Authoritative"
+    ],
+    audience: [
+      "Small Business Owners",
+      "Entrepreneurs",
+      "Students",
+      "Iowa Residents",
+      "Marketers",
+      "Developers",
+      "Designers",
+      "Executives",
+      "Local Community",
+      "Ecommerce Owners",
+      "Parents",
+      "Nonprofits"
+    ],
+    keywords: [
+      "WordPress",
+      "SEO",
+      "Content Marketing",
+      "AI",
+      "Iowa Web Design",
+      "Small Business Growth",
+      "Luxury Branding",
+      "Website Redesign",
+      "Conversion Optimization",
+      "Social Media Strategy",
+      "Email Marketing",
+      "Page Speed"
+    ]
+  };
+  async function loadAutocompleteData() {
+    if (AUTOCOMPLETE_DATA) return AUTOCOMPLETE_DATA;
+    try {
+      const url = resolveAssetUrl("assets/data/autocomplete.json");
+      const res = await fetch(url, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      AUTOCOMPLETE_DATA = await res.json();
+      if (!AUTOCOMPLETE_DATA || typeof AUTOCOMPLETE_DATA !== "object") {
+        throw new Error("Bad JSON payload");
+      }
+    } catch (e) {
+      warn("Autocomplete data load failed, using defaults.", e);
+      AUTOCOMPLETE_DATA = DEFAULT_AUTOCOMPLETE;
+    }
+    return AUTOCOMPLETE_DATA;
+  }
+  function acGetList(input) {
+    const sib = input && input.nextElementSibling;
+    if (sib && sib.classList && sib.classList.contains("ppa-autocomplete-list")) return sib;
+    if (input && input.parentElement) return input.parentElement.querySelector(".ppa-autocomplete-list");
+    return null;
+  }
+  function acGetItems(list) {
+    return Array.from(list ? list.querySelectorAll("li") : []);
+  }
+  function acEnsureARIA(input) {
+    if (!input) return;
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-haspopup", "listbox");
+    if (!input.hasAttribute("aria-expanded")) input.setAttribute("aria-expanded", "false");
+  }
+  function acWireListARIA(input, list) {
+    if (!input) return;
+    if (!list) {
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+      input.removeAttribute("aria-controls");
+      return;
+    }
+    if (!list.id) list.id = "ppa-ac-" + (input.id || Math.random().toString(36).slice(2));
+    input.setAttribute("aria-controls", list.id);
+    input.setAttribute("aria-expanded", "true");
+    const items = acGetItems(list);
+    items.forEach((li, i) => {
+      if (!li.id) li.id = `${list.id}-opt-${i}`;
+      if (li.getAttribute("aria-selected") === "true") {
+        input.setAttribute("aria-activedescendant", li.id);
+      }
+    });
+    if (!input.getAttribute("aria-activedescendant") && items[0]) {
+      input.setAttribute("aria-activedescendant", items[0].id);
+    }
+  }
+  function acSyncAriaActiveFromHighlight(input) {
+    const list = acGetList(input);
+    if (!list) return;
+    const active = list.querySelector('li[aria-selected="true"]');
+    if (active && active.id) input.setAttribute("aria-activedescendant", active.id);
+  }
+  function acSetActiveIndex(input, idx) {
+    const list = acGetList(input);
+    if (!list) return -1;
+    const items = acGetItems(list);
+    items.forEach((li, i) => {
+      if (i === idx) {
+        li.setAttribute("aria-selected", "true");
+        try {
+          li.scrollIntoView({ block: "nearest" });
+        } catch (_) {
+        }
+      } else {
+        li.removeAttribute("aria-selected");
+      }
+    });
+    input.setAttribute("data-ppa-ac-index", String(idx));
+    acSyncAriaActiveFromHighlight(input);
+    return idx;
+  }
+  function acEnsureFirstActive(input) {
+    const list = acGetList(input);
+    if (!list) return;
+    const already = list.querySelector('[aria-selected="true"]');
+    const idxAttr = parseInt(input.getAttribute("data-ppa-ac-index") || "-1", 10);
+    if (!already && (isNaN(idxAttr) || idxAttr < 0)) {
+      const items = acGetItems(list);
+      if (items.length) acSetActiveIndex(input, 0);
+    }
+  }
+  function acMove(input, dir) {
+    const list = acGetList(input);
+    if (!list) return;
+    const items = acGetItems(list);
+    if (!items.length) return;
+    let idx = parseInt(input.getAttribute("data-ppa-ac-index") || "-1", 10);
+    if (isNaN(idx)) idx = -1;
+    idx += dir;
+    if (idx < 0) idx = items.length - 1;
+    if (idx >= items.length) idx = 0;
+    acSetActiveIndex(input, idx);
+  }
+  function acAcceptHighlighted(input) {
+    const list = acGetList(input);
+    if (!list) return false;
+    const li = list.querySelector('li[aria-selected="true"]') || list.querySelector("li");
+    if (!li) return false;
+    input.value = (li.textContent || "").trim();
+    try {
+      list.remove();
+    } catch (_) {
+    }
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    try {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    } catch (_) {
+    }
+    input.removeAttribute("data-ppa-ac-index");
+    return true;
+  }
+  function acClose(input) {
+    const list = acGetList(input);
+    if (list && list.parentNode) list.parentNode.removeChild(list);
+    input.removeAttribute("data-ppa-ac-index");
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  }
+  function acHideAllLists() {
+    document.querySelectorAll(".ppa-autocomplete-list").forEach((el) => el.remove());
+  }
+  function acShowListFor(input, fieldType) {
+    acHideAllLists();
+    if (!AUTOCOMPLETE_DATA || !AUTOCOMPLETE_DATA[fieldType]) return;
+    const val = String(input.value || "").trim().toLowerCase();
+    if (!val) return;
+    const matches = AUTOCOMPLETE_DATA[fieldType].filter((opt) => opt.toLowerCase().includes(val)).slice(0, 8);
+    if (!matches.length) return;
+    const ul = document.createElement("ul");
+    ul.className = "ppa-autocomplete-list";
+    ul.setAttribute("role", "listbox");
+    matches.forEach((opt) => {
+      const li = document.createElement("li");
+      li.textContent = opt;
+      li.setAttribute("role", "option");
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        input.value = opt;
+        acClose(input);
+      });
+      ul.appendChild(li);
+    });
+    input.insertAdjacentElement("afterend", ul);
+    acEnsureFirstActive(input);
+    acWireListARIA(input, ul);
+  }
+  function acIsTypingKey(k) {
+    return !(k === "ArrowDown" || k === "ArrowUp" || k === "Enter" || k === "Escape" || k === "Tab" || k === "Debounced");
+  }
+  function acDispatchDebouncedKeyup(input) {
+    try {
+      const ev = new KeyboardEvent("keyup", { key: "Debounced", bubbles: true, cancelable: true });
+      input.dispatchEvent(ev);
+    } catch (_) {
+      const ev2 = document.createEvent("Event");
+      ev2.initEvent("keyup", true, true);
+      ev2.key = "Debounced";
+      input.dispatchEvent(ev2);
+    }
+  }
+  function bindAutocomplete() {
+    AC_TARGET_IDS.forEach((id) => {
+      const input = document.getElementById(id);
+      if (!input) return;
+      input.setAttribute("autocomplete", "off");
+      acEnsureARIA(input);
+      input._ppaDebTimer = null;
+      input.addEventListener("keydown", (ev) => {
+        const k = ev.key;
+        if (k === "ArrowDown") {
+          ev.preventDefault();
+          acMove(input, 1);
+        } else if (k === "ArrowUp") {
+          ev.preventDefault();
+          acMove(input, -1);
+        } else if (k === "Enter") {
+          const accepted = acAcceptHighlighted(input);
+          if (accepted) {
+            ev.preventDefault();
+            ev.stopPropagation();
+          }
+        } else if (k === "Tab") {
+          const list = acGetList(input);
+          if (list && acAcceptHighlighted(input)) {
+            ev.preventDefault();
+            ev.stopPropagation();
+          }
+        } else if (k === "Escape") {
+          acClose(input);
+        }
+      });
+      input.addEventListener("keyup", (ev) => {
+        const k = ev.key;
+        if (!acIsTypingKey(k)) return;
+        ev.stopPropagation();
+        if (input._ppaDebTimer) {
+          clearTimeout(input._ppaDebTimer);
+          input._ppaDebTimer = null;
+        }
+        const sib = input.nextElementSibling;
+        if (sib && sib.classList && sib.classList.contains("ppa-autocomplete-list")) {
+          try {
+            sib.remove();
+          } catch (_) {
+          }
+        }
+        input._ppaDebTimer = setTimeout(() => {
+          input._ppaDebTimer = null;
+          acDispatchDebouncedKeyup(input);
+        }, DEBOUNCE_MS);
+      }, true);
+      input.addEventListener("keyup", async (ev) => {
+        const k = ev.key;
+        if (k === "Escape") {
+          acClose(input);
+          return;
+        }
+        if (acIsTypingKey(k) && k !== "Debounced") return;
+        await loadAutocompleteData();
+        acShowListFor(input, id.replace("ppa-", ""));
+      });
+      input.addEventListener("input", () => {
+        input.setAttribute("data-ppa-ac-index", "-1");
+      });
+      input.addEventListener("blur", () => setTimeout(() => acClose(input), 120));
+      input.addEventListener("focus", () => setTimeout(() => acEnsureFirstActive(input), 0));
+    });
+    try {
+      const mo = new MutationObserver((muts) => {
+        muts.forEach((m) => {
+          Array.prototype.forEach.call(m.addedNodes || [], (node) => {
+            if (!(node instanceof HTMLElement)) return;
+            if (node.classList && node.classList.contains("ppa-autocomplete-list")) {
+              const input = node.previousElementSibling && node.previousElementSibling.tagName === "INPUT" ? node.previousElementSibling : node.parentElement && node.parentElement.querySelector("input");
+              if (input) {
+                acEnsureARIA(input);
+                acWireListARIA(input, node);
+                acSyncAriaActiveFromHighlight(input);
+              }
+            }
+          });
+        });
+      });
+      mo.observe(document.body, { childList: true, subtree: true });
+    } catch (_) {
+    }
+  }
+
+  // assets/js/src/selects.js
+  function wrapSelects() {
+    $$(".ppa-form select").forEach((sel) => {
+      if (!sel.parentElement.classList.contains("ppa-select-wrap")) {
+        const wrap = document.createElement("div");
+        wrap.className = "ppa-select-wrap";
+        sel.parentNode.insertBefore(wrap, sel);
+        wrap.appendChild(sel);
+      }
+    });
+  }
+
+  // assets/js/src/boot.js
+  function findButton(role) {
+    const byData = $(`[data-ppa-action="${role}"]`);
+    if (byData) return byData;
+    const map = {
+      preview: ["#ppa-preview-btn", "#ppa-btn-preview"],
+      draft: ["#ppa-save-btn", "#ppa-btn-draft"],
+      publish: ["#ppa-publish-btn", "#ppa-btn-publish"]
+    };
+    for (const sel of map[role] || []) {
+      const el = $(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+  function boot() {
+    if (!getNonce()) {
+      warn("PPA nonce missing; admin-ajax calls may fail.");
+    }
+    const btnPreview = findButton("preview");
+    const btnDraft = findButton("draft");
+    const btnPublish = findButton("publish");
+    if (btnPreview) btnPreview.addEventListener("click", onPreviewClick, false);
+    if (btnDraft) btnDraft.addEventListener("click", onStoreClick.bind(null, "draft"), false);
+    if (btnPublish) btnPublish.addEventListener("click", onStoreClick.bind(null, "publish"), false);
+    bindAutocomplete();
+    wrapSelects();
+  }
+
+  // assets/js/src/index.js
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot, { once: true });
+  } else {
+    boot();
+  }
+})();
+//# sourceMappingURL=admin.js.map
