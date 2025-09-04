@@ -35,3 +35,8 @@ node_modules/
 dist/
 wp-plugins/postpress-ai/*.orig
 wp-plugins/postpress-ai/*.bak.*
+
+# CHANGED: 2025-09-04 - ignore plugin import backup files and local zip
+wp-plugins/postpress-ai/*.orig
+wp-plugins/postpress-ai/*.bak.*
+postpress_wp.zip
