@@ -1,9 +1,4 @@
 <?php
-# CHANGED: 2025-09-04 - imported class-ppa-settings.php (one-file import)
-/**
- * CHANGE LOG
- * 2025-09-04: Imported settings file from plugin ZIP into agentsuite repo branch.
- */
 /**
  * PostPress AI — Settings Page + Connectivity Tester
  * Path: /home/u3007-tenkoaygp3je/www/techwithwayne.com/public_html/wp-content/plugins/postpress-ai/inc/class-ppa-settings.php

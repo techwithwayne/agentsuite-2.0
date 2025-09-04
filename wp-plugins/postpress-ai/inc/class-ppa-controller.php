@@ -1,9 +1,4 @@
 <?php
-# CHANGED: 2025-09-04 - imported class-ppa-controller.php (one-file import)
-/**
- * CHANGE LOG
- * 2025-09-04: Imported controller file from plugin ZIP into agentsuite repo branch.
- */
 /**
  * PostPress AI — AJAX Proxy Controller
  * Path: /wp-content/plugins/postpress-ai/inc/class-ppa-controller.php

@@ -1,9 +1,4 @@
 <?php
-# CHANGED: 2025-09-04 - imported and prepended CHANGE LOG (one-file import)
-/**
- * CHANGE LOG
- * 2025-09-04: Imported postpress plugin main header file from local zip into agentsuite repo branch.
- */
 /**
  * Plugin Name:  PostPress AI
  * Description:  Connect WordPress to your Django PostPress AI service for AI-assisted content (preview, save draft, publish).

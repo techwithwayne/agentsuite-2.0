@@ -1,9 +1,4 @@
 <?php
-# CHANGED: 2025-09-04 - imported class-ppa-client.php (one-file import)
-/**
- * CHANGE LOG
- * 2025-09-04: Imported client file from plugin ZIP into agentsuite repo branch.
- */
 /**
  * CHANGE LOG
  * 2025-08-18 (Step 1 – client bootstrap in correct folder)

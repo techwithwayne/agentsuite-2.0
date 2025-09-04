@@ -1,0 +1,45 @@
+/**
+ * PostPress AI — Token Chip Styles
+ * Path: wp-content/plugins/postpress-ai/assets/css/admin-token.css
+ *
+ * Purpose:
+ * - Shows a compact token usage chip just above the Preview pane.
+ * - Rendered/updated by admin.js; not overwritten by preview HTML.
+ */
+
+#ppa-token-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin: 6px 0 10px 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06); /* subtle against #121212 */
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  line-height: 1.2;
+  color: #fff;
+  user-select: none;
+}
+
+#ppa-token-chip strong {
+  font-weight: 600;
+}
+
+#ppa-token-chip .ppa-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* Legend dots for input/output/total */
+#ppa-token-chip .ppa-dot.in  { background: #9bbcf9; }   /* bluish */
+#ppa-token-chip .ppa-dot.out { background: #f6a1a1; }   /* reddish */
+#ppa-token-chip .ppa-dot.sum { background: #b7f1b0; }   /* greenish */
+
+/* When aria-busy is true on preview, dim the chip slightly */
+#ppa-preview[aria-busy="true"] ~ #ppa-token-chip,
+#ppa-token-chip[aria-busy="true"] {
+  opacity: 0.85;
+}

@@ -40,3 +40,8 @@ wp-plugins/postpress-ai/*.bak.*
 wp-plugins/postpress-ai/*.orig
 wp-plugins/postpress-ai/*.bak.*
 postpress_wp.zip
+
+# PostPress AI imports
+wp-plugins/postpress-ai/*.orig
+wp-plugins/postpress-ai/*.bak.*
+postpress_wp.zip
