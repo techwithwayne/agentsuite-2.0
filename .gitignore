@@ -33,3 +33,5 @@ htmlcov/
 # Node
 node_modules/
 dist/
+wp-plugins/postpress-ai/*.orig
+wp-plugins/postpress-ai/*.bak.*
