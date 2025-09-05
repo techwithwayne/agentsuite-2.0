@@ -1,74 +1,58 @@
 # -*- coding: utf-8 -*-
 """
 PostPress AI — Preview Generator (Django)
-Absolute Path: /home/techwithwayne/agentsuite/postpress_ai/views/preview_post.py
-
-CHANGE LOG
-- 2025-08-23 (Assistant):
-  * CHANGED: Hardened preview generator with provider selection (OpenAI/Anthropic),             # CHANGED:
-    final-quality override via env or request hints, optional stub path, and strict             # CHANGED:
-    JSON contract enforcement.                                                                  # CHANGED:
-  * CHANGED: Works with existing wrapper (views.preview) that handles auth/X-PPA-Key.           # CHANGED:
-  * CHANGED: Adds robust decoding of varied provider shapes and belts-and-suspenders            # CHANGED:
-    contract validation; always returns {title, html, summary}.                                 # CHANGED:
-
-Notes
-- Keep Preview fast/cheap with gpt-4o-mini; allow “final” quality (gpt-4.1 / gpt-5-mini)        # CHANGED:
-  when requested, *without* touching store code.                                                # CHANGED:
-- You must set OPENAI_API_KEY and/or CLAUDE_API_KEY in the *running worker* env, then restart.  # CHANGED:
 """
 
-from __future__ import annotations                                                              # CHANGED:
+from __future__ import annotations
 
-import html                                                                                     # CHANGED:
-import json                                                                                     # CHANGED:
-import logging                                                                                  # CHANGED:
-import os                                                                                       # CHANGED:
-import re                                                                                       # CHANGED:
-import threading                                                                                # CHANGED:
-from typing import Any, Callable, Dict, Optional                                                # CHANGED:
-from urllib.request import Request, urlopen                                                     # CHANGED:
-from urllib.error import HTTPError, URLError                                                    # CHANGED:
+import html
+import json
+import logging
+import os
+import re
+import threading
+from typing import Any, Callable, Dict, Optional
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
-from django.http import HttpRequest, HttpResponse, JsonResponse                                 # CHANGED:
+from django.http import HttpRequest, HttpResponse, JsonResponse
 
-logger = logging.getLogger(__name__)                                                            # CHANGED:
-VERSION = "postpress-ai.v2.1-2025-08-14"                                                        # CHANGED:
-
-# --------------------------------------------------------------------------------------
-# JSON helpers (self-contained so we don’t rely on other modules)                         # CHANGED
-# --------------------------------------------------------------------------------------
-
-def _json_response(payload: Dict[str, Any], status: int = 200) -> JsonResponse:                 # CHANGED:
-    """Return JSON with unicode intact (no ascii-escape)."""                                    # CHANGED:
-    return JsonResponse(payload, status=status, json_dumps_params={"ensure_ascii": False})      # CHANGED:
+logger = logging.getLogger(__name__)
+VERSION = "postpress-ai.v2.1-2025-08-14"
 
 # --------------------------------------------------------------------------------------
-# Utilities (sanitize, schema, extraction)                                                # CHANGED
+# JSON helpers
 # --------------------------------------------------------------------------------------
 
-def _coerce_str(val: Any) -> str:                                                               # CHANGED:
+def _json_response(payload: Dict[str, Any], status: int = 200) -> JsonResponse:
+    """Return JSON with unicode intact (no ascii-escape)."""
+    return JsonResponse(payload, status=status, json_dumps_params={"ensure_ascii": False})
+
+# --------------------------------------------------------------------------------------
+# Utilities
+# --------------------------------------------------------------------------------------
+
+def _coerce_str(val: Any) -> str:
     try:
         s = str(val or "").strip()
         return re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]", "", s)
     except Exception:
         return ""
 
-def _sanitize_inline(s: str) -> str:                                                            # CHANGED:
-    # Not a general sanitizer for HTML bodies; safe for titles/meta lines.                      # CHANGED:
+def _sanitize_inline(s: str) -> str:
     s = html.unescape(s or "")
     s = re.sub(r"\s+", " ", s)
     return s.strip()
 
-def _build_title(subject: Optional[str], genre: Optional[str], tone: Optional[str]) -> str:      # CHANGED:
+def _build_title(subject: Optional[str], genre: Optional[str], tone: Optional[str]) -> str:
     parts = []
     if genre: parts.append(f"[{genre.strip()}]")
     if subject: parts.append(subject.strip())
     if tone: parts.append(f"— {tone.strip()}")
     return " ".join(parts) if parts else "Article — Neutral"
 
-def _preview_json_schema() -> Dict[str, Any]:                                                    # CHANGED:
-    """Strict JSON Schema used with providers that support it (OpenAI Responses/Chat)."""       # CHANGED:
+def _preview_json_schema() -> Dict[str, Any]:
+    """Strict JSON Schema used with providers that support it (OpenAI Responses/Chat)."""
     return {
         "name": "postpress_preview",
         "schema": {
@@ -84,8 +68,8 @@ def _preview_json_schema() -> Dict[str, Any]:                                   
         "strict": True,
     }
 
-def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:                                 # CHANGED:
-    """Try direct JSON, then lax extraction of the first {...} object."""                        # CHANGED:
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """Try direct JSON, then lax extraction of the first {...} object."""
     try:
         obj = json.loads(text)
         if isinstance(obj, dict):
@@ -103,10 +87,8 @@ def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:                
 
 def _validate_and_fill_contract(obj: Optional[Dict[str, Any]],
                                 payload: Dict[str, Any],
-                                provider_label: str) -> Dict[str, str]:                          # CHANGED:
-    """
-    Always return strings for title/html/summary with sane defaults and a provider marker.       # CHANGED:
-    """
+                                provider_label: str) -> Dict[str, str]:
+    """Always return strings for title/html/summary with sane defaults and a provider marker."""
     out = {"title": "", "html": "", "summary": ""}
     if isinstance(obj, dict):
         for k in ("title", "html", "summary"):
@@ -129,22 +111,17 @@ def _validate_and_fill_contract(obj: Optional[Dict[str, Any]],
     return out
 
 # --------------------------------------------------------------------------------------
-# Provider choice (with final-quality override)                                           # CHANGED
+# Provider choice
 # --------------------------------------------------------------------------------------
 
-_rr_lock = threading.Lock()                                                                    # CHANGED:
-_rr_next = 0                                                                                   # CHANGED:
+_rr_lock = threading.Lock()
+_rr_next = 0
 
-def _truthy_env(name: str) -> bool:                                                            # CHANGED:
+def _truthy_env(name: str) -> bool:
     val = (os.getenv(name) or "").strip().lower()
     return val in {"1","true","yes","on"}
 
-def _is_final_request(payload: Dict[str, Any]) -> bool:                                        # CHANGED:
-    """
-    Treat request as 'final quality' if caller hints publish-quality or env forces it.          # CHANGED:
-    Triggers: fields.quality in {'final','publish','high','store'}, fields.tier='final',        # CHANGED:
-              fields.mode='publish', or PPA_PREVIEW_FORCE_FINAL=1.                              # CHANGED:
-    """
+def _is_final_request(payload: Dict[str, Any]) -> bool:
     try:
         q = str(payload.get("quality") or payload.get("tier") or "").strip().lower()
     except Exception:
@@ -155,12 +132,12 @@ def _is_final_request(payload: Dict[str, Any]) -> bool:                         
     if _truthy_env("PPA_PREVIEW_FORCE_FINAL"): return True
     return False
 
-def _detect_providers() -> Dict[str, bool]:                                                    # CHANGED:
+def _detect_providers() -> Dict[str, bool]:
     have_openai = bool(os.getenv("OPENAI_API_KEY", "").strip())
     have_anthropic = bool(os.getenv("CLAUDE_API_KEY", "").strip())
     return {"openai": have_openai, "anthropic": have_anthropic}
 
-def _choose_provider() -> Optional[str]:                                                       # CHANGED:
+def _choose_provider() -> Optional[str]:
     avail = _detect_providers()
     pref = (os.getenv("PPA_PREVIEW_PROVIDER") or "").strip().lower()
     strat = (os.getenv("PPA_PREVIEW_STRATEGY") or "").strip().lower()
@@ -179,10 +156,10 @@ def _choose_provider() -> Optional[str]:                                        
     return "openai" if avail.get("openai") else ("anthropic" if avail.get("anthropic") else None)
 
 # --------------------------------------------------------------------------------------
-# Provider calls (OpenAI / Anthropic)                                                     # CHANGED
+# Provider calls (OpenAI / Anthropic)
 # --------------------------------------------------------------------------------------
 
-def _build_user_prompt(payload: Dict[str, Any]) -> str:                                        # CHANGED:
+def _build_user_prompt(payload: Dict[str, Any]) -> str:
     subject = _coerce_str(payload.get("subject") or payload.get("title"))
     genre = _coerce_str(payload.get("genre") or "Article")
     tone = _coerce_str(payload.get("tone") or "Neutral")
@@ -205,17 +182,17 @@ def _build_user_prompt(payload: Dict[str, Any]) -> str:                         
     ]
     return "\n".join(parts)
 
-def _openai_model(final: bool) -> str:                                                         # CHANGED:
+def _openai_model(final: bool) -> str:
     if final:
         return (os.getenv("PPA_PREVIEW_FINAL_OPENAI_MODEL") or "").strip() or "gpt-4.1"
     return (os.getenv("PPA_PREVIEW_OPENAI_MODEL") or "").strip() or "gpt-4o-mini"
 
-def _anthropic_model(final: bool) -> str:                                                      # CHANGED:
+def _anthropic_model(final: bool) -> str:
     if final:
         return (os.getenv("PPA_PREVIEW_FINAL_ANTHROPIC_MODEL") or "").strip() or "claude-3-5-sonnet-20240620"
     return (os.getenv("PPA_PREVIEW_ANTHROPIC_MODEL") or "").strip() or "claude-sonnet-4-20250514"
 
-def _generate_via_openai(payload: Dict[str, Any]) -> Dict[str, str]:                           # CHANGED:
+def _generate_via_openai(payload: Dict[str, Any]) -> Dict[str, str]:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("openai.missing_key")
@@ -231,7 +208,7 @@ def _generate_via_openai(payload: Dict[str, Any]) -> Dict[str, str]:            
             {"role": "system", "content": "You are PostPress AI. Output ONLY strict JSON that matches the provided schema."},
             {"role": "user", "content": f"Build a blog post preview as JSON.\n{_build_user_prompt(payload)}"},
         ],
-        "response_format": {  # JSON schema support (structured outputs)
+        "response_format": {
             "type": "json_schema",
             "json_schema": _preview_json_schema(),
         },
@@ -271,7 +248,7 @@ def _generate_via_openai(payload: Dict[str, Any]) -> Dict[str, str]:            
 
     return _validate_and_fill_contract(obj, payload, provider_label="openai")
 
-def _generate_via_anthropic(payload: Dict[str, Any]) -> Dict[str, str]:                        # CHANGED:
+def _generate_via_anthropic(payload: Dict[str, Any]) -> Dict[str, str]:
     api_key = os.getenv("CLAUDE_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("anthropic.missing_key")
@@ -327,10 +304,10 @@ def _generate_via_anthropic(payload: Dict[str, Any]) -> Dict[str, str]:         
     return _validate_and_fill_contract(obj, payload, provider_label="anthropic")
 
 # --------------------------------------------------------------------------------------
-# Loader & entry point                                                                  # CHANGED
+# Loader & entry point
 # --------------------------------------------------------------------------------------
 
-def _load_service_generator() -> Optional[Callable[[Dict[str, Any]], Dict[str, str]]]:          # CHANGED:
+def _load_service_generator() -> Optional[Callable[[Dict[str, Any]], Dict[str, str]]]:
     provider = _choose_provider()
     if provider == "openai":
         return _generate_via_openai
@@ -340,7 +317,7 @@ def _load_service_generator() -> Optional[Callable[[Dict[str, Any]], Dict[str, s
 
 def generate_preview(payload: Optional[Dict[str, Any]] = None,
                      service_generator: Optional[Any] = None,
-                     request: Optional[Any] = None) -> Dict[str, str]:                           # CHANGED:
+                     request: Optional[Any] = None) -> Dict[str, str]:
     payload = payload or {}
     keys = sorted(list(payload.keys()))
     logger.info("[PPA][preview_post] keys=%s provider_env=%s", keys, os.getenv("PPA_PREVIEW_PROVIDER", ""))
@@ -370,73 +347,60 @@ def generate_preview(payload: Optional[Dict[str, Any]] = None,
         f"</article>"
     ).strip()
 
-    return {"title": title, "html": html_out, "summary": "Local fallback preview."}             # CHANGED:
+    return {"title": title, "html": html_out, "summary": "Local fallback preview."}
 
 # --------------------------------------------------------------------------------------
-# Delegate view used by wrapper (views.preview calls this module)                        # CHANGED
+# Delegate view used by wrapper (views.preview calls this module)
 # --------------------------------------------------------------------------------------
 
-def preview(request: HttpRequest) -> JsonResponse | HttpResponse:                               # CHANGED:
+def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
     """
-    Delegate endpoint used by the public wrapper to generate content via providers.             # CHANGED:
-    The outer wrapper performs CORS/auth (X-PPA-Key).                                           # CHANGED:
+    Delegate endpoint used by the public wrapper to generate content via providers.
+    The outer wrapper performs CORS/auth (X-PPA-Key).
     """
     try:
+        # Parse JSON body
         try:
             data = json.loads(request.body.decode("utf-8")) if request.body else {}
         except Exception:
             data = {}
 
+        # Extract fields from the request
         fields = data.get("fields") or {}
         if not isinstance(fields, dict):
             fields = {}
-    # [PPA] Merge WP form-encoded fields[...] into JSON `fields` and set title fallback   # CHANGED:
-    if request.method == "POST" and getattr(request, "POST", None):                      # CHANGED:
-        import re                                                                         # CHANGED:
-        skip = {"action", "nonce"}                                                        # CHANGED:
-        for _k, _v in request.POST.items():                                              # CHANGED:
-            if _k in skip:                                                                # CHANGED:
-                continue                                                                  # CHANGED:
-            _m = re.match(r"^fields\[(?P<name>[^\]]+)\]$", _k)                           # CHANGED:
-            if _m:                                                                        # CHANGED:
-                _name = _m.group("name").strip()                                          # CHANGED:
-                if _name and _name not in skip:                                           # CHANGED:
-                    fields[_name] = _v                                                    # CHANGED:
 
-    # Title fallback                                                                      # CHANGED:
-    title = (fields.get("title") or fields.get("subject") or fields.get("headline") or "").strip()  # CHANGED:
-    if title and "title" not in fields:                                                   # CHANGED:
-        fields["title"] = title                                                           # CHANGED:
+        # Handle form-encoded fields from WordPress
+        if request.method == "POST" and getattr(request, "POST", None):
+            import re
+            skip = {"action", "nonce"}
+            for k, v in request.POST.items():
+                if k in skip:
+                    continue
+                m = re.match(r"^fields\[(?P<name>[^\]]+)\]$", k)
+                if m:
+                    name = m.group("name").strip()
+                    if name and name not in skip:
+                        fields[name] = v
+                elif k not in fields:
+                    fields[k] = v
 
-        # CHANGED: 2025-09-05 - accept form-encoded fields (fields[...]) and ensure title fallback
-        try:
-            qd = getattr(request, 'POST', None)
-            if qd:
-                for k, vals in qd.lists():
-                    if k in ('action','nonce'):
-                        continue
-                    if k.startswith('fields[') and k.endswith(']'):
-                        kk = k[len('fields['):-1]
-                        if kk and kk not in fields and vals:
-                            fields[kk] = str(vals[-1])
-                    else:
-                        if k not in fields and vals:
-                            fields[k] = str(vals[-1])
-        except Exception:
-            pass
-
+        # Title fallback - ensure we have a title field
         if not (isinstance(fields.get('title'), str) and fields.get('title').strip()):
-            for alt in ('subject','headline'):
+            for alt in ('subject', 'headline'):
                 v = fields.get(alt)
                 if isinstance(v, str) and v.strip():
                     fields['title'] = v
                     break
 
-
+        # FIXED: Main logic is now properly unindented and always executes
+        logger.info("[PPA][preview_post][delegate] Processing fields: %s", list(fields.keys()))
+        
         result = generate_preview(fields, request=request)
         result = _validate_and_fill_contract(result, fields, provider_label="delegate")
         payload = {"ok": True, "result": result, "ver": VERSION}
         return _json_response(payload, 200)
+        
     except Exception as exc:
         logger.exception("[PPA][preview_post.delegate][error] %s", exc)
         fallback = {
