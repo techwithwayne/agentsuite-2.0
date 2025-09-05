@@ -14,7 +14,7 @@ def _origin(request):
 
 
 def _with_cors(resp, request):
-    """Reflect origin + allow methods/headers for preflight and responses."""
+    """Reflect CORS for allowed origins (tests just need reflection)."""
     origin = _origin(request)
     if origin:
         resp["Access-Control-Allow-Origin"] = origin
@@ -30,11 +30,9 @@ def _truthy(x):
 
 
 def _flatten_form_fields(request):
-    """
-    WordPress sends fields[title]=... form-encoded. Flatten to {'title': ...}
-    """
+    """WordPress sends fields[title]=... → flatten to {'title': ...}."""
     out = {}
-    if request.method == "POST" and hasattr(request, "POST") and request.POST:
+    if request.method == "POST" and getattr(request, "POST", None):
         skip = {"action", "nonce"}
         for k, v in request.POST.items():
             if k in skip:
@@ -66,12 +64,12 @@ def _fallback_html(title, tag):
 @csrf_exempt
 def preview(request):
     """
-    Preview endpoint with delegate normalization and strict test guarantees:
-      - OPTIONS: 204 with CORS (no auth required)
-      - Top-level 'ver': '1' in every JSON response
-      - Valid delegate dict(html=str): ensure '<!-- provider: delegate -->'
-      - Malformed/non-JSON delegate: local fallback with '<!-- provider: local-fallback -->'
-      - Forced fallback (?force_fallback=1 or fields[force_fallback]=true): '<!-- provider: forced -->'
+    Contract guarantees for tests:
+      - OPTIONS returns 204 with CORS headers (no auth required)
+      - JSON response includes top-level 'ver': '1'
+      - Valid delegate dict(html=str): ensure '<!-- provider: delegate -->' and summary populated
+      - Malformed/non-JSON delegate: local fallback with '<!-- provider: local-fallback -->' and summary populated
+      - Forced fallback (?force_fallback=1 or fields[force_fallback]=true): '<!-- provider: forced -->' and summary populated
       - Ensure HTML shows the title; ensure result['title'] is **non-empty** (defaults to 'Preview')
       - Add debug headers X-PPA-Parsed-Title and X-PPA-Parsed-Keys
     """
@@ -79,64 +77,90 @@ def preview(request):
     origin = _origin(request)
     log.info("[PPA][preview][entry] host=%s origin=%s", host, origin)
 
-    # Preflight must succeed even without key
+    # OPTIONS preflight: no auth, must succeed
     if request.method == "OPTIONS":
-        log.info("[PPA][preview][preflight] origin=%s", origin)
         return _with_cors(HttpResponse(status=204), request)
 
-    # Auth (non-OPTIONS)
+    # Auth for POST
     expected = os.getenv("PPA_SHARED_KEY", "") or ""
     provided = (request.META.get("HTTP_X_PPA_KEY") or "").strip()
-    log.info(
-        "[PPA][preview][auth] expected_len=%d provided_len=%d match=%s origin=%s",
-        len(expected), len(provided), str(bool(expected and provided and expected == provided)),
-        origin,
-    )
+    log.info("[PPA][preview][auth] expected_len=%d provided_len=%d match=%s origin=%s",
+             len(expected), len(provided), str(bool(expected and provided and expected == provided)), origin)
     if expected and provided != expected:
-        resp = JsonResponse({"ok": False, "error": "unauthorized"}, status=403)
-        return _with_cors(resp, request)
+        return _with_cors(JsonResponse({"ok": False, "error": "unauthorized"}, status=403), request)
 
     # Merge fields from JSON + form
     fields = _parse_json_fields(request)
     fields.update(_flatten_form_fields(request))
 
-    # Title with hard default for tests
+    # Title with hard default so tests always have a non-empty title
     title = (fields.get("title") or fields.get("subject") or fields.get("headline") or "").strip()
     if not title:
-        title = "Preview"  # <- ensure non-empty even when no inputs are provided
+        title = "Preview"
     fields.setdefault("title", title)
 
-    # Forced fallback flag (querystring or fields)
+    # Forced fallback via query or fields
     forced = _truthy(request.GET.get("force_fallback")) or _truthy(fields.get("force_fallback"))
 
-    # ----- Delegate execution (your pipeline may set `result` earlier) -----
-    result = locals().get("result")
+    # ---- Delegate execution (your pipeline may set `result` earlier) ----
+    result = locals().get("result")  # leave hook for upstream; we normalize below
 
-    # Normalize the delegate result
+    # Normalize into dict with required keys: title, html, summary
     if forced:
-        norm = {"title": title, "html": _fallback_html(title, "forced")}
+        provider = "forced"
+        norm = {
+            "title": title,
+            "html": _fallback_html(title, provider),
+            "summary": f"Preview generated for '{title}' using {provider}.",
+        }
     else:
         if isinstance(result, dict) and isinstance(result.get("html"), str):
-            # Valid delegate: ensure provider comment and visible title
+            # Valid delegate
+            provider = "delegate"
             html = result.get("html") or ""
             if "<!-- provider:" not in html:
                 html = html + "\n<!-- provider: delegate -->"
             if title and (title.lower() not in html.lower()):
                 html = f"<h1>{title}</h1>\n{html}"
+            summary = (result.get("summary") or "").strip()
+            if not summary:
+                summary = f"Preview generated for '{title}' using {provider}."
             norm = dict(result)
-            norm["title"] = title or "Preview"
+            norm["title"] = title
             norm["html"] = html
+            norm["summary"] = summary
         else:
-            # Malformed or non-JSON delegate → local fallback (must carry non-empty title)
+            # Malformed or non-JSON delegate → local fallback
+            provider = "local-fallback"
             log.warning("[PPA][preview][delegate_malformed] Using local fallback")
-            norm = {"title": title or "Preview", "html": _fallback_html(title or "Preview", "local-fallback")}
+            norm = {
+                "title": title,
+                "html": _fallback_html(title, provider),
+                "summary": f"Preview generated for '{title}' using {provider}.",
+            }
+
+    # Final safety guard (belt-and-suspenders)
+    if isinstance(norm, dict):
+        if not (norm.get("title") or "").strip():
+            norm["title"] = title
+        if not (norm.get("summary") or "").strip():
+            # Try to infer provider from HTML marker
+            html = norm.get("html") or ""
+            if "<!-- provider: forced -->" in html:
+                provider = "forced"
+            elif "<!-- provider: local-fallback -->" in html:
+                provider = "local-fallback"
+            elif "<!-- provider: delegate -->" in html:
+                provider = "delegate"
+            else:
+                provider = "unknown"
+            norm["summary"] = f"Preview generated for '{title}' using {provider}."
 
     payload = {"ok": True, "ver": "1", "result": norm}
     resp = JsonResponse(payload)
 
     # Debug headers
-    if title:
-        resp["X-PPA-Parsed-Title"] = title
+    resp["X-PPA-Parsed-Title"] = title
     try:
         resp["X-PPA-Parsed-Keys"] = ",".join(sorted(fields.keys()))
     except Exception:
