@@ -1,48 +1,39 @@
-# /home/techwithwayne/agentsuite/postpress_ai/views/debug_model.py
 """
-CHANGE LOG
-----------
-2025-08-16
-- HARDENING (CORS preflight): Allow OPTIONS without auth for /preview/debug-model/             # CHANGED:
-  so browsers can complete CORS preflight. This mirrors /preview/ behavior and                # CHANGED:
-  does NOT relax GET auth requirements.                                                       # CHANGED:
-- IMPLEMENTATION: Uses _with_cors(HttpResponse(204)) for preflight; GET path unchanged.       # CHANGED:
-
-2025-08-16
-- NEW FILE: Extracted the /preview/debug-model/ endpoint into a dedicated module.
+/preview/debug-model/ endpoint
 """
 
-from __future__ import annotations  # CHANGED:
+from __future__ import annotations
 
 import os
 import logging
 
 from django.conf import settings
-from django.http import HttpRequest, JsonResponse, HttpResponse  # CHANGED:
+from django.http import HttpRequest, JsonResponse, HttpResponse
 
-from . import (  # CHANGED:
-    _json_response,
-    _normalize_header_value,
-    _is_test_env,
-    _with_cors,                # CHANGED:
-    VERSION,
-)
+from .utils import _json_response, _normalize_header_value, _with_cors, VERSION
 
 log = logging.getLogger("webdoctor")
 __all__ = ["preview_debug_model"]
 
+def _is_test_env(request: HttpRequest) -> bool:
+    """Detect test environment."""
+    import sys
+    if any([
+        any("test" in (arg or "").lower() for arg in sys.argv),
+        "PYTEST_CURRENT_TEST" in os.environ,
+        os.environ.get("DJANGO_TESTING") == "1",
+    ]):
+        return True
+    host = (request.META.get("HTTP_HOST") or "").lower()
+    return host == "testserver"
 
-def preview_debug_model(request: HttpRequest) -> JsonResponse | HttpResponse:  # CHANGED:
+def preview_debug_model(request: HttpRequest) -> JsonResponse | HttpResponse:
     """
-    GET:   Returns current preview provider/model details; requires valid X-PPA-Key
-           unless running under test bypass.
-    OPTS:  Open (no auth) to support CORS preflight; returns 204 with allowed CORS            # CHANGED:
-           reflection only (never wildcard).                                                  # CHANGED:
-    """  # CHANGED:
-
-    # Allow CORS preflight without auth (Cloudflare-friendly, mirrors /preview/).             # CHANGED:
-    if request.method == "OPTIONS":  # CHANGED:
-        return _with_cors(HttpResponse(status=204), request)  # CHANGED:
+    GET: Returns current preview provider/model details; requires valid X-PPA-Key
+    OPTIONS: Open (no auth) to support CORS preflight
+    """
+    if request.method == "OPTIONS":
+        return _with_cors(HttpResponse(status=204), request)
 
     if request.method != "GET":
         return _json_response({"ok": False, "error": "method.not_allowed"}, 405, request)
@@ -50,6 +41,7 @@ def preview_debug_model(request: HttpRequest) -> JsonResponse | HttpResponse:  #
     provided = _normalize_header_value(request.META.get("HTTP_X_PPA_KEY", ""))
     expected = _normalize_header_value(getattr(settings, "PPA_SHARED_KEY", ""))
     ok = _is_test_env(request) or (bool(expected) and (provided == expected))
+    
     log.info("[PPA][preview-debug][entry] host=%s origin=%s auth_ok=%s expected_len=%s provided_len=%s",
              _normalize_header_value(request.META.get("HTTP_HOST")),
              _normalize_header_value(request.META.get("HTTP_ORIGIN")),
@@ -85,4 +77,4 @@ def preview_debug_model(request: HttpRequest) -> JsonResponse | HttpResponse:  #
         },
         200,
         request,
-    )  # CHANGED:
+    )

@@ -1,23 +1,8 @@
-# /home/techwithwayne/agentsuite/postpress_ai/views/health.py
 """
-CHANGE LOG
-----------
-2025-08-17
-- ENHANCEMENT: Handle CORS preflight (OPTIONS) explicitly with 204 + CORS reflection.          # CHANGED:
-- FIX: If PPA_WP_API_URL is empty or invalid, return early with                              # CHANGED:
-       wp_reachable=False, wp_allowed=False, wp_status="unreachable", wp_error="url-error".   # CHANGED:
-       (Aligns behavior with Ops Runbook and avoids misleading timeouts.)                     # CHANGED:
-- HOTFIX: Return **204** (empty) for OPTIONS instead of 200 JSON to satisfy tests and         # CHANGED:
-          match other endpoints' preflight behavior.                                          # CHANGED:
-
-2025-08-16
-- FIX (contract compatibility): module="postpress_ai.views"; file points to public
-  surface (__init__.py).
-- FIX (monkeypatch): Resolve package-level `urlopen` at call time from postpress_ai.views.
-- NEW FILE: Extracted the /health/ endpoint into a dedicated module.
+/health/ endpoint
 """
 
-from __future__ import annotations  # CHANGED:
+from __future__ import annotations
 
 import os
 import logging
@@ -25,9 +10,9 @@ from typing import Any, Optional
 from importlib import import_module
 
 from django.conf import settings
-from django.http import HttpRequest, JsonResponse, HttpResponse  # CHANGED:
+from django.http import HttpRequest, JsonResponse, HttpResponse
 
-from . import _json_response, _normalize_header_value, VERSION, _is_url, _with_cors  # CHANGED:
+from .utils import _json_response, _normalize_header_value, VERSION, _is_url, _with_cors
 
 log = logging.getLogger("webdoctor")
 __all__ = ["health"]
@@ -65,9 +50,8 @@ def _canonical_views_init_path() -> str:
         return __file__
 
 def health(request: HttpRequest) -> JsonResponse | HttpResponse:
-    # Always answer preflight with 204 (empty) and reflect CORS                               # CHANGED:
-    if request.method == "OPTIONS":  # CHANGED:
-        return _with_cors(HttpResponse(status=204), request)  # CHANGED:
+    if request.method == "OPTIONS":
+        return _with_cors(HttpResponse(status=204), request)
     if request.method != "GET":
         return _json_response({"ok": False, "error": "method.not_allowed"}, 405, request)
 
@@ -75,7 +59,6 @@ def health(request: HttpRequest) -> JsonResponse | HttpResponse:
     ua = getattr(settings, "PPA_HEALTH_UA", "Mozilla/5.0")
     timeout_s = float(os.getenv("PPA_HEALTH_TIMEOUT_SECONDS", "1"))
 
-    # Early-return when URL is missing or malformed (per runbook semantics).
     if not base or not _is_url(base):
         payload = {
             "ok": True,
