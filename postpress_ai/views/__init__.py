@@ -37,3 +37,10 @@ from .health import health
 from .preview import preview
 from .store import store
 from .debug_model import preview_debug_model
+
+# Fix __module__ attributes for URL resolution
+preview.__module__ = "postpress_ai.views"
+store.__module__ = "postpress_ai.views"
+version.__module__ = "postpress_ai.views"
+health.__module__ = "postpress_ai.views"
+preview_debug_model.__module__ = "postpress_ai.views"

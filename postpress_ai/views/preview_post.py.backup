@@ -393,7 +393,7 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
                     fields['title'] = v
                     break
 
-        # Main processing logic
+        # FIXED: Main logic is now properly unindented and always executes
         logger.info("[PPA][preview_post][delegate] Processing fields: %s", list(fields.keys()))
         
         result = generate_preview(fields, request=request)
