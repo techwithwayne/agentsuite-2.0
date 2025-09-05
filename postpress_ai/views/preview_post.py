@@ -370,6 +370,30 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
         if not isinstance(fields, dict):
             fields = {}
 
+        # CHANGED: 2025-09-05 - accept form-encoded fields (fields[...]) and ensure title fallback
+        try:
+            qd = getattr(request, 'POST', None)
+            if qd:
+                for k, vals in qd.lists():
+                    if k in ('action','nonce'):
+                        continue
+                    if k.startswith('fields[') and k.endswith(']'):
+                        kk = k[len('fields['):-1]
+                        if kk and kk not in fields and vals:
+                            fields[kk] = str(vals[-1])
+                    else:
+                        if k not in fields and vals:
+                            fields[k] = str(vals[-1])
+        except Exception:
+            pass
+
+        if not (isinstance(fields.get('title'), str) and fields.get('title').strip()):
+            for alt in ('subject','headline'):
+                v = fields.get(alt)
+                if isinstance(v, str) and v.strip():
+                    fields['title'] = v
+                    break
+
         # Handle form-encoded fields from WordPress
         if request.method == "POST" and getattr(request, "POST", None):
             import re
