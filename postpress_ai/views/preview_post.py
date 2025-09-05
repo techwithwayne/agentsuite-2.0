@@ -390,6 +390,24 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:               
         fields = data.get("fields") or {}
         if not isinstance(fields, dict):
             fields = {}
+    # [PPA] Merge WP form-encoded fields[...] into JSON `fields` and set title fallback   # CHANGED:
+    if request.method == "POST" and getattr(request, "POST", None):                      # CHANGED:
+        import re                                                                         # CHANGED:
+        skip = {"action", "nonce"}                                                        # CHANGED:
+        for _k, _v in request.POST.items():                                              # CHANGED:
+            if _k in skip:                                                                # CHANGED:
+                continue                                                                  # CHANGED:
+            _m = re.match(r"^fields\[(?P<name>[^\]]+)\]$", _k)                           # CHANGED:
+            if _m:                                                                        # CHANGED:
+                _name = _m.group("name").strip()                                          # CHANGED:
+                if _name and _name not in skip:                                           # CHANGED:
+                    fields[_name] = _v                                                    # CHANGED:
+
+    # Title fallback                                                                      # CHANGED:
+    title = (fields.get("title") or fields.get("subject") or fields.get("headline") or "").strip()  # CHANGED:
+    if title and "title" not in fields:                                                   # CHANGED:
+        fields["title"] = title                                                           # CHANGED:
+
         # CHANGED: 2025-09-05 - accept form-encoded fields (fields[...]) and ensure title fallback
         try:
             qd = getattr(request, 'POST', None)
