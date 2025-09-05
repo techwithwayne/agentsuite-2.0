@@ -1,1 +1,1 @@
-/* (PASTE THE FULL JS FILE CONTENTS FROM ABOVE HERE EXACTLY) */
+/* (paste the full file contents from above exactly) */
