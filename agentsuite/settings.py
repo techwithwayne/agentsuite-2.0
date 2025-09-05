@@ -31,6 +31,27 @@ from dotenv import load_dotenv
 # Robust .env loader that works on PythonAnywhere and local machines
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# ## PPA: load .env (minimal)
+# Populate os.environ from BASE_DIR/.env if present, without extra deps.
+try:
+    from pathlib import Path as _PPAPath
+    import os as _PPAOS
+    _ppa_env = (_PPAPath(__file__).resolve().parent.parent / ".env")
+    if _ppa_env.exists():
+        for _line in _ppa_env.read_text(encoding="utf-8").splitlines():
+            _s = _line.strip()
+            if not _s or _s.startswith("#") or "=" not in _s:
+                continue
+            _k, _v = _s.split("=", 1)
+            _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
+            # do NOT override variables already set in the environment
+            if _k and _k not in _PPAOS.environ:
+                _PPAOS.environ[_k] = _v
+except Exception:
+    pass
+# ## /PPA
+
+
 ENV_CANDIDATES = [
     Path(os.path.expanduser('~/agentsuite/.env')),  # PythonAnywhere: ~/agentsuite/.env
     BASE_DIR / '.env',                               # Local: project root
@@ -51,8 +72,8 @@ ALLOWED_PDF_ENGINES = {"weasyprint", "xhtml2pdf", "pdfkit"}  # CHANGED
 
 _pdf_engine = os.getenv("THERAPYLIB_PDF_ENGINE", "xhtml2pdf").lower()  # CHANGED
 if _pdf_engine not in ALLOWED_PDF_ENGINES:  # CHANGED
-    logger = logging.getLogger(__name__)  # CHANGED
-    logger.warning(  # CHANGED
+    # logger = logging.getLogger(__name__)  # CHANGED
+    print("[WARNING]"  # CHANGED
         f"Invalid THERAPYLIB_PDF_ENGINE '{_pdf_engine}' detected. "
         "Falling back to 'xhtml2pdf'. Allowed values: weasyprint, xhtml2pdf, pdfkit."
     )
