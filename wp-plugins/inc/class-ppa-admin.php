@@ -1,4 +1,5 @@
 <?php
+# CHANGED: 2025-09-04 - enqueue preview-fix.js to ensure preview POSTs include subject/title/headline when needed
 /**
  * PostPress AI - Admin Asset Loader
  * Path: /home/customer/www/techwithwayne.com/public_html/wp-content/plugins/postpress-ai/inc/class-ppa-admin.php
@@ -54,13 +55,13 @@ class PPA_Admin {
 
 		// --- Cache-busting versions based on filemtime() ------------------------
 		$css_file = plugin_dir_path( __FILE__ ) . '../assets/css/admin.css';
-		$js_base  = plugin_dir_path( __FILE__ ) . '../assets/js/admin';             // CHANGED:
+		$js_base  = plugin_dir_path( __FILE__ ) . '../assets/js/admin';
 		$css_ver  = file_exists( $css_file ) ? (string) filemtime( $css_file ) : '1';
 
 		// Decide which JS file to use (.js or .min.js)
-		$suffix  = ( defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ) ? '.js' : '.min.js'; // CHANGED:
-		$js_file = $js_base . $suffix;                                                // CHANGED:
-		$js_ver  = file_exists( $js_file ) ? (string) filemtime( $js_file ) : '1';    // CHANGED:
+		$suffix  = ( defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ) ? '.js' : '.min.js';
+		$js_file = $js_base . $suffix;
+		$js_ver  = file_exists( $js_file ) ? (string) filemtime( $js_file ) : '1';
 
 		// Register + enqueue admin CSS.
 		wp_register_style(
@@ -74,7 +75,7 @@ class PPA_Admin {
 		// Register + enqueue admin JS (conditional .js/.min.js).
 		wp_register_script(
 			'ppa-admin',
-			plugins_url( '../assets/js/admin' . $suffix, __FILE__ ),                  // CHANGED:
+			plugins_url( '../assets/js/admin' . $suffix, __FILE__ ),
 			array( 'jquery' ),
 			$js_ver,
 			true
@@ -99,6 +100,21 @@ class PPA_Admin {
 			'window.PPA = window.PPA || (typeof PPA !== "undefined" ? PPA : {});',
 			'before'
 		);
+
+		// --- ENQUEUE PREVIEW-FIX (defensive client-side patch) ----------------
+		// This lightweight script ensures preview POSTs include subject/title/headline
+		// when the admin UI does not supply them. It is dependent on 'ppa-admin'.
+		// Ensure the file wp-plugins/postpress-ai/assets/js/preview-fix.js exists.
+		$preview_fix_path = plugins_url( '../assets/js/preview-fix.js', __FILE__ );
+		wp_register_script(
+			'ppa-preview-fix',
+			$preview_fix_path,
+			array( 'ppa-admin' ),
+			$js_ver,
+			true
+		);
+		wp_enqueue_script( 'ppa-preview-fix' );
+		// ---------------------------------------------------------------------
 
 		// Inline fallback styles for dark mode (ensures visibility).
 		$inline_css = '

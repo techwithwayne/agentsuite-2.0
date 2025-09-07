@@ -1,0 +1,35 @@
+<?php
+/**
+ * Plugin Name: PostPress AI
+ * Description: Admin composer + preview bridge for PostPress AI.
+ * Version: 0.0.0-hotfix1
+ * Author: Tech With Wayne
+ */
+if (!defined('ABSPATH')) { exit; }
+
+if (!defined('PPA_VERSION')) {
+    define('PPA_VERSION', '0.0.0-hotfix1'); // CHANGED: temporary hotfix version
+}
+
+$inc_dir = __DIR__ . '/inc';
+
+// Guarded includes; if files exist they'll be loaded, else no fatal.
+$maybe_inc = [
+    'class-ppa-admin.php',
+    'class-ppa-settings.php',
+    // Controller lives under includes/ in some versions:
+    '../includes/class-ppa-controller.php',
+];
+foreach ($maybe_inc as $rel) {
+    $p = (strpos($rel, '../') === 0) ? __DIR__ . '/' . ltrim($rel, './') : $inc_dir . '/' . $rel;
+    if (file_exists($p)) { require_once $p; }
+}
+
+// Initialize admin asset loader if present (safe, no output now).
+if (class_exists('PPA_Admin')) {
+    add_action('plugins_loaded', function () {
+        if (method_exists('PPA_Admin', 'init')) {
+            PPA_Admin::init();
+        }
+    });
+}

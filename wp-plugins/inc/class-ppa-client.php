@@ -1,225 +1,152 @@
 <?php
-/**
- * CHANGE LOG
- * 2025-08-18 (Step 1 – client bootstrap in correct folder)
- * - NEW FILE in /inc/: Adds PPA_Client, a hardened WP HTTP API wrapper for calling the Django service.
- * - Enforces: HTTPS base, header normalization (Origin, Content-Type, X-PPA-Key), timeout cap (<=15s),
- *   secret-safe logging, JSON parsing, and non-fatal contract hints.
- * - No behavior changes to controllers yet. Next step will wire the controller to use this client.
- *
- * Markers:
- * - Entire file is new. Security-critical lines are annotated with `// CHANGED:`.
- */
+# CHANGED: 2025-09-04 - add preview endpoint fallback probe and cache (tries /api/preview/, /preview/, /postpress-ai/preview/)
+ /**
+  * PPA_Client
+  *
+  * Utility client used by the PostPress AI WP plugin to resolve upstream endpoints.
+  *
+  * CHANGE LOG
+  * 2025-09-04: Added preview endpoint probe fallback and caching. Tries a set of
+  *             common preview endpoints if the configured ppa_server_base does not
+  *             already include the preview path. Caches successful path for 1 hour.
+  *
+  * Notes:
+  * - This helper purposely does not make assumptions about auth. Do not log secrets.
+  * - If you want to adjust candidate endpoints, edit the $candidates array in probe_preview_path().
+  */
 
-if ( ! defined( 'ABSPATH' ) ) { exit; } // CHANGED: block direct access for security.
-
-/**
- * PPA_Client
- *
- * Single-responsibility HTTP wrapper (WP HTTP API) for calls to the Django PostPress AI service.
- * SECURITY:
- * - NEVER leak the shared key. Only log lengths/booleans.
- * - Always send Origin and Content-Type. Keep X-PPA-Key strictly server-side.
- * - Enforce HTTPS base and cap timeouts at 15s.
- */
-final class PPA_Client { // CHANGED:
-
-	/** WP site origin expected by Django’s origin checks. */
-	private const ORIGIN = 'https://techwithwayne.com'; // CHANGED:
-
-	/** Resolve configured Django base URL (without `/postpress-ai/`) and normalize. */
-	private static function get_base_url(): string { // CHANGED:
-		$base = get_option( 'ppa_server_base', '' ); // CHANGED:
-		$base = is_string( $base ) ? trim( $base ) : ''; // CHANGED:
-
-		// Default to PythonAnywhere direct if unset (avoids CF WAF blocks during setup). // CHANGED:
-		if ( $base === '' ) {
-			$base = 'https://techwithwayne.pythonanywhere.com'; // CHANGED:
-		}
-
-		// Strip trailing slashes and enforce HTTPS only. // CHANGED:
-		$base = preg_replace( '#/*$#', '', $base ); // CHANGED:
-		if ( ! preg_match( '#^https://#i', $base ) ) { // CHANGED:
-			$base = 'https://techwithwayne.pythonanywhere.com'; // CHANGED:
-		}
-		return $base; // CHANGED:
-	}
-
-	/** Build full endpoint URL under `/postpress-ai/`. */
-	private static function build_url( string $endpoint ): string { // CHANGED:
-		$endpoint = ltrim( $endpoint, '/' ); // CHANGED:
-		return self::get_base_url() . '/postpress-ai/' . $endpoint; // CHANGED:
-	}
-
-	/** Timeout from option (default 10), capped at 15 seconds. */
-	private static function get_timeout(): int { // CHANGED:
-		$opt = get_option( 'ppa_timeout_seconds', 10 ); // CHANGED:
-		$val = is_numeric( $opt ) ? (int) $opt : 10; // CHANGED:
-		if ( $val <= 0 ) { $val = 10; } // CHANGED:
-		if ( $val > 15 ) { $val = 15; } // CHANGED:
-		return $val; // CHANGED:
-	}
-
-	/** Read the server-auth header (NEVER expose or log value). */
-	private static function get_auth_key(): string { // CHANGED:
-		$key = get_option( 'ppa_shared_key', '' ); // CHANGED:
-		return is_string( $key ) ? trim( $key ) : ''; // CHANGED:
-	}
-
-	/** Common headers — keep X-PPA-Key server-side only. */
-	private static function build_headers(): array { // CHANGED:
-		return [
-			'Content-Type' => 'application/json; charset=utf-8', // CHANGED:
-			'Origin'       => self::ORIGIN, // CHANGED:
-			'X-PPA-Key'    => self::get_auth_key(), // CHANGED:
-		];
-	}
-
-	/**
-	 * Central request routine.
-	 *
-	 * @param string      $method   'GET' or 'POST'
-	 * @param string      $endpoint e.g. 'preview/', 'store/', 'version/', 'health/', 'preview/debug-model/'
-	 * @param array|null  $payload  JSON-serializable array for POST
-	 * @param array       $require_fields Optional keys to sanity-check returned JSON (non-fatal)
-	 *
-	 * @return array {
-	 *   ok: bool,
-	 *   status_code: int,
-	 *   json: array|null,
-	 *   ver: string|null,
-	 *   contract_ok: bool|null,
-	 *   missing: array|null,
-	 *   error: string|null, // 'transport_error' | 'http_error' | 'non_json_response' | server 'error'
-	 * }
-	 */
-	public static function request( string $method, string $endpoint, ?array $payload = null, array $require_fields = [] ): array { // CHANGED:
-		$method = strtoupper( $method ); // CHANGED:
-		$url    = self::build_url( $endpoint ); // CHANGED:
-
-		$args = [ // CHANGED:
-			'method'    => $method, // CHANGED:
-			'timeout'   => self::get_timeout(), // CHANGED:
-			'headers'   => self::build_headers(), // CHANGED:
-			'sslverify' => true, // CHANGED:
-		];
-
-		if ( $method === 'POST' ) { // CHANGED:
-			$args['body'] = wp_json_encode( is_array( $payload ) ? $payload : [] ); // CHANGED:
-		}
-
-		$resp = wp_remote_request( $url, $args ); // CHANGED:
-
-		if ( is_wp_error( $resp ) ) { // CHANGED:
-			self::log_transport( $url, $args, null, null, $resp ); // CHANGED:
-			return [
-				'ok'          => false, // CHANGED:
-				'status_code' => 0, // CHANGED:
-				'json'        => null, // CHANGED:
-				'ver'         => null, // CHANGED:
-				'contract_ok' => null, // CHANGED:
-				'missing'     => null, // CHANGED:
-				'error'       => 'transport_error', // CHANGED:
-			];
-		}
-
-		$code = (int) wp_remote_retrieve_response_code( $resp ); // CHANGED:
-		$body = wp_remote_retrieve_body( $resp ); // CHANGED:
-
-		$decoded = null; // CHANGED:
-		if ( is_string( $body ) && $body !== '' ) { // CHANGED:
-			$decoded = json_decode( $body, true ); // CHANGED:
-			if ( ! is_array( $decoded ) ) { $decoded = null; } // CHANGED:
-		}
-
-		self::log_transport( $url, $args, $code, $body, null ); // CHANGED:
-
-		$contract_ok = null; // CHANGED:
-		$missing     = null; // CHANGED:
-		if ( is_array( $decoded ) && $require_fields ) { // CHANGED:
-			$missing = []; // CHANGED:
-			foreach ( $require_fields as $k ) { // CHANGED:
-				if ( ! array_key_exists( $k, $decoded ) ) { $missing[] = $k; } // CHANGED:
-			}
-			$contract_ok = empty( $missing ); // CHANGED:
-		}
-
-		$ok = ( $code >= 200 && $code < 300 && is_array( $decoded ) ); // CHANGED:
-
-		return [
-			'ok'          => $ok, // CHANGED:
-			'status_code' => $code, // CHANGED:
-			'json'        => $decoded, // CHANGED:
-			'ver'         => is_array( $decoded ) && isset( $decoded['ver'] ) ? (string) $decoded['ver'] : null, // CHANGED:
-			'contract_ok' => $contract_ok, // CHANGED:
-			'missing'     => $missing, // CHANGED:
-			'error'       => $ok ? null : ( is_array( $decoded ) && isset( $decoded['error'] ) ? (string) $decoded['error'] : ( $code >= 200 && $code < 300 ? 'non_json_response' : 'http_error' ) ), // CHANGED:
-		];
-	}
-
-	/** Convenience: POST /preview/ */
-	public static function post_preview( array $payload ): array { // CHANGED:
-		// Server: { ok:true, result:{ title, html, summary }, token_usage?, quota?, ver } // CHANGED:
-		return self::request( 'POST', 'preview/', $payload, [ 'ok' ] ); // CHANGED:
-	}
-
-	/** Convenience: POST /store/ */
-	public static function post_store( array $payload ): array { // CHANGED:
-		// Server: HTTP 200 always, normalized envelope { ok, stored, id|null, mode, target_used, wp_status, ... } // CHANGED:
-		return self::request( 'POST', 'store/', $payload, [ 'ok' ] ); // CHANGED:
-	}
-
-	/** Convenience: GET /version/ */
-	public static function get_version(): array { // CHANGED:
-		return self::request( 'GET', 'version/', null, [ 'ok', 'ver' ] ); // CHANGED:
-	}
-
-	/** Convenience: GET /health/ */
-	public static function get_health(): array { // CHANGED:
-		return self::request( 'GET', 'health/', null, [ 'ok' ] ); // CHANGED:
-	}
-
-	/** Convenience: GET /preview/debug-model/ (auth) */
-	public static function get_preview_debug_model(): array { // CHANGED:
-		return self::request( 'GET', 'preview/debug-model/', null, [ 'ok' ] ); // CHANGED:
-	}
-
-	/**
-	 * Secret-safe breadcrumb logging (only when WP_DEBUG_LOG is enabled):
-	 * - Logs: method, host, path, timeout, body_len, status, is_json, key_provided_len, key_present flag.
-	 * - NEVER logs secrets or bodies.
-	 */
-	private static function log_transport( string $url, array $args, ?int $code, ?string $body, $wp_error ): void { // CHANGED:
-		if ( ! defined( 'WP_DEBUG_LOG' ) || ! WP_DEBUG_LOG ) { return; } // CHANGED:
-
-		$method   = strtoupper( $args['method'] ?? 'GET' ); // CHANGED:
-		$timeout  = (int) ( $args['timeout'] ?? 0 ); // CHANGED:
-		$headers  = (array) ( $args['headers'] ?? [] ); // CHANGED:
-		$key      = (string) ( $headers['X-PPA-Key'] ?? '' ); // CHANGED:
-		$key_len  = strlen( $key ); // CHANGED:
-		$key_set  = $key_len > 0; // CHANGED:
-		$body_len = isset( $args['body'] ) ? strlen( (string) $args['body'] ) : 0; // CHANGED:
-		$is_json  = is_string( $body ) ? ( json_decode( $body, true ) !== null ) : false; // CHANGED:
-
-		$parts = wp_parse_url( $url ); // CHANGED:
-		$host  = $parts['host'] ?? ''; // CHANGED:
-		$path  = $parts['path'] ?? ''; // CHANGED:
-
-		$prefix = '[PPA][wp][client]'; // CHANGED:
-
-		if ( is_wp_error( $wp_error ) ) { // CHANGED:
-			error_log( sprintf(
-				"%s transport_error method=%s host=%s path=%s timeout=%ds key_provided_len=%d key_present=%s body_len=%d error=%s",
-				$prefix, $method, $host, $path, $timeout, $key_len, $key_set ? 'true' : 'false', $body_len, $wp_error->get_error_code()
-			) ); // CHANGED:
-			return; // CHANGED:
-		}
-
-		error_log( sprintf(
-			"%s response method=%s host=%s path=%s timeout=%ds key_provided_len=%d key_present=%s body_len=%d status=%s is_json=%s",
-			$prefix, $method, $host, $path, $timeout, $key_len, $key_set ? 'true' : 'false', $body_len,
-			$code === null ? 'null' : (string) $code,
-			$is_json ? 'true' : 'false'
-		) ); // CHANGED:
-	}
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
 }
+
+if ( ! class_exists( 'PPA_Client' ) ) :
+
+final class PPA_Client {
+
+    // transient prefix keys
+    private const TRANSIENT_PREFIX = 'ppa_resolved_path_';
+    // TTL for cached resolved path (seconds)
+    private const TRANSIENT_TTL = 60 * 60; // 1 hour
+
+    /**
+     * Return the full preview URL for the configured server base.
+     *
+     * Returns a string like: https://apps.techwithwayne.com/postpress-ai/preview/
+     * or false on failure (no resolved endpoint).
+     *
+     * @return string|false
+     */
+    public static function get_preview_url() {
+        $base = trim( (string) get_option( 'ppa_server_base', '' ) );
+        if ( empty( $base ) ) {
+            return false;
+        }
+
+        // If base already contains a preview-like path, use it directly (no probe).
+        $maybe = self::normalize_and_detect_if_base_has_action_path( $base, 'preview' );
+        if ( $maybe !== false ) {
+            return esc_url_raw( rtrim( $maybe, '/' ) . '/' );
+        }
+
+        // Check transient cache first
+        $trans_key = self::TRANSIENT_PREFIX . 'preview';
+        $cached = get_transient( $trans_key );
+        if ( ! empty( $cached ) ) {
+            return esc_url_raw( rtrim( $base, '/' ) . $cached );
+        }
+
+        // Probe candidate endpoints
+        $resolved = self::probe_preview_path( $base );
+        if ( $resolved === false ) {
+            return false;
+        }
+
+        // Cache the path fragment (e.g. '/postpress-ai/preview/')
+        set_transient( $trans_key, $resolved, self::TRANSIENT_TTL );
+        return esc_url_raw( rtrim( $base, '/' ) . $resolved );
+    }
+
+    /**
+     * Probe common candidate paths for a working preview endpoint.
+     *
+     * Returns the path fragment (leading slash, trailing slash) on success, e.g. '/postpress-ai/preview/'
+     * or false if none of the candidates resolved.
+     *
+     * @param string $base
+     * @return string|false
+     */
+    private static function probe_preview_path( string $base ) {
+        $candidates = [
+            '/api/preview/',
+            '/preview/',
+            '/api/v1/preview/',
+            '/v1/preview/',
+            '/postpress-ai/preview/',
+            '/postpress-ai/api/preview/',
+        ];
+
+        $base = rtrim( $base, '/' );
+
+        // Use a lightweight HEAD request first to detect an existing endpoint.
+        $args = [
+            'timeout'     => 8,
+            'redirection' => 3,
+            'blocking'    => true,
+            'sslverify'   => true,
+        ];
+
+        foreach ( $candidates as $path ) {
+            $url = $base . $path;
+
+            // Try HEAD
+            $head = wp_remote_head( $url, $args );
+            if ( ! is_wp_error( $head ) ) {
+                $code = (int) wp_remote_retrieve_response_code( $head );
+                // Treat 2xx as success; also treat 401/403 as "endpoint exists but auth required"
+                if ( ( $code >= 200 && $code < 300 ) || in_array( $code, [ 401, 403 ], true ) ) {
+                    return $path;
+                }
+
+                // Some servers don't implement HEAD correctly (405). Try GET in that case.
+                if ( in_array( $code, [ 405, 501, 0 ], true ) ) {
+                    $get = wp_remote_get( $url, $args );
+                    if ( ! is_wp_error( $get ) ) {
+                        $gcode = (int) wp_remote_retrieve_response_code( $get );
+                        if ( ( $gcode >= 200 && $gcode < 300 ) || in_array( $gcode, [ 401, 403 ], true ) ) {
+                            return $path;
+                        }
+                    }
+                }
+            }
+            // if head was WP_Error, continue to next candidate
+        }
+
+        // none matched
+        return false;
+    }
+
+    /**
+     * If the configured base URL already contains the requested action path,
+     * return the full URL (base) as-is; otherwise return false.
+     *
+     * Example: base "https://apps.techwithwayne.com/postpress-ai/preview" returns that URL.
+     *
+     * @param string $base
+     * @param string $action
+     * @return string|false
+     */
+    private static function normalize_and_detect_if_base_has_action_path( string $base, string $action ) {
+        $parsed = wp_parse_url( $base );
+        if ( ! is_array( $parsed ) || empty( $parsed['path'] ) ) {
+            return false;
+        }
+        $path = strtolower( rtrim( $parsed['path'], '/' ) );
+        if ( strpos( $path, strtolower( $action ) ) !== false ) {
+            // ensure proper trailing slash
+            return rtrim( $base, '/' );
+        }
+        return false;
+    }
+}
+
+endif;

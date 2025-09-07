@@ -1,3 +1,4 @@
+;
 (() => {
   // assets/js/src/config.js
   var CFG = window.PPA || {};
@@ -14,32 +15,32 @@
   }
   function getNonce() {
     if (NONCE) return NONCE;
-    const dom = $("#ppa-nonce");
+    var dom = $("#ppa-nonce");
     return dom ? String(dom.value || "") : "";
   }
   function resolveAssetUrl(rel) {
-    const r = String(rel || "").replace(/^\/+/, "");
+    var r = String(rel || "").replace(/^\/+/, "");
     if (CFG.assets_url) return CFG.assets_url.replace(/\/+$/, "/") + r;
     if (CFG.pluginUrl) return CFG.pluginUrl.replace(/\/+$/, "/") + r;
     if (CFG.plugin_url) return CFG.plugin_url.replace(/\/+$/, "/") + r;
-    const PLUGIN_SEG = "/wp-content/plugins/postpress-ai/";
+    var PLUGIN_SEG = "/wp-content/plugins/postpress-ai/";
     try {
-      const cs = document.currentScript && document.currentScript.src;
+      var cs = document.currentScript && document.currentScript.src;
       if (cs && cs.includes(PLUGIN_SEG)) {
-        const u = new URL(cs, window.location.origin);
-        const base = u.origin + u.pathname.slice(0, u.pathname.indexOf(PLUGIN_SEG) + PLUGIN_SEG.length);
+        var u = new URL(cs, window.location.origin);
+        var base = u.origin + u.pathname.slice(0, u.pathname.indexOf(PLUGIN_SEG) + PLUGIN_SEG.length);
         return base.replace(/\/+$/, "/") + r;
       }
     } catch (_) {
     }
     try {
-      const scripts = document.getElementsByTagName("script");
-      for (let i = scripts.length - 1; i >= 0; i--) {
-        const src = scripts[i].src || "";
+      var scripts = document.getElementsByTagName("script");
+      for (var i = scripts.length - 1; i >= 0; i--) {
+        var src = scripts[i].src || "";
         if (!src) continue;
         if (src.includes(PLUGIN_SEG)) {
-          const u = new URL(src, window.location.origin);
-          const base = u.origin + u.pathname.slice(0, u.pathname.indexOf(PLUGIN_SEG) + PLUGIN_SEG.length);
+          var u = new URL(src, window.location.origin);
+          var base = u.origin + u.pathname.slice(0, u.pathname.indexOf(PLUGIN_SEG) + PLUGIN_SEG.length);
           return base.replace(/\/+$/, "/") + r;
         }
       }
@@ -53,101 +54,160 @@
   }
 
   // assets/js/src/fields.js
-  function findFormRoot() {
-    return $("#ppa-composer") || $(".ppa-composer") || $("#ppa-composer-form") || document;
+  function collectFields(input) {
+    if (!input) return {};
+    var out = /* @__PURE__ */ Object.create(null);
+    function pushKey(k, v) {
+      if (out[k] === void 0) {
+        out[k] = v;
+      } else if (Array.isArray(out[k])) {
+        out[k].push(v);
+      } else {
+        out[k] = [out[k], v];
+      }
+    }
+    try {
+      if (typeof FormData !== "undefined" && input instanceof FormData) {
+        for (var pair of input.entries()) {
+          var k = pair[0];
+          var v = pair[1];
+          var m = k.match(/^fields\[(.+)\]$/);
+          if (m) {
+            pushKey(m[1], String(v));
+          } else {
+            pushKey(k, String(v));
+          }
+        }
+        return out;
+      }
+    } catch (e) {
+    }
+    try {
+      if (typeof URLSearchParams !== "undefined" && input instanceof URLSearchParams) {
+        for (var [k, v] of input.entries()) {
+          var m = k.match(/^fields\[(.+)\]$/);
+          if (m) {
+            pushKey(m[1], String(v));
+          } else {
+            pushKey(k, String(v));
+          }
+        }
+        return out;
+      }
+    } catch (e) {
+    }
+    if (typeof input === "object") {
+      for (var k of Object.keys(input)) {
+        var v = input[k];
+        if (Array.isArray(v)) {
+          out[k] = v.map((x) => x == null ? "" : String(x));
+        } else if (v == null) {
+          out[k] = "";
+        } else {
+          out[k] = String(v);
+        }
+      }
+      return out;
+    }
+    return {};
   }
-  function collectFields() {
-    const root = findFormRoot();
-    const out = {};
-    const set = (k, v) => {
-      if (v == null) return;
-      const s = String(v).trim();
-      if (s !== "") out[k] = s;
-    };
-    const idMap = {
-      subject: ["#ppa-subject", "#ppa_subject", '[name="subject"]', '[name="ppa_subject"]'],
-      genre: ["#ppa-genre", "#ppa_genre", '[name="genre"]', '[name="ppa_genre"]'],
-      tone: ["#ppa-tone", "#ppa_tone", '[name="tone"]', '[name="ppa_tone"]'],
-      title: ["#ppa-title", '[name="title"]', '[name="post_title"]', '[name="ppa_title"]'],
-      keywords: ["#ppa-keywords", '[name="keywords"]', '[name="ppa_keywords"]'],
-      audience: ["#ppa-audience", '[name="audience"]', '[name="target_audience"]', '[name="ppa_audience"]'],
-      length: ["#ppa-length", '[name="length"]', '[name="ppa_length"]'],
-      cta: ["#ppa-cta", '[name="cta"]', '[name="call_to_action"]', '[name="ppa_cta"]'],
-      summary: ["#ppa-summary", '[name="summary"]', '[name="ppa_summary"]'],
-      description: ["#ppa-description", '[name="description"]', '[name="ppa_description"]'],
-      excerpt: ["#ppa-excerpt", '[name="excerpt"]', '[name="post_excerpt"]', '[name="ppa_excerpt"]'],
-      slug: ["#ppa-slug", '[name="slug"]', '[name="post_name"]', '[name="ppa_slug"]'],
-      content: ["#ppa-content", '[name="content"]', '[name="post_content"]', '[name="ppa_content"]']
-    };
-    for (const [key, sels] of Object.entries(idMap)) {
-      for (const sel of sels) {
-        const el = $(sel, root);
-        if (!el) continue;
-        if (key === "content") {
+  function appendFieldsToFormData(fd, fields = {}) {
+    if (!fd || typeof fd.append !== "function") return;
+    for (var key of Object.keys(fields)) {
+      var val = fields[key];
+      if (Array.isArray(val)) {
+        for (var v of val) {
+          fd.append(`fields[${key}]`, v == null ? "" : String(v));
+        }
+      } else {
+        fd.append(`fields[${key}]`, val == null ? "" : String(val));
+      }
+    }
+    var existing = /* @__PURE__ */ new Set();
+    try {
+      for (var pair of fd.entries()) {
+        existing.add(pair[0]);
+      }
+    } catch (e) {
+    }
+    for (var key of Object.keys(fields)) {
+      if (existing.has(key)) continue;
+      var val = fields[key];
+      if (Array.isArray(val)) {
+        for (var v of val) {
           try {
-            if (window.tinymce && tinymce.get && el.id && tinymce.get(el.id)) {
-              const ed = tinymce.get(el.id);
-              set("content", ed.getContent({ format: "html" }));
-              break;
-            }
+            fd.append(String(key), v == null ? "" : String(v));
           } catch (_) {
           }
         }
-        const val = (el.value != null ? String(el.value) : el.textContent) || "";
-        set(key, val);
-        break;
+      } else {
+        try {
+          fd.append(String(key), val == null ? "" : String(val));
+        } catch (_) {
+        }
       }
     }
-    $$("[data-field]", root).forEach((el) => {
-      const k = String(el.getAttribute("data-field") || "").trim();
-      if (!k || out[k]) return;
-      const v = (el.value != null ? String(el.value) : el.textContent) || "";
-      set(k, v);
-    });
-    if (out.subject && !out.title) out.title = out.subject;
-    if (out.title && !out.subject) out.subject = out.title;
-    return out;
-  }
-  function appendFieldsToFormData(fd, fields) {
-    if (!fields || typeof fields !== "object") return;
-    Object.keys(fields).forEach((k) => {
-      const v = fields[k];
-      if (v == null) return;
-      fd.append(`fields[${k}]`, String(v));
-    });
+    var hasTitle = existing.has("title");
+    if (!hasTitle) {
+      if ("title" in fields && fields.title !== void 0 && fields.title !== null && String(fields.title) !== "") {
+        try {
+          fd.append("title", String(fields.title));
+        } catch (_) {
+        }
+        hasTitle = true;
+      }
+    }
+    if (!hasTitle) {
+      var subjectVal = fields.subject || fields.headline || null;
+      if (subjectVal != null && String(subjectVal) !== "") {
+        try {
+          fd.append("title", Array.isArray(subjectVal) ? String(subjectVal[0]) : String(subjectVal));
+        } catch (_) {
+        }
+      }
+    }
   }
 
   // assets/js/src/ajax.js
   async function postAjax(action, extra = {}) {
-    const nonce = getNonce();
+    var nonce = getNonce();
     if (!nonce) throw new Error("Missing nonce");
-    const fd = new FormData();
+    var fd = new FormData();
     fd.append("action", action);
     fd.append("nonce", nonce);
+    fd.append("security", nonce);
     if (extra.mode) fd.append("mode", String(extra.mode));
     appendFieldsToFormData(fd, extra.fields || {});
-    const res = await fetch(AJAX_URL, {
+    var res = await fetch(AJAX_URL, {
       method: "POST",
       credentials: "same-origin",
       body: fd,
       headers: { "X-Requested-With": "XMLHttpRequest" }
     });
-    let json;
+    var text = await res.text().catch(() => "");
+    var parsed;
     try {
-      json = await res.json();
-    } catch (e) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Bad JSON (${res.status}): ${text.slice(0, 280)}`);
+      var trimmed = text.trim();
+      if (trimmed === "") {
+        parsed = "";
+      } else {
+        parsed = JSON.parse(trimmed);
+      }
+    } catch (err) {
+      parsed = text;
     }
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${JSON.stringify(json).slice(0, 280)}`);
-    return json;
+    if (!res.ok) {
+      var snippet = typeof parsed === "object" ? JSON.stringify(parsed).slice(0, 280) : String(parsed).slice(0, 280);
+      throw new Error(`HTTP ${res.status}: ${snippet}`);
+    }
+    return parsed;
   }
 
   // assets/js/src/preview.js
   function findPreviewPane() {
-    const cands = ["#ppa-preview-window", "#ppa-preview-pane", ".ppa-preview-pane", "#ppa-preview", ".ppa-preview"];
-    for (const sel of cands) {
-      const el = $(sel);
+    var cands = [".ppa-generated-preview", "#ppa-preview-html", "#ppa_preview_html", "#ppa-preview-window", "#ppa-preview-pane", ".ppa-preview-pane", "#ppa-preview", ".ppa-preview"];
+    for (var sel of cands) {
+      var el = $(sel);
       if (el) return el;
     }
     return null;
@@ -155,14 +215,14 @@
   function extractPreviewHTML(json) {
     if (!json) return "";
     if (typeof json === "string") return json;
-    const g = (obj, path) => {
+    var g = (obj, path) => {
       try {
         return path.split(".").reduce((a, k) => a && a[k] != null ? a[k] : void 0, obj);
       } catch (_) {
         return void 0;
       }
     };
-    const candidates = [
+    var candidates = [
       "result.html",
       "result.content",
       "result.body",
@@ -177,42 +237,117 @@
       "markup",
       "preview_html"
     ];
-    for (const p of candidates) {
-      const v = g(json, p);
+    for (var p of candidates) {
+      var v = g(json, p);
       if (typeof v === "string" && v.trim()) return v;
     }
     if (json.result && typeof json.result === "object") {
-      for (const v of Object.values(json.result)) {
+      for (var v of Object.values(json.result)) {
         if (typeof v === "string" && /<\/(p|div|h\d|article|section)>/i.test(v)) return v;
       }
     }
-    const msg = g(json, "message") || g(json, "error") || g(json, "result.message");
+    var msg = g(json, "message") || g(json, "error") || g(json, "result.message");
     if (typeof msg === "string" && msg.trim()) return `<p><em>${msg}</em></p>`;
     return "";
   }
   function renderPreviewHTMLFromJSON(json) {
-    const pane = findPreviewPane();
-    if (!pane) {
-      warn("Preview pane not found");
-      return;
+  // pick pane (prefer your existing block)
+  var pane = document.querySelector('.ppa-generated-preview');
+  if (!pane && typeof findPreviewPane === 'function') pane = findPreviewPane();
+  if (!pane) {
+    var host = document.querySelector('#wpbody-content') || document.body;
+    pane = document.createElement('div');
+    pane.className = 'ppa-generated-preview';
+    host.appendChild(pane);
+  }
+
+  // resolve HTML string
+  var html = '';
+  try {
+    if (typeof extractPreviewHTML === 'function') {
+      html = extractPreviewHTML(json) || '';
+    } else if (json && typeof json === 'object') {
+      // try common envelopes
+      if (json.success && json.data)       html = json.data.html || '';
+      else if (json.ok && json.result)     html = json.result.html || '';
+      else                                 html = json.html || '';
+    } else {
+      html = String(json || '');
     }
-    const html = extractPreviewHTML(json);
+  } catch(e) { html = ''; }
+  if (!html || !html.trim()) html = "<p><em>No preview HTML returned.</em></p>";
+
+  // preserve existing <h1>, replace everything below it
+  var titleEl = pane.querySelector('h1');
+  if (titleEl) {
+    while (titleEl.nextSibling) titleEl.nextSibling.remove();
+    var wrap = document.createElement('div');
+    wrap.className = 'ppa-preview-body';
+    wrap.innerHTML = html;
+    titleEl.insertAdjacentElement('afterend', wrap);
+  } else {
+    pane.innerHTML = html;
+  }
+
+  // ensure visible
+  pane.hidden = false;
+  pane.style.display = '';
+  pane.classList?.remove('hidden','is-hidden');
+}
+
+  // Resolve HTML from JSON or raw string (use existing helper if present)
+  var html = '';
+  try {
+    if (typeof extractPreviewHTML === 'function') {
+      html = extractPreviewHTML(json) || '';
+    } else if (json && typeof json === 'object') {
+      html = json.html || '';
+    } else {
+      html = String(json||'');
+    }
+  } catch (e) {
+    html = '';
+  }
+  if (!html || !html.trim()) {
+    html = "<p><em>No preview HTML returned.</em></p>";
+  }
+
+  // If there is a <h1> title in the pane, preserve it and replace everything after it.
+  var titleEl = pane.querySelector('h1');
+  if (titleEl) {
+    // remove all siblings after the <h1>
+    while (titleEl.nextSibling) titleEl.nextSibling.remove();
+    var wrap = document.createElement('div');
+    wrap.className = 'ppa-preview-body';
+    wrap.innerHTML = html;
+    titleEl.insertAdjacentElement('afterend', wrap);
+  } else {
+    // no title: replace entire pane
+    pane.innerHTML = html;
+  }
+
+  // ensure visible if some admin CSS hid it
+  pane.hidden = false;
+  pane.style.display = '';
+  pane.classList.remove('hidden','is-hidden');
+}
+    var html = extractPreviewHTML(json);
     pane.innerHTML = html && html.trim() ? html : "<p><em>No preview HTML returned.</em></p>";
   }
 
   // assets/js/src/loader.js
   function ensurePreviewLoader() {
-    const pane = findPreviewPane();
+    var pane = findPreviewPane();
     if (!pane) return null;
-    let overlay = pane.querySelector(".ppa-preloader");
+    var overlay = pane.querySelector(".ppa-preloader");
     if (!overlay) {
       overlay = document.createElement("div");
       overlay.className = "ppa-preloader";
       overlay.setAttribute("aria-hidden", "true");
-      const spinner = document.createElement("div");
+      var spinner = document.createElement("div");
       spinner.className = "ppa-lds-spinner";
-      for (let i = 0; i < 12; i++) spinner.appendChild(document.createElement("div"));
-      const label = document.createElement("div");
+      for (var i = 0; i < 12; i++) spinner.appendChild(document.createElement("div"));
+      var label = document.createElement("div");
       label.className = "ppa-preloader-label";
       label.textContent = "Generating preview\u2026";
       overlay.appendChild(spinner);
@@ -222,11 +357,11 @@
     return overlay;
   }
   function setPreviewLoaderLabel(text) {
-    const pane = findPreviewPane();
+    var pane = findPreviewPane();
     if (!pane) return;
-    const overlay = ensurePreviewLoader();
+    var overlay = ensurePreviewLoader();
     if (!overlay) return;
-    let label = overlay.querySelector(".ppa-preloader-label");
+    var label = overlay.querySelector(".ppa-preloader-label");
     if (!label) {
       label = document.createElement("div");
       label.className = "ppa-preloader-label";
@@ -235,7 +370,7 @@
     label.textContent = String(text || "").trim() || "Working\u2026";
   }
   function showPreviewLoader(labelText) {
-    const pane = findPreviewPane();
+    var pane = findPreviewPane();
     if (!pane) return;
     ensurePreviewLoader();
     if (labelText) setPreviewLoaderLabel(labelText);
@@ -243,7 +378,7 @@
     pane.setAttribute("aria-busy", "true");
   }
   function hidePreviewLoader() {
-    const pane = findPreviewPane();
+    var pane = findPreviewPane();
     if (!pane) return;
     pane.classList.remove("ppa-is-loading");
     pane.removeAttribute("aria-busy");
@@ -281,7 +416,7 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
     doc.close();
   }
   function openWorkingTab() {
-    let w = null;
+    var w = null;
     try {
       w = window.open("about:blank", "_blank");
       if (w && w.document) writeWorkingHTML(w.document, "Preparing", "Initializing\u2026");
@@ -292,11 +427,11 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
   function updateWorkingTab(w, heading, sub) {
     if (!w || w.closed) return;
     try {
-      const d = w.document, s = d.getElementById("ppa-status"), p = d.getElementById("ppa-sub");
+      var d = w.document, s = d.getElementById("ppa-status"), p = d.getElementById("ppa-sub");
       if (s && heading) s.textContent = String(heading);
       if (p && sub) p.textContent = String(sub);
       if (s) {
-        const span = d.createElement("span");
+        var span = d.createElement("span");
         span.className = "dots";
         s.appendChild(span);
       }
@@ -309,8 +444,10 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
     ev && ev.preventDefault && ev.preventDefault();
     showPreviewLoader("Generating preview\u2026");
     try {
-      const fields = collectFields();
-      const json = await postAjax("ppa_preview", { fields });
+      var formEl = document.querySelector(".ppa-form") || document.querySelector("form");
+      var fd = (formEl var fields = collectFields();var fields = collectFields(); typeof FormData !== "undefined") ? new FormData(formEl) : null;
+      var fields = collectFields(fd || {});
+      var json = await postAjax("ppa_preview", { fields });
       renderPreviewHTMLFromJSON(json);
     } catch (e) {
       warn("Preview error", e);
@@ -321,16 +458,18 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
   }
   async function onStoreClick(mode, ev) {
     ev && ev.preventDefault && ev.preventDefault();
-    let openedTab = openWorkingTab();
+    var openedTab = openWorkingTab();
     showPreviewLoader("Generating preview\u2026");
     try {
-      const fieldsBase = collectFields();
-      let fields = Object.assign({}, fieldsBase, { quality: "final", mode });
+      var formEl = document.querySelector(".ppa-form") || document.querySelector("form");
+      var fd = (formEl var fieldsBase = collectFields();var fieldsBase = collectFields(); typeof FormData !== "undefined") ? new FormData(formEl) : null;
+      var fieldsBase = collectFields(fd || {});
+      var fields = Object.assign({}, fieldsBase, { quality: "final", mode });
       try {
         updateWorkingTab(openedTab, "Generating preview", "Asking AI for final content\u2026");
-        const previewJson = await postAjax("ppa_preview", { fields });
+        var previewJson = await postAjax("ppa_preview", { fields });
         renderPreviewHTMLFromJSON(previewJson);
-        const rr = previewJson && previewJson.result || {};
+        var rr = previewJson && previewJson.result || {};
         fields = Object.assign({}, fields, {
           title: rr.title || fields.title || fieldsBase.title || fieldsBase.subject || "",
           html: rr.html || fields.html || fieldsBase.html || "",
@@ -341,12 +480,12 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
       }
       setPreviewLoaderLabel("Saving draft\u2026");
       updateWorkingTab(openedTab, "Saving draft", "Creating your post in WordPress\u2026");
-      const json = await postAjax("ppa_store", { mode, fields });
-      let editUrl = json && (json.edit_url || json.edit_url_note) || "";
+      var json = await postAjax("ppa_store", { mode, fields });
+      var editUrl = json && (json.edit_url || json.edit_url_note) || "";
       if (!editUrl) {
         try {
-          const id = json && json.result && json.result.id;
-          const base = (window?.ajaxurl || AJAX_URL || "").replace(/\/admin-ajax\.php$/, "/post.php");
+          var id = json && json.result && json.result.id;
+          var base = ((window == null ? void 0 : window.ajaxurl) || AJAX_URL || "").replace(/\/admin-ajax\.php$/, "/post.php");
           if (id && base) editUrl = `${base}?post=${encodeURIComponent(id)}&action=edit`;
         } catch (_) {
         }
@@ -428,8 +567,8 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
   async function loadAutocompleteData() {
     if (AUTOCOMPLETE_DATA) return AUTOCOMPLETE_DATA;
     try {
-      const url = resolveAssetUrl("assets/data/autocomplete.json");
-      const res = await fetch(url, { credentials: "same-origin" });
+      var url = resolveAssetUrl("assets/data/autocomplete.json");
+      var res = await fetch(url, { credentials: "same-origin" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       AUTOCOMPLETE_DATA = await res.json();
       if (!AUTOCOMPLETE_DATA || typeof AUTOCOMPLETE_DATA !== "object") {
@@ -442,7 +581,7 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
     return AUTOCOMPLETE_DATA;
   }
   function acGetList(input) {
-    const sib = input && input.nextElementSibling;
+    var sib = input && input.nextElementSibling;
     if (sib && sib.classList && sib.classList.contains("ppa-autocomplete-list")) return sib;
     if (input && input.parentElement) return input.parentElement.querySelector(".ppa-autocomplete-list");
     return null;
@@ -468,7 +607,7 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
     if (!list.id) list.id = "ppa-ac-" + (input.id || Math.random().toString(36).slice(2));
     input.setAttribute("aria-controls", list.id);
     input.setAttribute("aria-expanded", "true");
-    const items = acGetItems(list);
+    var items = acGetItems(list);
     items.forEach((li, i) => {
       if (!li.id) li.id = `${list.id}-opt-${i}`;
       if (li.getAttribute("aria-selected") === "true") {
@@ -480,15 +619,15 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
     }
   }
   function acSyncAriaActiveFromHighlight(input) {
-    const list = acGetList(input);
+    var list = acGetList(input);
     if (!list) return;
-    const active = list.querySelector('li[aria-selected="true"]');
+    var active = list.querySelector('li[aria-selected="true"]');
     if (active && active.id) input.setAttribute("aria-activedescendant", active.id);
   }
   function acSetActiveIndex(input, idx) {
-    const list = acGetList(input);
+    var list = acGetList(input);
     if (!list) return -1;
-    const items = acGetItems(list);
+    var items = acGetItems(list);
     items.forEach((li, i) => {
       if (i === idx) {
         li.setAttribute("aria-selected", "true");
@@ -505,21 +644,21 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
     return idx;
   }
   function acEnsureFirstActive(input) {
-    const list = acGetList(input);
+    var list = acGetList(input);
     if (!list) return;
-    const already = list.querySelector('[aria-selected="true"]');
-    const idxAttr = parseInt(input.getAttribute("data-ppa-ac-index") || "-1", 10);
+    var already = list.querySelector('[aria-selected="true"]');
+    var idxAttr = parseInt(input.getAttribute("data-ppa-ac-index") || "-1", 10);
     if (!already && (isNaN(idxAttr) || idxAttr < 0)) {
-      const items = acGetItems(list);
+      var items = acGetItems(list);
       if (items.length) acSetActiveIndex(input, 0);
     }
   }
   function acMove(input, dir) {
-    const list = acGetList(input);
+    var list = acGetList(input);
     if (!list) return;
-    const items = acGetItems(list);
+    var items = acGetItems(list);
     if (!items.length) return;
-    let idx = parseInt(input.getAttribute("data-ppa-ac-index") || "-1", 10);
+    var idx = parseInt(input.getAttribute("data-ppa-ac-index") || "-1", 10);
     if (isNaN(idx)) idx = -1;
     idx += dir;
     if (idx < 0) idx = items.length - 1;
@@ -527,9 +666,9 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
     acSetActiveIndex(input, idx);
   }
   function acAcceptHighlighted(input) {
-    const list = acGetList(input);
+    var list = acGetList(input);
     if (!list) return false;
-    const li = list.querySelector('li[aria-selected="true"]') || list.querySelector("li");
+    var li = list.querySelector('li[aria-selected="true"]') || list.querySelector("li");
     if (!li) return false;
     input.value = (li.textContent || "").trim();
     try {
@@ -546,7 +685,7 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
     return true;
   }
   function acClose(input) {
-    const list = acGetList(input);
+    var list = acGetList(input);
     if (list && list.parentNode) list.parentNode.removeChild(list);
     input.removeAttribute("data-ppa-ac-index");
     input.setAttribute("aria-expanded", "false");
@@ -558,15 +697,15 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
   function acShowListFor(input, fieldType) {
     acHideAllLists();
     if (!AUTOCOMPLETE_DATA || !AUTOCOMPLETE_DATA[fieldType]) return;
-    const val = String(input.value || "").trim().toLowerCase();
+    var val = String(input.value || "").trim().toLowerCase();
     if (!val) return;
-    const matches = AUTOCOMPLETE_DATA[fieldType].filter((opt) => opt.toLowerCase().includes(val)).slice(0, 8);
+    var matches = AUTOCOMPLETE_DATA[fieldType].filter((opt) => opt.toLowerCase().includes(val)).slice(0, 8);
     if (!matches.length) return;
-    const ul = document.createElement("ul");
+    var ul = document.createElement("ul");
     ul.className = "ppa-autocomplete-list";
     ul.setAttribute("role", "listbox");
     matches.forEach((opt) => {
-      const li = document.createElement("li");
+      var li = document.createElement("li");
       li.textContent = opt;
       li.setAttribute("role", "option");
       li.addEventListener("mousedown", (e) => {
@@ -585,10 +724,10 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
   }
   function acDispatchDebouncedKeyup(input) {
     try {
-      const ev = new KeyboardEvent("keyup", { key: "Debounced", bubbles: true, cancelable: true });
+      var ev = new KeyboardEvent("keyup", { key: "Debounced", bubbles: true, cancelable: true });
       input.dispatchEvent(ev);
     } catch (_) {
-      const ev2 = document.createEvent("Event");
+      var ev2 = document.createEvent("Event");
       ev2.initEvent("keyup", true, true);
       ev2.key = "Debounced";
       input.dispatchEvent(ev2);
@@ -596,13 +735,13 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
   }
   function bindAutocomplete() {
     AC_TARGET_IDS.forEach((id) => {
-      const input = document.getElementById(id);
+      var input = document.getElementById(id);
       if (!input) return;
       input.setAttribute("autocomplete", "off");
       acEnsureARIA(input);
       input._ppaDebTimer = null;
       input.addEventListener("keydown", (ev) => {
-        const k = ev.key;
+        var k = ev.key;
         if (k === "ArrowDown") {
           ev.preventDefault();
           acMove(input, 1);
@@ -610,13 +749,13 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
           ev.preventDefault();
           acMove(input, -1);
         } else if (k === "Enter") {
-          const accepted = acAcceptHighlighted(input);
+          var accepted = acAcceptHighlighted(input);
           if (accepted) {
             ev.preventDefault();
             ev.stopPropagation();
           }
         } else if (k === "Tab") {
-          const list = acGetList(input);
+          var list = acGetList(input);
           if (list && acAcceptHighlighted(input)) {
             ev.preventDefault();
             ev.stopPropagation();
@@ -626,14 +765,14 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
         }
       });
       input.addEventListener("keyup", (ev) => {
-        const k = ev.key;
+        var k = ev.key;
         if (!acIsTypingKey(k)) return;
         ev.stopPropagation();
         if (input._ppaDebTimer) {
           clearTimeout(input._ppaDebTimer);
           input._ppaDebTimer = null;
         }
-        const sib = input.nextElementSibling;
+        var sib = input.nextElementSibling;
         if (sib && sib.classList && sib.classList.contains("ppa-autocomplete-list")) {
           try {
             sib.remove();
@@ -646,7 +785,7 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
         }, DEBOUNCE_MS);
       }, true);
       input.addEventListener("keyup", async (ev) => {
-        const k = ev.key;
+        var k = ev.key;
         if (k === "Escape") {
           acClose(input);
           return;
@@ -662,12 +801,12 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
       input.addEventListener("focus", () => setTimeout(() => acEnsureFirstActive(input), 0));
     });
     try {
-      const mo = new MutationObserver((muts) => {
+      var mo = new MutationObserver((muts) => {
         muts.forEach((m) => {
           Array.prototype.forEach.call(m.addedNodes || [], (node) => {
             if (!(node instanceof HTMLElement)) return;
             if (node.classList && node.classList.contains("ppa-autocomplete-list")) {
-              const input = node.previousElementSibling && node.previousElementSibling.tagName === "INPUT" ? node.previousElementSibling : node.parentElement && node.parentElement.querySelector("input");
+              var input = node.previousElementSibling && node.previousElementSibling.tagName === "INPUT" ? node.previousElementSibling : node.parentElement && node.parentElement.querySelector("input");
               if (input) {
                 acEnsureARIA(input);
                 acWireListARIA(input, node);
@@ -686,7 +825,7 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
   function wrapSelects() {
     $$(".ppa-form select").forEach((sel) => {
       if (!sel.parentElement.classList.contains("ppa-select-wrap")) {
-        const wrap = document.createElement("div");
+        var wrap = document.createElement("div");
         wrap.className = "ppa-select-wrap";
         sel.parentNode.insertBefore(wrap, sel);
         wrap.appendChild(sel);
@@ -696,15 +835,15 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
 
   // assets/js/src/boot.js
   function findButton(role) {
-    const byData = $(`[data-ppa-action="${role}"]`);
+    var byData = $(`[data-ppa-action="${role}"]`);
     if (byData) return byData;
-    const map = {
+    var map = {
       preview: ["#ppa-preview-btn", "#ppa-btn-preview"],
       draft: ["#ppa-save-btn", "#ppa-btn-draft"],
       publish: ["#ppa-publish-btn", "#ppa-btn-publish"]
     };
-    for (const sel of map[role] || []) {
-      const el = $(sel);
+    for (var sel of map[role] || []) {
+      var el = $(sel);
       if (el) return el;
     }
     return null;
@@ -713,9 +852,9 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
     if (!getNonce()) {
       warn("PPA nonce missing; admin-ajax calls may fail.");
     }
-    const btnPreview = findButton("preview");
-    const btnDraft = findButton("draft");
-    const btnPublish = findButton("publish");
+    var btnPreview = findButton("preview");
+    var btnDraft = findButton("draft");
+    var btnPublish = findButton("publish");
     if (btnPreview) btnPreview.addEventListener("click", onPreviewClick, false);
     if (btnDraft) btnDraft.addEventListener("click", onStoreClick.bind(null, "draft"), false);
     if (btnPublish) btnPublish.addEventListener("click", onStoreClick.bind(null, "publish"), false);
@@ -731,3 +870,264 @@ border:3px solid rgba(255,255,255,.12);border-top-color:var(--accent);border-rig
   }
 })();
 //# sourceMappingURL=admin.js.map
+
+
+/* === PPA preview render fallback (inline, no extra requests) === */
+(function(){
+  if (window.__PPA_PANE_FALLBACK__) return; window.__PPA_PANE_FALLBACK__=true;
+
+  function ensurePane() {
+    var pane = document.querySelector('.ppa-generated-preview')
+            || document.querySelector('#ppa-preview-html')
+            || document.querySelector('#ppa_preview_html');
+    if (!pane) {
+      var host = document.querySelector('#wpbody-content') || document.body;
+      pane = document.createElement('div');
+      pane.className = 'ppa-generated-preview';
+      host.appendChild(pane);
+    }
+    pane.hidden = false; pane.style.display=''; pane.classList?.remove('hidden','is-hidden');
+    return pane;
+  }
+
+  function renderIntoPane(html) {
+    var pane = ensurePane();
+    var safe = (html && html.trim()) ? html : "<p><em>No preview HTML returned.</em></p>";
+    var h1 = pane.querySelector('h1');
+    if (h1) {
+      while (h1.nextSibling) h1.nextSibling.remove();
+      var wrap = document.createElement('div');
+      wrap.className = 'ppa-preview-body';
+      wrap.innerHTML = safe;
+      h1.insertAdjacentElement('afterend', wrap);
+    } else {
+      pane.innerHTML = safe;
+    }
+  }
+
+  function extractHTML(json){
+    try {
+      // Existing helpers first if present
+      if (typeof window.extractPreviewHTML === 'function') return window.extractPreviewHTML(json) || '';
+      // Common envelopes
+      if (json && json.success && json.data) return json.data.html || '';
+      if (json && json.ok && json.result)    return json.result.html || '';
+      if (json && typeof json === 'object')  return json.html || '';
+    } catch(e){}
+    return (typeof json === 'string') ? json : '';
+  }
+
+  // Monkey-patch the site's renderer to always target your pane
+  function hook() {
+    if (typeof window.renderPreviewHTMLFromJSON !== 'function') return;
+    var orig = window.renderPreviewHTMLFromJSON;
+    window.renderPreviewHTMLFromJSON = function(json){
+      var html = extractHTML(json);
+      if (html && html.trim()) { renderIntoPane(html); return; }
+      // Fallback to original if nothing extracted
+      return orig.apply(this, arguments);
+    };
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', hook);
+  } else {
+    hook();
+  }
+})();
+ /* === end PPA preview render fallback === */
+
+/* === PPA inline preview handler (final) === */
+(function(){
+  if (window.__PPA_PREVIEW_BIND__) return; window.__PPA_PREVIEW_BIND__ = true;
+
+  function pickFields() {
+    var out = {};
+    document.querySelectorAll(".ppa-field[data-ppa-field], [data-ppa-field]").forEach(el => {
+      var k = el.getAttribute("data-ppa-field");
+      if (!k) return;
+      out[k] = (el.value ?? "").trim();
+    });
+    if (!out.title) {
+      var t = document.querySelector("#title, #post-title-0");
+      if (t && t.value) out.title = t.value.trim();
+    }
+    if (!out.title) out.title = out.subject || out.headline || "";
+    return out;
+  }
+
+  function ensurePane() {
+    var pane = document.querySelector(".ppa-generated-preview")
+            || document.querySelector("#ppa-preview-html")
+            || document.querySelector("#ppa_preview_html");
+    if (!pane) {
+      var host = document.querySelector("#wpbody-content") || document.body;
+      pane = document.createElement("div");
+      pane.className = "ppa-generated-preview";
+      host.appendChild(pane);
+    }
+    pane.hidden = false; pane.style.display = ""; pane.classList?.remove("hidden","is-hidden");
+    return pane;
+  }
+
+  function renderIntoPane(html) {
+    var pane = ensurePane();
+    var safe = (html && html.trim()) ? html : "<p><em>No preview HTML returned.</em></p>";
+    var h1 = pane.querySelector("h1");       // ✅ preserve your title
+    if (h1) {
+      while (h1.nextSibling) h1.nextSibling.remove();
+      var wrap = document.createElement("div");
+      wrap.className = "ppa-preview-body";
+      wrap.innerHTML = safe;
+      h1.insertAdjacentElement("afterend", wrap);
+    } else {
+      pane.innerHTML = safe;
+    }
+  }
+
+  function parseUpstream(text) {
+    try {
+      var j = JSON.parse(text);
+      if (j && typeof j === "object" && "success" in j) return j.success && j.data ? j.data.html || "" : "";
+      if (j && typeof j === "object" && j.ok && j.result) return j.result.html || "";
+      if (j && typeof j === "object") return j.html || "";
+    } catch(_) {}
+    return text; // raw HTML
+  }
+
+  async function runPreview() {
+    var n = (window.PPA && PPA.nonce)
+           || document.querySelector("#ppa_preview_nonce")?.value
+           || document.querySelector("[name=_wpnonce]")?.value || "";
+
+    var params = new URLSearchParams();
+    params.set("action", "ppa_preview");
+    params.set("nonce", n);
+    params.set("security", n); // cover both nonce param names
+
+    var fields = pickFields();
+    Object.entries(fields).forEach(([k, v]) => params.set(`fields[${k}]`, v ?? ""));
+
+    var url = (window.PPA && PPA.ajaxUrl) || window.ajaxurl || "/wp-admin/admin-ajax.php";
+
+    var res = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params
+    });
+    var text = await res.text();
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0,200)}`);
+    renderIntoPane(parseUpstream(text));
+  }
+
+  function bindBtn(){
+    var btn = document.querySelector("#ppa-preview-btn, [data-ppa-preview-btn]");
+    if (!btn) return;
+    btn.addEventListener("click", function(ev){
+      ev.preventDefault();
+      ev.stopImmediatePropagation?.();   // block other conflicting handlers
+      runPreview().catch(err => {
+        console.error("[PPA] preview error:", err);
+        var pane = ensurePane();
+        pane.insertAdjacentHTML("beforeend", `<p style="color:#d33">Preview failed: ${String(err.message||err)}</p>`);
+      });
+    }, true); // capture so we win
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindBtn);
+  else bindBtn();
+})();
+ /* === end PPA inline preview handler === */
+/* PPA v5 preview injector (idempotent) */
+(function(){
+  if (window.__PPA_TAP_V5__) return; window.__PPA_TAP_V5__ = true;
+
+  function ensurePane(){
+    var pane = document.querySelector('.ppa-generated-preview')
+            || document.querySelector('#ppa-preview-html')
+            || document.querySelector('#ppa_preview_html');
+    if (!pane) {
+      var host = document.querySelector('#wpbody-content') || document.body;
+      pane = document.createElement('div');
+      pane.className = 'ppa-generated-preview';
+      var h1 = document.createElement('h1'); h1.textContent = 'Preview';
+      pane.appendChild(h1);
+      host.appendChild(pane);
+    }
+    pane.hidden = false; pane.style.display = ''; if (pane.classList){ pane.classList.remove('hidden','is-hidden'); }
+    return pane;
+  }
+  function renderIntoPane(html){
+    var pane = ensurePane();
+    var safe = (html && typeof html === 'string' && html.trim()) ? html : "<p><em>No preview HTML returned.</em></p>";
+    var h1 = pane.querySelector('h1');
+    if (h1) {
+      while (h1.nextSibling) h1.nextSibling.remove();
+      var wrap = document.createElement('div'); wrap.className = 'ppa-preview-body';
+      wrap.innerHTML = safe;
+      h1.insertAdjacentElement('afterend', wrap);
+    } else {
+      pane.innerHTML = safe;
+    }
+  }
+  function parseResp(t){
+    try {
+      var j = JSON.parse(t);
+      if (j && typeof j==='object' && ('success' in j)) return (j.success && j.data) ? (j.data.html || '') : '';
+      if (j && typeof j==='object' && j.ok && j.result) return j.result.html || '';
+      if (j && typeof j==='object') return j.html || '';
+    } catch(_){}
+    return t; // treat as raw HTML
+  }
+
+  // Tap fetch (admin-ajax)
+  if (window.fetch) {
+    var _fetch = window.fetch;
+    window.fetch = function(input, init){
+      var url = (typeof input==='string') ? input : (input && input.url) || '';
+      var opt = init || {};
+      var method = String(opt.method || 'GET').toUpperCase();
+      var body = opt.body;
+      var isAjax = /admin-ajax\.php/i.test(url);
+      var isPreview = isAjax && method==='POST' && (
+        (body instanceof FormData && (body.get('action')||'')==='ppa_preview') ||
+        (typeof body==='string' && /(^|&)action=ppa_preview(&|$)/.test(body)) ||
+        (body && body.toString===URLSearchParams.prototype.toString && /(^|&)action=ppa_preview(&|$)/.test(body.toString()))
+      );
+      var p = _fetch.apply(this, arguments);
+      if (isPreview) {
+        p.then(function(res){ return res.clone().text().then(function(t){
+          console.log('[PPA v5][fetch] len=', t.length);
+          try { renderIntoPane(parseResp(t)); } catch(e){}
+        }); }).catch(function(){});
+      }
+      return p;
+    };
+  }
+
+  // Tap XHR (jQuery.ajax path)
+  if (window.XMLHttpRequest) {
+    var _open = XMLHttpRequest.prototype.open;
+    var _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(m,u){
+      this.__ppa_isAjax = /admin-ajax\.php/i.test(String(u||''));
+      this.__ppa_m = (m||'GET').toUpperCase();
+      return _open.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function(b){
+      var isPreview = this.__ppa_isAjax && this.__ppa_m==='POST' && (
+        (b instanceof FormData && (b.get('action')||'')==='ppa_preview') ||
+        (typeof b==='string' && /(^|&)action=ppa_preview(&|$)/.test(b))
+      );
+      if (isPreview) this.addEventListener('loadend', function(){
+        try {
+          var t = (this && (this.responseText||'')) || '';
+          console.log('[PPA v5][xhr] len=', t.length);
+          renderIntoPane(parseResp(t));
+        } catch(_){}
+      });
+      return _send.apply(this, arguments);
+    };
+  }
+})();

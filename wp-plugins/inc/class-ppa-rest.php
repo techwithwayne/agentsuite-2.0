@@ -1,9 +1,4 @@
 <?php
-# CHANGED: 2025-09-04 - imported from postpress_wp.zip
-/**
- * CHANGE LOG
- * 2025-09-04: Imported from postpress_wp.zip into agentsuite repo branch.
- */
 /**
  * PostPress AI — REST API
  * Path: wp-content/plugins/postpress-ai/inc/class-ppa-rest.php
