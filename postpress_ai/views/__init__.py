@@ -1,46 +1,51 @@
 """
-PostPress AI Views Package
-Public surface for all endpoints.
-"""
+PostPress AI — views package initializer (final, production)
 
+Exports only the canonical public views and ensures the legacy symbol
+`store` points to the normalize-only `store_view`.
+
+If an optional view module is missing, we expose a small 501 fallback so
+URLConfs that import by name don't explode at import time.
+"""
 from __future__ import annotations
 
-import logging
-import os
-from typing import Optional, Callable, Any
+from typing import Callable
+from django.http import JsonResponse, HttpRequest, HttpResponse
 
-# Import utilities first (no circular dependency)
-from .utils import VERSION, log, _json_response, _with_cors, _ppa_key_ok
+def _fallback(name: str) -> Callable[[HttpRequest], HttpResponse]:
+    def _view(_req: HttpRequest) -> HttpResponse:
+        return JsonResponse({"ok": False, "error": f"view-missing:{name}", "ver": "1"}, status=501)
+    _view.__name__ = name
+    return _view
 
-# Expose urlopen at package surface so tests can monkeypatch
+# --- canonical exports ---------------------------------------------------------
+
+# health (optional)
 try:
-    from urllib.request import urlopen  # type: ignore
-except Exception:  # pragma: no cover
-    urlopen = None  # type: ignore
+    from .health import health_view as health  # type: ignore
+except Exception:
+    health = _fallback("health")
 
-__all__ = [
-    "preview",
-    "store", 
-    "version",
-    "health",
-    "preview_debug_model",
-    "urlopen",
-    "VERSION",
-]
+# version (optional)
+try:
+    from .version import version_view as version  # type: ignore
+except Exception:
+    version = _fallback("version")
 
-# Optional test hook for store delegate
-STORE_DELEGATE: Optional[Callable[[Any], Any]] = None
+# preview (normalize-only; required for /postpress-ai/preview/)
+try:
+    from .preview import preview_view as preview  # type: ignore
+except Exception:
+    preview = _fallback("preview")
 
-# Import view functions (these should not import back from __init__)
-from .version import version
-from .health import health  
-from .preview import preview
-from .store import store
-from .debug_model import preview_debug_model
+# preview_debug_model (optional)
+try:
+    from .preview_debug_model import preview_debug_model_view as preview_debug_model  # type: ignore
+except Exception:
+    preview_debug_model = _fallback("preview_debug_model")
 
-# Fix __module__ attributes for URL resolution
-preview.__module__ = "postpress_ai.views"
-store.__module__ = "postpress_ai.views"
-version.__module__ = "postpress_ai.views"
-health.__module__ = "postpress_ai.views"
-preview_debug_model.__module__ = "postpress_ai.views"
+# store (normalize-only; legacy public name `store`)
+from .store import store_view as store  # critical: legacy symbol -> normalize-only handler
+
+__all__ = ["health", "version", "preview", "preview_debug_model", "store"]
+
