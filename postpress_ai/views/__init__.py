@@ -3,29 +3,25 @@ PostPress AI — views package
 
 CHANGE LOG
 ----------
-2025-10-26 • Implement normalize-only preview view with auth-first, CSRF-exempt.               # CHANGED:
-2025-10-26 • Package-level exports: preview, store (import from .store).                      # CHANGED:
-2025-10-26 • Add Cache-Control and X-PPA-View headers, ver="1".                               # CHANGED:
-2025-10-26 • Ensure headers on ALL responses (405/auth), add _with_headers helper.            # CHANGED:
-2025-10-26 • Surface VER and helpers (_with_headers, _json_response, _normalize) via __all__. # CHANGED:
+2025-10-27 • Add public health/version + preview_debug_model; preview normalize-only; robust headers; safe store import.  # CHANGED:
+2025-10-26 • Normalize-only preview; auth-first; CSRF-exempt.                                                                # CHANGED:
 """
 
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from django.http import JsonResponse, HttpResponse, HttpResponseNotAllowed
 from django.views.decorators.csrf import csrf_exempt
 
-# Attempt to import the already-implemented store view (normalize-only).
-# Falls back to a 503 placeholder if not present, but attribute will exist for imports.
+# Attempt to import the already-implemented store view.
+# If unavailable, we provide a placeholder that returns 503 but keeps imports working.
 try:
     from .store import store  # type: ignore
 except Exception:  # pragma: no cover
-    def store(request, *args, **kwargs):  # noqa: D401
-        """Temporary placeholder when store view is unavailable."""
+    def store(request, *args, **kwargs):  # type: ignore
         resp = JsonResponse(
             {"ok": False, "error": "store view unavailable", "ver": "1"},
             status=503,
@@ -38,29 +34,30 @@ VER = "1"
 
 
 def _get_shared_key() -> str:
-    # Read raw, then strip quotes/whitespace
+    """Returns PPA_SHARED_KEY from environment, trimmed of quotes/whitespace."""
     raw = os.environ.get("PPA_SHARED_KEY", "")
-    return raw.strip().strip('"').strip("'").strip()
+    return raw.strip().strip('"').strip("'")
 
 
 def _extract_auth(request) -> str:
     """
-    Return the presented key (if any) from either X-PPA-Key or Authorization: Bearer <key>.
+    Return the presented key (if any) from either X-PPA-Key
+    or Authorization: Bearer <key>.
     """
     key = request.headers.get("X-PPA-Key") or request.META.get("HTTP_X_PPA_KEY")
     if key:
-        return key.strip().strip('"').strip("'").strip()
+        return key.strip().strip('"').strip("'")
 
     auth = request.headers.get("Authorization") or request.META.get("HTTP_AUTHORIZATION")
     if not auth:
         return ""
     parts = auth.split(None, 1)
     if len(parts) == 2 and parts[0].lower() == "bearer":
-        return parts[1].strip().strip('"').strip("'").strip()
+        return parts[1].strip().strip('"').strip("'")
     return ""
 
 
-def _auth_first(request) -> HttpResponse | None:
+def _auth_first(request) -> Optional[HttpResponse]:
     """
     Enforce auth before any other processing.
 
@@ -78,9 +75,8 @@ def _auth_first(request) -> HttpResponse | None:
 
 
 def _normalize(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalize incoming payload into the response schema. Django never writes to WP.
-    """
+    """Normalize incoming payload to expected schema (no WP writes here)."""
+
     def _list(val: Any) -> List[str]:
         if val is None:
             return []
@@ -88,7 +84,7 @@ def _normalize(payload: Dict[str, Any]) -> Dict[str, Any]:
             return [str(x) for x in val]
         return [str(val)]
 
-    result = {
+    return {
         "title": str(payload.get("title", "") or "").strip(),
         "content": str(payload.get("content", "") or ""),
         "excerpt": str(payload.get("excerpt", "") or ""),
@@ -99,13 +95,10 @@ def _normalize(payload: Dict[str, Any]) -> Dict[str, Any]:
         "author": str(payload.get("author", "") or ""),
         "provider": "django",
     }
-    return result
 
 
 def _with_headers(resp: HttpResponse, *, view: str) -> HttpResponse:
-    """
-    Apply required minimal breadcrumb + no-store headers to any response object.
-    """
+    """Apply breadcrumb + no-store headers to any response."""
     resp["X-PPA-View"] = view
     resp["Cache-Control"] = "no-store"
     return resp
@@ -116,19 +109,53 @@ def _json_response(data: Dict[str, Any], *, view: str, status: int = 200) -> Jso
     return _with_headers(resp, view=view)
 
 
+# ---------- Public endpoints (no auth) ----------
+
+def health(request, *args, **kwargs):
+    """Lightweight readiness probe."""
+    return _json_response({"ok": True, "v": VER, "p": "django"}, view="health")
+
+
+def version(request, *args, **kwargs):
+    """Simple version endpoint."""
+    payload = {
+        "ok": True,
+        "v": VER,
+        "views": ["health", "version", "preview", "store", "preview_debug_model"],
+        "mode": "normalize-only",
+    }
+    return _json_response(payload, view="version")
+
+
+def preview_debug_model(request, *args, **kwargs):
+    """Describe the expected JSON schema for preview/store (GET only)."""
+    if request.method != "GET":
+        return _with_headers(HttpResponseNotAllowed(["GET"]), view="preview-debug-model")
+    model = {
+        "title": "str",
+        "content": "str (HTML allowed)",
+        "excerpt": "str",
+        "status": "str (draft|publish|future|private…)",
+        "slug": "str",
+        "tags": ["str", "..."],
+        "categories": ["str", "..."],
+        "author": "str",
+    }
+    return _json_response({"ok": True, "schema": model, "ver": VER}, view="preview-debug-model")
+
+
+# ---------- Auth-required endpoints ----------
+
 @csrf_exempt
-def preview(request, *args, **kwargs):  # noqa: D401
+def preview(request, *args, **kwargs):
     """Normalize-only preview endpoint. POST only. CSRF-exempt. Auth-first."""
-    # Enforce method (ensure headers even for 405)
     if request.method != "POST":
         return _with_headers(HttpResponseNotAllowed(["POST"]), view="preview")
 
-    # Auth-first (even if JSON is bad)
     auth_resp = _auth_first(request)
     if auth_resp is not None:
         return _with_headers(auth_resp, view="preview")
 
-    # Parse JSON body safely
     try:
         raw = request.body.decode("utf-8") if request.body else "{}"
         payload = json.loads(raw) if raw.strip() else {}
@@ -145,13 +172,14 @@ def preview(request, *args, **kwargs):  # noqa: D401
     return _json_response({"ok": True, "result": normalized, "ver": VER}, view="preview")
 
 
-# Back-compat alias (explicit surface)
-preview_view = preview  # alias for clarity
+# Back-compat alias
+preview_view = preview
 
 # Public surface for imports
 __all__ = [
     "VER",
     # views
+    "health", "version", "preview_debug_model",
     "preview", "preview_view", "store",
     # helpers
     "_with_headers", "_json_response", "_normalize",
