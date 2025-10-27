@@ -3,10 +3,11 @@ PostPress AI — views package
 
 CHANGE LOG
 ----------
-2025-10-26 • Implement normalize-only preview view with auth-first, CSRF-exempt.        # CHANGED:
-2025-10-26 • Package-level exports: preview, store (import from .store).               # CHANGED:
-2025-10-26 • Add Cache-Control and X-PPA-View headers, ver="1".                        # CHANGED:
-2025-10-26 • Ensure headers on ALL responses (405/auth), add _with_headers helper.     # CHANGED:
+2025-10-26 • Implement normalize-only preview view with auth-first, CSRF-exempt.               # CHANGED:
+2025-10-26 • Package-level exports: preview, store (import from .store).                      # CHANGED:
+2025-10-26 • Add Cache-Control and X-PPA-View headers, ver="1".                               # CHANGED:
+2025-10-26 • Ensure headers on ALL responses (405/auth), add _with_headers helper.            # CHANGED:
+2025-10-26 • Surface VER and helpers (_with_headers, _json_response, _normalize) via __all__. # CHANGED:
 """
 
 from __future__ import annotations
@@ -101,11 +102,6 @@ def _normalize(payload: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _json_response(data: Dict[str, Any], *, view: str, status: int = 200) -> JsonResponse:
-    resp = JsonResponse(data, status=status)
-    return _with_headers(resp, view=view)
-
-
 def _with_headers(resp: HttpResponse, *, view: str) -> HttpResponse:
     """
     Apply required minimal breadcrumb + no-store headers to any response object.
@@ -113,6 +109,11 @@ def _with_headers(resp: HttpResponse, *, view: str) -> HttpResponse:
     resp["X-PPA-View"] = view
     resp["Cache-Control"] = "no-store"
     return resp
+
+
+def _json_response(data: Dict[str, Any], *, view: str, status: int = 200) -> JsonResponse:
+    resp = JsonResponse(data, status=status)
+    return _with_headers(resp, view=view)
 
 
 @csrf_exempt
@@ -146,4 +147,12 @@ def preview(request, *args, **kwargs):  # noqa: D401
 
 # Back-compat alias (explicit surface)
 preview_view = preview  # alias for clarity
-__all__ = ["preview", "preview_view", "store"]
+
+# Public surface for imports
+__all__ = [
+    "VER",
+    # views
+    "preview", "preview_view", "store",
+    # helpers
+    "_with_headers", "_json_response", "_normalize",
+]
