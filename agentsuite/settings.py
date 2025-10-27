@@ -4,6 +4,10 @@ Agentsuite Django settings
 
 CHANGE LOG
 ----------
+2025-10-24 • Guard INSTALLED_APPS against missing optional monorepo apps on PA  # CHANGED:
+- Dynamically skip absent modules (e.g., 'apps.*') to prevent ModuleNotFoundError. # CHANGED:
+- Emits [settings_pm] warning listing any skipped apps.                             # CHANGED:
+
 2025-08-25 • Added THERAPYLIB_PDF_ENGINE config                                    # CHANGED:
 - Loads default PDF engine from env (THERAPYLIB_PDF_ENGINE).                       # CHANGED:
 - Validates against {'weasyprint','xhtml2pdf','pdfkit'}.                           # CHANGED:
@@ -14,12 +18,6 @@ CHANGE LOG
   prevent NUL bytes during rotation and make greps stable.
 - Added a defensive post-processing block that ensures any RotatingFileHandler in
   LOGGING gets encoding='utf-8' if not explicitly set.
-
-2025-08-14 • EMAIL_USE_SSL boolean coercion fix
-- Rationale: The previous logic compared env to the string "false" and turned SSL on when
-  the env contained "false". We now enable SSL only when the env (case-insensitive, trimmed)
-  is exactly "true". This aligns with the requirement that EMAIL_USE_SSL should only be true
-  when explicitly set to "true". No other settings altered.
 """
 
 from pathlib import Path
@@ -73,7 +71,7 @@ ALLOWED_PDF_ENGINES = {"weasyprint", "xhtml2pdf", "pdfkit"}  # CHANGED
 _pdf_engine = os.getenv("THERAPYLIB_PDF_ENGINE", "xhtml2pdf").lower()  # CHANGED
 if _pdf_engine not in ALLOWED_PDF_ENGINES:  # CHANGED
     # logger = logging.getLogger(__name__)  # CHANGED
-    print("[WARNING]"  # CHANGED
+    print("[WARNING]"
         f"Invalid THERAPYLIB_PDF_ENGINE '{_pdf_engine}' detected. "
         "Falling back to 'xhtml2pdf'. Allowed values: weasyprint, xhtml2pdf, pdfkit."
     )
@@ -130,6 +128,14 @@ INSTALLED_APPS = [
     "django_extensions",
 
     "humancapital",
+
+    "apps.core",
+    "apps.accounts",
+    "apps.contacts",
+    "apps.leads",
+    "apps.sequences",
+    "apps.messaging",
+    "apps.api",
 ]
 
 # Keep your list intact, only add anymail (Mailgun API) and postpress_ai unconditionally
@@ -137,6 +143,37 @@ INSTALLED_APPS = [
 for _app in ["anymail", "postpress_ai"]:
     if _app not in INSTALLED_APPS:
         INSTALLED_APPS += [_app]
+
+# [PPA SAFETY] Drop optional monorepo apps if missing to avoid ModuleNotFoundError on PA  # CHANGED:
+try:  # CHANGED:
+    from importlib import import_module  # CHANGED:
+    _final_apps = []  # CHANGED:
+    _missing_apps = []  # CHANGED:
+    for _app in INSTALLED_APPS:  # CHANGED:
+        try:  # CHANGED:
+            import_module(_app)  # CHANGED:
+            _final_apps.append(_app)  # CHANGED:
+        except ModuleNotFoundError as _e:  # CHANGED:
+            # Treat monorepo-local apps as optional; skip if not importable on this deployment  # CHANGED:
+            if _app.startswith("apps.") or _app in {
+                "website_analyzer",
+                "barista_assistant",
+                "barista_assistant.menu",
+                "barista_assistant.orders",
+                "content_strategy_generator_agent",
+                "humancapital",
+                "personal_mentor",
+                "promptopilot",
+                "therapylib",
+            }:  # CHANGED:
+                _missing_apps.append(_app)  # CHANGED:
+            else:  # CHANGED:
+                raise  # non-optional (e.g., django.*, rest_framework)                     # CHANGED:
+    if _missing_apps:  # CHANGED:
+        print(f"[settings_pm] Optional apps not present; skipping: {_missing_apps}")  # CHANGED:
+    INSTALLED_APPS = _final_apps  # CHANGED:
+except Exception as _guard_exc:  # CHANGED:
+    print(f"[settings_pm] App guard failed: {_guard_exc}")  # CHANGED:
 
 # ========= Middleware =========
 # [PPA FIX] Move CORS middleware to the very top (django-cors-headers best practice)
@@ -402,3 +439,4 @@ STRIPE_CANCEL_URL = os.getenv(
     f"{DEPLOY_BASE_URL}/barista-assistant/"
 )
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+# (full file content pasted above)

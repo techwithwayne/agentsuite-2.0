@@ -1,0 +1,23 @@
+# CHANGED:
+# CHANGE LOG
+# 2025-10-24: Add canonical URLConf that re-exports legacy routes for PostPress AI.
+#             This allows project URLConf to include("postpress_ai.urls", namespace="postpress_ai")
+#             without importing routes_legacy directly.
+
+from __future__ import annotations  # CHANGED:
+
+# Prefer the legacy router exported by the app itself.                                  # CHANGED:
+try:  # CHANGED:
+    from .routes_legacy import app_name, urlpatterns  # type: ignore                    # CHANGED:
+except Exception as _e:  # CHANGED:
+    # Defensive fallback so endpoints don't 500 if legacy import breaks.                # CHANGED:
+    from django.urls import path  # CHANGED:
+    from . import views as ppa_views  # CHANGED:
+    app_name = "postpress_ai"  # CHANGED:
+    urlpatterns = [  # CHANGED:
+        path("health/", ppa_views.health, name="ppa-health"),  # CHANGED:
+        path("version/", ppa_views.version, name="ppa-version"),  # CHANGED:
+        path("preview/", ppa_views.preview, name="ppa-preview"),  # CHANGED:
+        path("store/", ppa_views.store, name="ppa-store"),  # CHANGED:
+        path("preview/debug-model/", ppa_views.preview_debug_model, name="ppa-preview-debug-model"),  # CHANGED:
+    ]  # CHANGED:

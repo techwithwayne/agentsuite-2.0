@@ -1,0 +1,30 @@
+# /home/techwithwayne/agentsuite/postpress_ai/urls.py
+"""
+PostPress AI — URL routes
+
+CHANGE LOG
+----------
+2025-10-25 • Fix routing: expose "store/" (not "postpress-ai/store/") because the
+             project urls.py already mounts at "postpress-ai/".                # CHANGED:
+- Add app_name = "postpress_ai" for namespaced include.                         # CHANGED:
+- Wire normalize-only store_view (no WP writes) to /postpress-ai/store/.        # CHANGED:
+
+Notes
+-----
+Project-level urls.py contains:
+    path("postpress-ai/", include("postpress_ai.urls", namespace="postpress_ai"))
+Therefore, this module must define relative paths (e.g., "store/") so the final
+public path is /postpress-ai/store/.
+"""
+
+from __future__ import annotations
+from django.urls import path
+from .views.store import store_view
+
+# Required for namespaced include(...) in project urls
+app_name = "postpress_ai"
+
+urlpatterns = [
+    # Final public URL: /postpress-ai/store/
+    path("store/", store_view, name="ppa_store"),  # normalize-only endpoint
+]

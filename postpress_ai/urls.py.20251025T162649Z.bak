@@ -1,0 +1,36 @@
+# /home/techwithwayne/agentsuite/postpress_ai/urls.py
+"""
+PostPress AI — URL routes
+
+CHANGE LOG
+----------
+2025-10-25 • Create minimal URLConf that explicitly wires the normalize-only
+             /postpress-ai/store/ endpoint to store.store_view.                 # CHANGED:
+- Ensures Django never attempts to write to WordPress from this path.            # CHANGED:
+- Keeps legacy handlers out of the way; telemetry endpoints can live elsewhere.  # CHANGED:
+
+Notes
+-----
+• This file is intentionally minimal and explicit. If your project-level
+  urls.py includes `path("", include("postpress_ai.urls"))`, this will expose:
+    - POST /postpress-ai/store/  → normalize-only JSON response
+• If you already route /postpress-ai/ via another module (e.g. routes_legacy),
+  ensure ONLY ONE mapping for "store/" exists, pointing to store.store_view.
+
+Security
+--------
+• store_view enforces header auth (X-PPA-Key) and never calls WP. It only
+  returns normalized payload with provider="django".
+"""
+
+from __future__ import annotations
+
+from django.urls import path
+
+# Import the normalize-only view
+from .views.store import store_view
+
+urlpatterns = [
+    # Normalize-only store path (no WP writes from Django).
+    path("postpress-ai/store/", store_view, name="ppa_store"),
+]

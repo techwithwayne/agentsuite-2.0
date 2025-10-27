@@ -1,15 +1,14 @@
 """
-store_post.py
--------------
+store_post_legacy.py
+--------------------
 Receives final/draft posts from WordPress and stores analytics for billing/telemetry.
 
-Enhancements in this version:
-- Accepts sealed envelope (Base64 + HMAC) sent by WP proxy to avoid CF/WAF HTML inspection
-- Verifies HMAC using PPA_SHARED_KEY and optional timestamp window
-- CORS with allowlist (reflect Origin when allowed)
-- OPTIONS preflight allowed WITHOUT X-PPA-Key (Cloudflare-friendly)
-- POST requires X-PPA-Key (outer layer) OR sealed envelope verification
-- Bulletproof persistence (no exception ever bubbles to client)
+CHANGE LOG
+-----------
+2025-10-12 • Added html fallback for legacy 'content' field.                # CHANGED:
+2025-10-12 • Normalize target_used to prefer a real URL and preserve hint. # CHANGED:
+2025-10-12 • Force module logger into 'webdoctor' handler for visibility.  # CHANGED:
+No other logic modified.                                                   # CHANGED:
 """
 
 from __future__ import annotations
@@ -23,12 +22,14 @@ import os
 import time
 from typing import Any, Dict, Optional
 
+from urllib.parse import urlparse  # CHANGED: added for URL normalization
 from django.apps import apps
 from django.conf import settings
 from django.http import HttpRequest, JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 
-logger = logging.getLogger(__name__)
+# CHANGED: ensure logs from this module go to the configured webdoctor handlers
+logger = logging.getLogger("webdoctor")  # CHANGED: force module logs into webdoctor handler
 
 # ----- CORS helpers ---------------------------------------------------------
 
@@ -102,6 +103,16 @@ def _coerce_for_field(name: str, value: Any, field) -> Any:
             return value[: max_len]
     return value
 
+# ----- URL helper (normalization) ------------------------------------------  # CHANGED:
+
+def _looks_like_url(s: str) -> bool:  # CHANGED:
+    """Return True if s appears to be a valid http(s) URL."""  # CHANGED:
+    try:  # CHANGED:
+        p = urlparse(s)  # CHANGED:
+        return p.scheme in ("http", "https") and bool(p.netloc)  # CHANGED:
+    except Exception:  # CHANGED:
+        return False  # CHANGED:
+
 # ----- Envelope verification ------------------------------------------------
 
 def _verify_and_unseal_envelope(obj: Dict[str, Any], shared_key: str, max_skew_sec: int = 900) -> Optional[Dict[str, Any]]:
@@ -128,7 +139,6 @@ def _verify_and_unseal_envelope(obj: Dict[str, Any], shared_key: str, max_skew_s
         now = int(time.time())
         if abs(now - ts) > max_skew_sec:
             logger.warning("[store_post] Envelope timestamp out of window (now=%s ts=%s)", now, ts)
-            # We still proceed to verify HMAC, but you could choose to reject here.
     except Exception:
         pass
 
@@ -151,12 +161,6 @@ def _verify_and_unseal_envelope(obj: Dict[str, Any], shared_key: str, max_skew_s
 # ----- DB persistence --------------------------------------------------------
 
 def _persist_article(payload: Dict[str, Any], request_ms: float) -> Dict[str, Any]:
-    """
-    Attempt to persist the payload into postpress_ai.StoredArticle if present.
-    - Maps only known model fields.
-    - Coerces problematic values to safe representations.
-    - Falls back to a minimal subset if the full create fails.
-    """
     try:
         Model = apps.get_model("postpress_ai", "StoredArticle")
     except LookupError:
@@ -164,14 +168,12 @@ def _persist_article(payload: Dict[str, Any], request_ms: float) -> Dict[str, An
         return {"stored": False, "id": None, "mode": "no_model"}
 
     try:
-        # Build safe kwargs for create
         model_fields = {f.name: f for f in Model._meta.get_fields() if hasattr(f, "attname")}
         create_kwargs = {}
         for key, val in payload.items():
             if key in model_fields:
                 create_kwargs[key] = _coerce_for_field(key, val, model_fields[key])
 
-        # Optionally persist request time
         if "request_ms" in model_fields:
             create_kwargs["request_ms"] = request_ms
 
@@ -181,7 +183,6 @@ def _persist_article(payload: Dict[str, Any], request_ms: float) -> Dict[str, An
 
     except Exception as e:
         logger.exception("[store_post] Primary save failed; attempting fallback minimal save. Error=%s", e)
-
         minimal_keys = ["title", "status", "source", "wp_post_id"]
         try:
             model_fields = {f.name: f for f in Model._meta.get_fields() if hasattr(f, "attname")}
@@ -203,19 +204,6 @@ def _persist_article(payload: Dict[str, Any], request_ms: float) -> Dict[str, An
 
 @csrf_exempt
 def store_post(request: HttpRequest) -> HttpResponse:
-    """
-    Endpoint consumed by WP admin.js after WordPress has created the post.
-
-    Auth:
-      - Primary: X-PPA-Key header must match settings.PPA_SHARED_KEY
-      - OR: If request body is a sealed envelope {b64, ts, sig}, we verify HMAC and accept.
-
-    Payload (after unsealing, if needed):
-      - title (str), html (str), status (str), source (str: 'draft'|'publish'|'preview')
-      - summary (str, optional), wp_post_id (int, optional)
-      - token_usage (dict/list/str, optional)
-      - target_sites (list[str], optional)
-    """
     if request.method == "OPTIONS":
         return _options_response(request)
 
@@ -225,45 +213,48 @@ def store_post(request: HttpRequest) -> HttpResponse:
     expected_key = (getattr(settings, "PPA_SHARED_KEY", None) or os.getenv("PPA_SHARED_KEY") or "").strip()
     provided_key = (request.headers.get("X-PPA-Key") or request.META.get("HTTP_X_PPA_KEY") or "").strip()
 
-    # Parse outer JSON — could be a normal payload or an envelope
     try:
         outer = json.loads((request.body or b"").decode("utf-8"))
     except Exception as e:
         logger.exception("[store_post] Invalid JSON")
         return _json({"ok": False, "error": f"Invalid JSON: {e}"}, 400, request)
 
-    # Auth path A: header key
     header_auth_ok = bool(expected_key and provided_key and provided_key == expected_key)
 
-    # Auth path B: sealed envelope
     envelope_auth_ok = False
     inner_payload = None
-    if isinstance(outer, dict) and all(k in outer for k in ("b64","ts","sig")) and expected_key:
+    if isinstance(outer, dict) and all(k in outer for k in ("b64", "ts", "sig")) and expected_key:
         inner_payload = _verify_and_unseal_envelope(outer, expected_key)
         envelope_auth_ok = inner_payload is not None
 
-    logger.info(
-        "[store_post] Auth check: header=%s envelope=%s",
-        "ok" if header_auth_ok else "no",
-        "ok" if envelope_auth_ok else "no",
-    )
+    logger.info("[store_post] Auth check: header=%s envelope=%s",
+                "ok" if header_auth_ok else "no",
+                "ok" if envelope_auth_ok else "no")
 
     if not header_auth_ok and not envelope_auth_ok:
         return _unauthorized(request, "auth_failed")
 
-    # Use unsealed payload if present; otherwise expect normal payload
     payload = inner_payload if inner_payload is not None else outer
 
-    # Target sites handling
     target_sites = payload.get("target_sites") or []
     if not isinstance(target_sites, list) or not target_sites:
         target_sites = [getattr(settings, "PPA_WP_API_URL", "")]
-    first_target = target_sites[0] if target_sites else None
-    logger.info("[store_post] Target sites: %s (using first=%s)", target_sites, first_target)
+    # ----- Normalize target_used (CHANGED) ---------------------------------  # CHANGED:
+    first_entry = target_sites[0] if target_sites else None  # CHANGED:
+    # Prefer a real-looking URL; otherwise fall back to configured PPA_WP_API_URL or original hint
+    if isinstance(first_entry, str) and _looks_like_url(first_entry):  # CHANGED:
+        normalized_target = first_entry  # CHANGED:
+    else:  # CHANGED:
+        normalized_target = getattr(settings, "PPA_WP_API_URL", "") or first_entry  # CHANGED:
+    # Preserve the original hint for auditing/persistence (safe: _persist_article ignores unknown fields)  # CHANGED:
+    if first_entry is not None and "target_hint" not in payload:  # CHANGED:
+        payload["target_hint"] = first_entry  # CHANGED:
+    first_target = normalized_target  # CHANGED:
+    logger.info("[store_post] Target sites: %s (original_hint=%s using first=%s)", target_sites, first_entry, first_target)  # CHANGED:
 
     # Validate required fields
     title = payload.get("title")
-    html = payload.get("html")
+    html = payload.get("html") or payload.get("content")  # ✅ CHANGED: allow legacy 'content' key
     if not title or not html:
         logger.warning("[store_post] Missing required fields: title, html")
         return _json({"ok": False, "error": "Missing required fields: title, html"}, 400, request)
@@ -282,7 +273,6 @@ def store_post(request: HttpRequest) -> HttpResponse:
         payload.get("wp_post_id"),
     )
 
-    # Persist (safe + fallback)
     try:
         t0 = time.perf_counter()
         persist_result = _persist_article(payload, (time.perf_counter() - t0) * 1000)
@@ -296,7 +286,6 @@ def store_post(request: HttpRequest) -> HttpResponse:
         }
         return _json(resp, 200, request)
     except Exception as e:
-        # Absolute last-resort catch: never leak a 500 to client
         logger.exception("[store_post] Unexpected error: %s", e)
         out = {"ok": False, "error": "internal_error", "detail": "STORE failed; see server logs"}
         if getattr(settings, "DEBUG", False):

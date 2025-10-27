@@ -2,12 +2,13 @@
 CHANGE LOG
 ----------
 2025-10-24
-- FIX: Map PostPress AI via include("postpress_ai.urls", namespace="postpress_ai") to avoid missing-module errors.  # CHANGED:
-- FIX: Guard optional include("apps.api.urls") so environments without 'apps' do not 500.                            # CHANGED:
-- KEEP: Existing routes structure and debug endpoints.                                                                 # CHANGED:
+- FIX: Map PostPress AI via include("postpress_ai.urls", namespace="postpress_ai") to avoid missing-module errors.
+- FIX: Guard optional include("apps.api.urls") so environments without 'apps' do not 500.
 """
 
 from django.contrib import admin
+from postpress_ai.views.store import store_view  # CHANGED: PPA direct override
+
 from django.urls import path, include
 
 # App-level views used here
@@ -17,6 +18,8 @@ from barista_assistant.views import success_view
 app_name = "webdoctor"
 
 urlpatterns = [
+    path("postpress-ai/store/", store_view, name="ppa_store_direct"),  # CHANGED: normalize-only override
+
     # Admin
     path("admin/", admin.site.urls),
 
@@ -45,8 +48,8 @@ urlpatterns = [
     path("reset_conversation/", webdoctor_views.reset_conversation, name="reset_conversation"),
 
     # === PostPress AI (canonical include) =========================================
-    # NOTE: postpress_ai/urls.py now re-exports routes_legacy; do NOT include routes_legacy directly.
-    path("postpress-ai/", include("postpress_ai.urls", namespace="postpress_ai")),  # CHANGED:
+    # NOTE: postpress_ai/urls.py re-exports routes_legacy; do NOT include routes_legacy directly.
+    path("postpress-ai/", include("postpress_ai.urls", namespace="postpress_ai")),
 
     # Additional app routes
     path("api/therapylib/", include("therapylib.urls")),
@@ -55,11 +58,11 @@ urlpatterns = [
 
 # === Optional/Monorepo routes (guarded) ============================================
 # Some deployments do not have the 'apps' package checked out; include only if importable.
-try:  # CHANGED:
-    import importlib  # CHANGED:
-    importlib.import_module("apps.api.urls")  # CHANGED:
-except ModuleNotFoundError:  # CHANGED:
-    import sys  # CHANGED:
-    sys.stderr.write("[urls] Optional 'apps.api.urls' not present; skipping /reclaimr/ route\n")  # CHANGED:
-else:  # CHANGED:
-    urlpatterns.append(path("reclaimr/", include("apps.api.urls")))  # CHANGED:
+try:
+    import importlib
+    importlib.import_module("apps.api.urls")
+except ModuleNotFoundError:
+    import sys
+    sys.stderr.write("[urls] Optional 'apps.api.urls' not present; skipping /reclaimr/ route\n")
+else:
+    urlpatterns.append(path("reclaimr/", include("apps.api.urls")))

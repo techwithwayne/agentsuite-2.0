@@ -1,0 +1,19 @@
+# /home/techwithwayne/agentsuite/postpress_ai/views/__init__.py
+"""
+PostPress AI — views package initializer
+
+CHANGE LOG
+----------
+2025-10-25 • Back-compat shim to force /postpress-ai/store/ to use the
+             normalize-only handler.                                           # CHANGED:
+- Many URLConfs import `from postpress_ai import views` then reference
+  `views.store`. This file aliases that symbol to the new normalize-only
+  `store_view` so routing hits the correct logic without touching URLs.        # CHANGED:
+"""
+
+from __future__ import annotations
+
+# Import the normalize-only store view and expose it under the legacy name.
+from .store import store_view as store  # CHANGED: package-level alias
+
+__all__ = ["store"]
