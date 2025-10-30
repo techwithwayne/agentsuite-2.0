@@ -1,6 +1,11 @@
 """
 CHANGE LOG
 ----------
+2025-10-30
+- ADD: Inline /postpress-ai/health/ and /postpress-ai/version/ endpoints placed before include()
+       so they resolve first without modifying app files.
+- NOTE: Keep endpoints minimal for readiness checks; no extra imports elsewhere.
+
 2025-10-24
 - FIX: Map PostPress AI via include("postpress_ai.urls", namespace="postpress_ai") to avoid missing-module errors.
 - FIX: Guard optional include("apps.api.urls") so environments without 'apps' do not 500.
@@ -10,6 +15,7 @@ from django.contrib import admin
 from postpress_ai.views.store import store_view  # CHANGED: PPA direct override
 
 from django.urls import path, include
+from django.http import JsonResponse  # ADDED: for health/version JSON responses
 
 # App-level views used here
 from webdoctor import views as webdoctor_views
@@ -17,8 +23,23 @@ from barista_assistant.views import success_view
 
 app_name = "webdoctor"
 
+# --- Minimal inline endpoints for PostPress AI readiness ------------------------
+def ppa_health_view(request):
+    """Liveness probe for PostPress AI integration."""
+    return JsonResponse({"ok": True})
+
+def ppa_version_view(request):
+    """Version probe for PostPress AI; bump string on releases."""
+    return JsonResponse({"version": "postpress-ai.v2.1-2025-10-30"})
+
+
 urlpatterns = [
+    # PostPress AI direct store (normalize-only override)
     path("postpress-ai/store/", store_view, name="ppa_store_direct"),  # CHANGED: normalize-only override
+
+    # PostPress AI readiness endpoints (placed BEFORE include to take precedence)
+    path("postpress-ai/health/", ppa_health_view, name="ppa_health"),
+    path("postpress-ai/version/", ppa_version_view, name="ppa_version"),
 
     # Admin
     path("admin/", admin.site.urls),
