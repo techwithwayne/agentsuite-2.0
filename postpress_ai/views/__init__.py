@@ -3,9 +3,10 @@ PostPress AI — views package
 
 CHANGE LOG
 ----------
-2025-11-05 • Add light in-process rate-limit decorator; apply to preview (5 req/10s per client/view).        # CHANGED:
-2025-11-05 • Fix circular import: define VER + helpers BEFORE importing .store; placeholder structured err.  # CHANGED:
-2025-11-05 • Structured error shape + safe request logging; upgrade ver to pa.v1.                           # CHANGED:
+2025-11-05 • Rate limit counts ONLY authenticated hits; add _is_authed helper; keep structured 429 + headers.   # CHANGED:
+2025-11-05 • Add light in-process rate-limit decorator; apply to preview (5 req/10s per client/view).
+2025-11-05 • Fix circular import: define VER + helpers BEFORE importing .store; placeholder structured err.
+2025-11-05 • Structured error shape + safe request logging; upgrade ver to pa.v1.
 2025-10-27 • Add public health/version + preview_debug_model; preview normalize-only; robust headers.
 2025-10-26 • Normalize-only preview; auth-first; CSRF-exempt.
 """
@@ -16,9 +17,9 @@ import json
 import os
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple  # CHANGED:
-from collections import deque, defaultdict          # CHANGED:
-import threading                                     # CHANGED:
+from typing import Any, Dict, List, Optional, Tuple
+from collections import deque, defaultdict
+import threading
 
 from django.http import JsonResponse, HttpResponse, HttpResponseNotAllowed
 from django.views.decorators.csrf import csrf_exempt
@@ -29,7 +30,7 @@ logger = logging.getLogger("postpress_ai.views")
 # -----------------------------------------------------------------------------
 # Version + Helpers FIRST (avoid circular import with store.py)
 # -----------------------------------------------------------------------------
-VER = "pa.v1"  # CHANGED:
+VER = "pa.v1"
 
 
 def _get_shared_key() -> str:
@@ -56,6 +57,13 @@ def _extract_auth(request) -> str:
     return ""
 
 
+def _is_authed(request) -> bool:  # CHANGED:
+    """Fast boolean check for auth success without constructing a response."""  # CHANGED:
+    presented = _extract_auth(request)  # CHANGED:
+    expected = _get_shared_key()        # CHANGED:
+    return bool(presented) and bool(expected) and (presented == expected)  # CHANGED:
+
+
 def _error_payload(err_type: str, message: str, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Uniform structured error payload (no secrets)."""
     return {  # CHANGED:
@@ -80,9 +88,9 @@ def _auth_first(request) -> Optional[HttpResponse]:
     expected = _get_shared_key()
 
     if not presented:
-        return JsonResponse(_error_payload("missing_key", "missing authentication key"), status=401)  # CHANGED:
+        return JsonResponse(_error_payload("missing_key", "missing authentication key"), status=401)
     if not expected or presented != expected:
-        return JsonResponse(_error_payload("forbidden", "invalid authentication key"), status=403)  # CHANGED:
+        return JsonResponse(_error_payload("forbidden", "invalid authentication key"), status=403)
     return None
 
 
@@ -130,60 +138,63 @@ def _client_addr(request) -> str:
 
 
 # -----------------------------------------------------------------------------
-# Light in-process rate limit (per client IP per view).                         # CHANGED:
-# Policy: 5 requests / 10 seconds / (client, view).                             # CHANGED:
-# This is best-effort and resets on process restart.                            # CHANGED:
+# Light in-process rate limit (per client IP per view).
+# Policy: 5 requests / 10 seconds / (client, view).
 # -----------------------------------------------------------------------------
-_RATE_LIMIT_MAX = 5                      # CHANGED:
-_RATE_LIMIT_WINDOW = 10.0                # CHANGED:
-_rate_lock = threading.Lock()            # CHANGED:
-_rate_buckets: Dict[Tuple[str, str], deque] = defaultdict(deque)  # CHANGED:
+_RATE_LIMIT_MAX = 5
+_RATE_LIMIT_WINDOW = 10.0
+_rate_lock = threading.Lock()
+_rate_buckets: Dict[Tuple[str, str], deque] = defaultdict(deque)
 
 
-def _rate_limited(view_label: str):  # CHANGED:
+def _rate_limited(view_label: str):
     """
     Decorator to apply a tiny token-bucket style limit per (client_addr, view_label).
-    On limit, returns 429 with structured payload and Retry-After-like details.      # CHANGED:
-    """  # CHANGED:
+    **Now counts only authenticated requests**; unauthenticated requests bypass the bucket
+    (they still receive 401/403 from the view itself).                                     # CHANGED:
+    """
 
-    def decorator(view_func):  # CHANGED:
-        def wrapped(request, *args, **kwargs):  # CHANGED:
-            now = time.monotonic()  # CHANGED:
-            key = (_client_addr(request), view_label)  # CHANGED:
-            with _rate_lock:  # CHANGED:
-                q = _rate_buckets[key]  # CHANGED:
-                # Drop old entries outside the window                            # CHANGED:
-                while q and (now - q[0]) > _RATE_LIMIT_WINDOW:  # CHANGED:
-                    q.popleft()  # CHANGED:
-                if len(q) >= _RATE_LIMIT_MAX:  # CHANGED:
-                    # Compute retry_after (seconds)                               # CHANGED:
-                    retry_after = max(0.0, _RATE_LIMIT_WINDOW - (now - q[0]))  # CHANGED:
-                    data = _error_payload(  # CHANGED:
-                        "rate_limited",  # CHANGED:
-                        "too many requests",  # CHANGED:
-                        {"retry_after": round(retry_after, 2)},  # CHANGED:
-                    )  # CHANGED:
-                    resp = _json_response(data, view=view_label, status=429)  # CHANGED:
-                    resp["X-RateLimit-Limit"] = str(_RATE_LIMIT_MAX)  # CHANGED:
-                    resp["X-RateLimit-Window"] = str(int(_RATE_LIMIT_WINDOW))  # CHANGED:
-                    resp["X-RateLimit-Remaining"] = "0"  # CHANGED:
-                    return resp  # CHANGED:
-                # Accept this request                                            # CHANGED:
-                q.append(now)  # CHANGED:
-                remaining = max(0, _RATE_LIMIT_MAX - len(q))  # CHANGED:
-            # Call underlying view                                                # CHANGED:
-            response = view_func(request, *args, **kwargs)  # CHANGED:
-            try:  # CHANGED:
-                response["X-RateLimit-Limit"] = str(_RATE_LIMIT_MAX)  # CHANGED:
-                response["X-RateLimit-Window"] = str(int(_RATE_LIMIT_WINDOW))  # CHANGED:
-                response["X-RateLimit-Remaining"] = str(remaining)  # CHANGED:
-            except Exception:  # pragma: no cover  # CHANGED:
-                pass  # CHANGED:
-            return response  # CHANGED:
+    def decorator(view_func):
+        def wrapped(request, *args, **kwargs):
+            # Only rate-limit authenticated clients
+            if not _is_authed(request):  # CHANGED:
+                return view_func(request, *args, **kwargs)  # CHANGED:
 
-        return wrapped  # CHANGED:
+            now = time.monotonic()
+            key = (_client_addr(request), view_label)
+            with _rate_lock:
+                q = _rate_buckets[key]
+                # Drop old entries outside the window
+                while q and (now - q[0]) > _RATE_LIMIT_WINDOW:
+                    q.popleft()
+                if len(q) >= _RATE_LIMIT_MAX:
+                    retry_after = max(0.0, _RATE_LIMIT_WINDOW - (now - q[0]))
+                    data = _error_payload(
+                        "rate_limited",
+                        "too many requests",
+                        {"retry_after": round(retry_after, 2)},
+                    )
+                    resp = _json_response(data, view=view_label, status=429)
+                    resp["X-RateLimit-Limit"] = str(_RATE_LIMIT_MAX)
+                    resp["X-RateLimit-Window"] = str(int(_RATE_LIMIT_WINDOW))
+                    resp["X-RateLimit-Remaining"] = "0"
+                    return resp
+                # Accept this request (count it)
+                q.append(now)
+                remaining = max(0, _RATE_LIMIT_MAX - len(q))
 
-    return decorator  # CHANGED:
+            response = view_func(request, *args, **kwargs)
+            try:
+                response["X-RateLimit-Limit"] = str(_RATE_LIMIT_MAX)
+                response["X-RateLimit-Window"] = str(int(_RATE_LIMIT_WINDOW))
+                response["X-RateLimit-Remaining"] = str(remaining)
+            except Exception:  # pragma: no cover
+                pass
+            return response
+
+        return wrapped
+
+    return decorator
 
 
 # ---------- Public endpoints (no auth) ----------
@@ -224,7 +235,7 @@ def preview_debug_model(request, *args, **kwargs):
 # ---------- Auth-required endpoints ----------
 
 @csrf_exempt
-@_rate_limited("preview")  # CHANGED:
+@_rate_limited("preview")  # applies only to authed requests now           # CHANGED:
 def preview(request, *args, **kwargs):
     """Normalize-only preview endpoint. POST only. CSRF-exempt. Auth-first."""
     t0 = time.perf_counter()
@@ -250,7 +261,7 @@ def preview(request, *args, **kwargs):
         except Exception as exc:
             status_code = 400
             return _json_response(
-                _error_payload("invalid_json", f"{exc}", {"hint": "Root must be an object"}),  # CHANGED:
+                _error_payload("invalid_json", f"{exc}", {"hint": "Root must be an object"}),
                 view=view_name,
                 status=status_code,
             )
@@ -282,15 +293,15 @@ try:
 except Exception:  # pragma: no cover
     def store(request, *args, **kwargs):  # type: ignore
         # Structured placeholder if store.py fails to import
-        data = _error_payload("unavailable", "store view unavailable")  # CHANGED:
-        resp = JsonResponse(data, status=503)  # CHANGED:
-        resp = _with_headers(resp, view="normalize")  # CHANGED:
-        return resp  # CHANGED:
+        data = _error_payload("unavailable", "store view unavailable")
+        resp = JsonResponse(data, status=503)
+        resp = _with_headers(resp, view="normalize")
+        return resp
 
 
 # Back-compat alias
 preview_view = preview
-store_view = store  # CHANGED:
+store_view = store
 
 # Public surface for imports
 __all__ = [
@@ -300,7 +311,7 @@ __all__ = [
     "preview", "preview_view", "store", "store_view",
     # helpers
     "_with_headers", "_json_response", "_normalize",
-    "_auth_first", "_error_payload", "_client_addr",
+    "_auth_first", "_error_payload", "_client_addr", "_is_authed",  # CHANGED:
     # rate limit
-    "_rate_limited",  # CHANGED:
+    "_rate_limited",
 ]
