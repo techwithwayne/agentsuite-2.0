@@ -3,9 +3,10 @@ PostPress AI — views package
 
 CHANGE LOG
 ----------
-2025-11-05 • Fix circular import: define VER + helpers BEFORE importing .store; placeholder uses structured error + VER.  # CHANGED:
-2025-11-05 • Structured error shape + safe request logging; upgrade ver to pa.v1; unify placeholder store error.         # CHANGED:
-2025-10-27 • Add public health/version + preview_debug_model; preview normalize-only; robust headers; safe store import.
+2025-11-05 • Add light in-process rate-limit decorator; apply to preview (5 req/10s per client/view).        # CHANGED:
+2025-11-05 • Fix circular import: define VER + helpers BEFORE importing .store; placeholder structured err.  # CHANGED:
+2025-11-05 • Structured error shape + safe request logging; upgrade ver to pa.v1.                           # CHANGED:
+2025-10-27 • Add public health/version + preview_debug_model; preview normalize-only; robust headers.
 2025-10-26 • Normalize-only preview; auth-first; CSRF-exempt.
 """
 
@@ -15,7 +16,9 @@ import json
 import os
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple  # CHANGED:
+from collections import deque, defaultdict          # CHANGED:
+import threading                                     # CHANGED:
 
 from django.http import JsonResponse, HttpResponse, HttpResponseNotAllowed
 from django.views.decorators.csrf import csrf_exempt
@@ -24,7 +27,7 @@ from django.views.decorators.csrf import csrf_exempt
 logger = logging.getLogger("postpress_ai.views")
 
 # -----------------------------------------------------------------------------
-# Version + Helpers FIRST (avoid circular import with store.py)                # CHANGED:
+# Version + Helpers FIRST (avoid circular import with store.py)
 # -----------------------------------------------------------------------------
 VER = "pa.v1"  # CHANGED:
 
@@ -126,6 +129,63 @@ def _client_addr(request) -> str:
     return request.META.get("REMOTE_ADDR", "") or "-"
 
 
+# -----------------------------------------------------------------------------
+# Light in-process rate limit (per client IP per view).                         # CHANGED:
+# Policy: 5 requests / 10 seconds / (client, view).                             # CHANGED:
+# This is best-effort and resets on process restart.                            # CHANGED:
+# -----------------------------------------------------------------------------
+_RATE_LIMIT_MAX = 5                      # CHANGED:
+_RATE_LIMIT_WINDOW = 10.0                # CHANGED:
+_rate_lock = threading.Lock()            # CHANGED:
+_rate_buckets: Dict[Tuple[str, str], deque] = defaultdict(deque)  # CHANGED:
+
+
+def _rate_limited(view_label: str):  # CHANGED:
+    """
+    Decorator to apply a tiny token-bucket style limit per (client_addr, view_label).
+    On limit, returns 429 with structured payload and Retry-After-like details.      # CHANGED:
+    """  # CHANGED:
+
+    def decorator(view_func):  # CHANGED:
+        def wrapped(request, *args, **kwargs):  # CHANGED:
+            now = time.monotonic()  # CHANGED:
+            key = (_client_addr(request), view_label)  # CHANGED:
+            with _rate_lock:  # CHANGED:
+                q = _rate_buckets[key]  # CHANGED:
+                # Drop old entries outside the window                            # CHANGED:
+                while q and (now - q[0]) > _RATE_LIMIT_WINDOW:  # CHANGED:
+                    q.popleft()  # CHANGED:
+                if len(q) >= _RATE_LIMIT_MAX:  # CHANGED:
+                    # Compute retry_after (seconds)                               # CHANGED:
+                    retry_after = max(0.0, _RATE_LIMIT_WINDOW - (now - q[0]))  # CHANGED:
+                    data = _error_payload(  # CHANGED:
+                        "rate_limited",  # CHANGED:
+                        "too many requests",  # CHANGED:
+                        {"retry_after": round(retry_after, 2)},  # CHANGED:
+                    )  # CHANGED:
+                    resp = _json_response(data, view=view_label, status=429)  # CHANGED:
+                    resp["X-RateLimit-Limit"] = str(_RATE_LIMIT_MAX)  # CHANGED:
+                    resp["X-RateLimit-Window"] = str(int(_RATE_LIMIT_WINDOW))  # CHANGED:
+                    resp["X-RateLimit-Remaining"] = "0"  # CHANGED:
+                    return resp  # CHANGED:
+                # Accept this request                                            # CHANGED:
+                q.append(now)  # CHANGED:
+                remaining = max(0, _RATE_LIMIT_MAX - len(q))  # CHANGED:
+            # Call underlying view                                                # CHANGED:
+            response = view_func(request, *args, **kwargs)  # CHANGED:
+            try:  # CHANGED:
+                response["X-RateLimit-Limit"] = str(_RATE_LIMIT_MAX)  # CHANGED:
+                response["X-RateLimit-Window"] = str(int(_RATE_LIMIT_WINDOW))  # CHANGED:
+                response["X-RateLimit-Remaining"] = str(remaining)  # CHANGED:
+            except Exception:  # pragma: no cover  # CHANGED:
+                pass  # CHANGED:
+            return response  # CHANGED:
+
+        return wrapped  # CHANGED:
+
+    return decorator  # CHANGED:
+
+
 # ---------- Public endpoints (no auth) ----------
 
 def health(request, *args, **kwargs):
@@ -164,6 +224,7 @@ def preview_debug_model(request, *args, **kwargs):
 # ---------- Auth-required endpoints ----------
 
 @csrf_exempt
+@_rate_limited("preview")  # CHANGED:
 def preview(request, *args, **kwargs):
     """Normalize-only preview endpoint. POST only. CSRF-exempt. Auth-first."""
     t0 = time.perf_counter()
@@ -214,13 +275,13 @@ def preview(request, *args, **kwargs):
 
 
 # -----------------------------------------------------------------------------
-# Import store AFTER helpers are defined to avoid circular import.             # CHANGED:
+# Import store AFTER helpers are defined to avoid circular import.
 # -----------------------------------------------------------------------------
-try:  # CHANGED:
-    from .store import store  # type: ignore  # CHANGED:
-except Exception:  # pragma: no cover  # CHANGED:
-    def store(request, *args, **kwargs):  # type: ignore  # CHANGED:
-        # Structured placeholder if store.py fails to import                   # CHANGED:
+try:
+    from .store import store  # type: ignore
+except Exception:  # pragma: no cover
+    def store(request, *args, **kwargs):  # type: ignore
+        # Structured placeholder if store.py fails to import
         data = _error_payload("unavailable", "store view unavailable")  # CHANGED:
         resp = JsonResponse(data, status=503)  # CHANGED:
         resp = _with_headers(resp, view="normalize")  # CHANGED:
@@ -236,8 +297,10 @@ __all__ = [
     "VER",
     # views
     "health", "version", "preview_debug_model",
-    "preview", "preview_view", "store", "store_view",  # CHANGED:
+    "preview", "preview_view", "store", "store_view",
     # helpers
     "_with_headers", "_json_response", "_normalize",
-    "_auth_first", "_error_payload", "_client_addr",  # CHANGED:
+    "_auth_first", "_error_payload", "_client_addr",
+    # rate limit
+    "_rate_limited",  # CHANGED:
 ]
