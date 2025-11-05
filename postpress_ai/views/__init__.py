@@ -3,34 +3,30 @@ PostPress AI — views package
 
 CHANGE LOG
 ----------
-2025-10-27 • Add public health/version + preview_debug_model; preview normalize-only; robust headers; safe store import.  # CHANGED:
-2025-10-26 • Normalize-only preview; auth-first; CSRF-exempt.                                                                # CHANGED:
+2025-11-05 • Fix circular import: define VER + helpers BEFORE importing .store; placeholder uses structured error + VER.  # CHANGED:
+2025-11-05 • Structured error shape + safe request logging; upgrade ver to pa.v1; unify placeholder store error.         # CHANGED:
+2025-10-27 • Add public health/version + preview_debug_model; preview normalize-only; robust headers; safe store import.
+2025-10-26 • Normalize-only preview; auth-first; CSRF-exempt.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from django.http import JsonResponse, HttpResponse, HttpResponseNotAllowed
 from django.views.decorators.csrf import csrf_exempt
 
-# Attempt to import the already-implemented store view.
-# If unavailable, we provide a placeholder that returns 503 but keeps imports working.
-try:
-    from .store import store  # type: ignore
-except Exception:  # pragma: no cover
-    def store(request, *args, **kwargs):  # type: ignore
-        resp = JsonResponse(
-            {"ok": False, "error": "store view unavailable", "ver": "1"},
-            status=503,
-        )
-        resp["X-PPA-View"] = "normalize"
-        resp["Cache-Control"] = "no-store"
-        return resp
+# Logger (safe, no secrets logged).
+logger = logging.getLogger("postpress_ai.views")
 
-VER = "1"
+# -----------------------------------------------------------------------------
+# Version + Helpers FIRST (avoid circular import with store.py)                # CHANGED:
+# -----------------------------------------------------------------------------
+VER = "pa.v1"  # CHANGED:
 
 
 def _get_shared_key() -> str:
@@ -57,6 +53,19 @@ def _extract_auth(request) -> str:
     return ""
 
 
+def _error_payload(err_type: str, message: str, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Uniform structured error payload (no secrets)."""
+    return {  # CHANGED:
+        "ok": False,  # CHANGED:
+        "error": {  # CHANGED:
+            "type": err_type,  # CHANGED:
+            "message": message,  # CHANGED:
+            "details": details or {},  # CHANGED:
+        },  # CHANGED:
+        "ver": VER,  # CHANGED:
+    }  # CHANGED:
+
+
 def _auth_first(request) -> Optional[HttpResponse]:
     """
     Enforce auth before any other processing.
@@ -68,9 +77,9 @@ def _auth_first(request) -> Optional[HttpResponse]:
     expected = _get_shared_key()
 
     if not presented:
-        return JsonResponse({"ok": False, "error": "missing key", "ver": VER}, status=401)
+        return JsonResponse(_error_payload("missing_key", "missing authentication key"), status=401)  # CHANGED:
     if not expected or presented != expected:
-        return JsonResponse({"ok": False, "error": "forbidden", "ver": VER}, status=403)
+        return JsonResponse(_error_payload("forbidden", "invalid authentication key"), status=403)  # CHANGED:
     return None
 
 
@@ -107,6 +116,14 @@ def _with_headers(resp: HttpResponse, *, view: str) -> HttpResponse:
 def _json_response(data: Dict[str, Any], *, view: str, status: int = 200) -> JsonResponse:
     resp = JsonResponse(data, status=status)
     return _with_headers(resp, view=view)
+
+
+def _client_addr(request) -> str:
+    """Best-effort client address for logs (no secrets)."""
+    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR", "") or "-"
 
 
 # ---------- Public endpoints (no auth) ----------
@@ -149,38 +166,78 @@ def preview_debug_model(request, *args, **kwargs):
 @csrf_exempt
 def preview(request, *args, **kwargs):
     """Normalize-only preview endpoint. POST only. CSRF-exempt. Auth-first."""
-    if request.method != "POST":
-        return _with_headers(HttpResponseNotAllowed(["POST"]), view="preview")
-
-    auth_resp = _auth_first(request)
-    if auth_resp is not None:
-        return _with_headers(auth_resp, view="preview")
-
+    t0 = time.perf_counter()
+    status_code = 200
+    view_name = "preview"
     try:
-        raw = request.body.decode("utf-8") if request.body else "{}"
-        payload = json.loads(raw) if raw.strip() else {}
-        if not isinstance(payload, dict):
-            raise ValueError("JSON root must be an object")
-    except Exception as exc:
-        return _json_response(
-            {"ok": False, "error": f"invalid json: {exc}", "ver": VER},
-            view="preview",
-            status=400,
-        )
+        if request.method != "POST":
+            status_code = 405
+            resp = _with_headers(HttpResponseNotAllowed(["POST"]), view=view_name)
+            return resp
 
-    normalized = _normalize(payload)
-    return _json_response({"ok": True, "result": normalized, "ver": VER}, view="preview")
+        auth_resp = _auth_first(request)
+        if auth_resp is not None:
+            resp = _with_headers(auth_resp, view=view_name)
+            status_code = resp.status_code
+            return resp
+
+        try:
+            raw = request.body.decode("utf-8") if request.body else "{}"
+            payload = json.loads(raw) if raw.strip() else {}
+            if not isinstance(payload, dict):
+                raise ValueError("JSON root must be an object")
+        except Exception as exc:
+            status_code = 400
+            return _json_response(
+                _error_payload("invalid_json", f"{exc}", {"hint": "Root must be an object"}),  # CHANGED:
+                view=view_name,
+                status=status_code,
+            )
+
+        normalized = _normalize(payload)
+        data = {"ok": True, "result": normalized, "ver": VER}
+        return _json_response(data, view=view_name, status=200)
+
+    finally:
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        try:
+            logger.info(
+                "ppa.preview %s %s addr=%s status=%s dur_ms=%s",
+                request.method,
+                getattr(request, "path", "-"),
+                _client_addr(request),
+                status_code,
+                dur_ms,
+            )
+        except Exception:  # pragma: no cover
+            pass
+
+
+# -----------------------------------------------------------------------------
+# Import store AFTER helpers are defined to avoid circular import.             # CHANGED:
+# -----------------------------------------------------------------------------
+try:  # CHANGED:
+    from .store import store  # type: ignore  # CHANGED:
+except Exception:  # pragma: no cover  # CHANGED:
+    def store(request, *args, **kwargs):  # type: ignore  # CHANGED:
+        # Structured placeholder if store.py fails to import                   # CHANGED:
+        data = _error_payload("unavailable", "store view unavailable")  # CHANGED:
+        resp = JsonResponse(data, status=503)  # CHANGED:
+        resp = _with_headers(resp, view="normalize")  # CHANGED:
+        return resp  # CHANGED:
 
 
 # Back-compat alias
 preview_view = preview
+store_view = store  # CHANGED:
 
 # Public surface for imports
 __all__ = [
     "VER",
     # views
     "health", "version", "preview_debug_model",
-    "preview", "preview_view", "store",
+    "preview", "preview_view", "store", "store_view",  # CHANGED:
     # helpers
     "_with_headers", "_json_response", "_normalize",
+    "_auth_first", "_error_payload", "_client_addr",  # CHANGED:
 ]
