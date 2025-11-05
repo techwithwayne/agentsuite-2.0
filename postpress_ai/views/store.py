@@ -3,36 +3,65 @@ PostPress AI — views.store
 
 CHANGE LOG
 ----------
+2025-11-05 • Add light rate-limit/debounce (5 req/10s per client) with structured 429; keep X-PPA-View=normalize.  # CHANGED:
+2025-11-05 • Structured error shape + safe request logging; ver=pa.v1; keep X-PPA-View: normalize.
+2025-10-27 • Add robust exception guard to return JSON 500 with headers (no PA HTML page).
 2025-10-26 • Normalize-only store view, auth-first, CSRF-exempt.
 2025-10-26 • Shared helpers from package (__init__) for consistency.
 2025-10-26 • Ensure headers on ALL responses (405/auth) via _with_headers helper.
-2025-10-27 • Add robust exception guard to return JSON 500 with headers (no PA HTML page).
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+import logging
+import time
+from typing import Any, Dict, Optional
 
 from django.http import JsonResponse, HttpResponseNotAllowed
 from django.views.decorators.csrf import csrf_exempt
 
 # Import shared helpers and version from package to keep a single source of truth.
-from . import _auth_first, _json_response, _normalize, _with_headers, VER  # type: ignore
+from . import (  # type: ignore
+    _auth_first,
+    _json_response,
+    _normalize,
+    _with_headers,
+    VER,
+    _error_payload,
+    _rate_limited,  # CHANGED:
+)
+
+# Local logger (safe, no secrets).
+logger = logging.getLogger("postpress_ai.views")
+
+
+def _client_addr(request) -> str:
+    """Best-effort client address for logs (no secrets)."""
+    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR", "") or "-"
 
 
 @csrf_exempt
+@_rate_limited("normalize")  # CHANGED: keep breadcrumb header aligned with store’s view label
 def store(request, *args, **kwargs):  # noqa: D401
     """Normalize-only store endpoint. POST only. CSRF-exempt. Auth-first."""
+    t0 = time.perf_counter()
+    status_code = 200
+    view_name = "normalize"
     try:
         # Enforce method (ensure headers even for 405)
         if request.method != "POST":
-            return _with_headers(HttpResponseNotAllowed(["POST"]), view="normalize")
+            status_code = 405  # CHANGED:
+            return _with_headers(HttpResponseNotAllowed(["POST"]), view=view_name)
 
         # Auth-first (even if JSON is malformed)
-        auth_resp = _auth_first(request)
+        auth_resp: Optional[JsonResponse] = _auth_first(request)
         if auth_resp is not None:
-            return _with_headers(auth_resp, view="normalize")
+            status_code = auth_resp.status_code
+            return _with_headers(auth_resp, view=view_name)
 
         # Parse JSON body safely
         try:
@@ -41,23 +70,41 @@ def store(request, *args, **kwargs):  # noqa: D401
             if not isinstance(payload, dict):
                 raise ValueError("JSON root must be an object")
         except Exception as exc:
+            status_code = 400  # CHANGED:
             return _json_response(
-                {"ok": False, "error": f"invalid json: {exc}", "ver": VER},
-                view="normalize",
-                status=400,
+                _error_payload("invalid_json", f"{exc}", {"hint": "Root must be an object"}),  # CHANGED:
+                view=view_name,
+                status=status_code,
             )
 
         normalized = _normalize(payload)
-        return _json_response({"ok": True, "result": normalized, "ver": VER}, view="normalize")
+        data = {"ok": True, "result": normalized, "ver": VER}  # CHANGED:
+        return _json_response(data, view=view_name, status=200)  # CHANGED:
 
     except Exception as exc:  # final guard to avoid PA HTML error page
         # Trim the exception text to something compact; avoid leaking internals
         detail = (str(exc) or exc.__class__.__name__)[:200]
+        status_code = 500  # CHANGED:
         return _json_response(
-            {"ok": False, "error": "server", "detail": detail, "ver": VER},
-            view="normalize",
-            status=500,
+            _error_payload("server_error", "unexpected server error", {"detail": detail}),  # CHANGED:
+            view=view_name,
+            status=status_code,
         )
+
+    finally:
+        # Safe access log with timing (ms).
+        dur_ms = int((time.perf_counter() - t0) * 1000)  # CHANGED:
+        try:
+            logger.info(
+                "ppa.store %s %s addr=%s status=%s dur_ms=%s",
+                request.method,
+                getattr(request, "path", "-"),
+                _client_addr(request),
+                status_code,
+                dur_ms,
+            )
+        except Exception:  # pragma: no cover
+            pass
 
 
 # Back-compat alias
