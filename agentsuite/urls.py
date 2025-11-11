@@ -1,6 +1,10 @@
 """
 CHANGE LOG
 ----------
+2025-11-10
+- ADD: Root-level aliases /preview/ and /store/ → canonical postpress_ai views.          # CHANGED:
+- KEEP: Direct /postpress-ai/store/ override precedence and /postpress-ai include.       # CHANGED:
+
 2025-10-30
 - ADD: Inline /postpress-ai/health/ and /postpress-ai/version/ endpoints placed before include()
        so they resolve first without modifying app files.
@@ -13,6 +17,7 @@ CHANGE LOG
 
 from django.contrib import admin
 from postpress_ai.views.store import store_view  # CHANGED: PPA direct override
+from postpress_ai import views as ppa_views      # CHANGED: for root-level aliases
 
 from django.urls import path, include
 from django.http import JsonResponse  # ADDED: for health/version JSON responses
@@ -32,10 +37,13 @@ def ppa_version_view(request):
     """Version probe for PostPress AI; bump string on releases."""
     return JsonResponse({"version": "postpress-ai.v2.1-2025-10-30"})
 
-
 urlpatterns = [
-    # PostPress AI direct store (normalize-only override)
-    path("postpress-ai/store/", store_view, name="ppa_store_direct"),  # CHANGED: normalize-only override
+    # Root-level aliases to canonical PPA views (in addition to the prefixed include)  # CHANGED:
+    path("preview/", ppa_views.preview, name="ppa-preview-root"),                      # CHANGED:
+    path("store/",   ppa_views.store,   name="ppa-store-root"),                        # CHANGED:
+
+    # PostPress AI direct store (normalize-only override; precedence over include)
+    path("postpress-ai/store/", store_view, name="ppa_store_direct"),
 
     # PostPress AI readiness endpoints (placed BEFORE include to take precedence)
     path("postpress-ai/health/", ppa_health_view, name="ppa_health"),
