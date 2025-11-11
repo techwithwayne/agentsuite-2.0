@@ -3,7 +3,11 @@ PostPress AI — views package
 
 CHANGE LOG
 ----------
-2025-11-05 • Rate limit counts ONLY authenticated hits; add _is_authed helper; keep structured 429 + headers.   # CHANGED:
+2025-11-11 • preview(): guarantee result.html via server-side fallback from content/text; keep headers + rate limit.  # CHANGED:
+2025-11-11 • Fix SyntaxError: avoid backslashes in f-string expression in _text_to_html().                           # CHANGED:
+2025-11-10 • preview(): add structured, safe logging parity (install/status_norm/lengths/tags_n/cats_n).  # CHANGED:
+2025-11-10 • Make fallback `store` mirror real view headers/limits: X-PPA-View='store', CSRF-exempt, rate-limited.  # CHANGED:
+2025-11-05 • Rate limit counts ONLY authenticated hits; add _is_authed helper; keep structured 429 + headers.
 2025-11-05 • Add light in-process rate-limit decorator; apply to preview (5 req/10s per client/view).
 2025-11-05 • Fix circular import: define VER + helpers BEFORE importing .store; placeholder structured err.
 2025-11-05 • Structured error shape + safe request logging; upgrade ver to pa.v1.
@@ -20,6 +24,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from collections import deque, defaultdict
 import threading
+import html as _html  # CHANGED:
 
 from django.http import JsonResponse, HttpResponse, HttpResponseNotAllowed
 from django.views.decorators.csrf import csrf_exempt
@@ -138,6 +143,39 @@ def _client_addr(request) -> str:
 
 
 # -----------------------------------------------------------------------------
+# HTML fallback helpers for preview                                                   # CHANGED:
+# -----------------------------------------------------------------------------
+def _looks_like_html(s: str) -> bool:                                                 # CHANGED:
+    s = s or ""                                                                       # CHANGED:
+    return ("<" in s and ">" in s) or s.strip().lower().startswith(("<!doctype", "<html", "<p", "<h", "<ul", "<ol", "<div", "<section"))  # CHANGED:
+
+
+def _text_to_html(txt: str) -> str:                                                   # CHANGED:
+    """Escape text and wrap into paragraph(s), preserving newlines."""                # CHANGED:
+    if not txt:                                                                       # CHANGED:
+        return ""                                                                     # CHANGED:
+    safe = _html.escape(str(txt))                                                     # CHANGED:
+    # Double newlines -> paragraph breaks; single newlines -> <br>                    # CHANGED:
+    parts = [p for p in safe.split("\n\n") if p]                                      # CHANGED:
+    if not parts:                                                                     # CHANGED:
+        return "<p>" + safe.replace("\n", "<br>") + "</p>"                            # CHANGED:
+    return "".join("<p>" + p.replace("\n", "<br>") + "</p>" for p in parts)           # CHANGED:
+
+
+def _derive_html_from_payload(payload: Dict[str, Any], normalized: Dict[str, Any]) -> str:  # CHANGED:
+    """Choose HTML for preview: prefer content if HTML; else wrap content/text as <p>."""    # CHANGED:
+    content = (normalized.get("content") or "").strip()                               # CHANGED:
+    if content:                                                                       # CHANGED:
+        return content if _looks_like_html(content) else _text_to_html(content)       # CHANGED:
+    # Fallback to raw text field if provided                                          # CHANGED:
+    text = str(payload.get("text", "") or "").strip()                                 # CHANGED:
+    if text:                                                                          # CHANGED:
+        return _text_to_html(text)                                                    # CHANGED:
+    # As a last resort, empty (admin will show diagnostic)                            # CHANGED:
+    return ""                                                                         # CHANGED:
+
+
+# -----------------------------------------------------------------------------
 # Light in-process rate limit (per client IP per view).
 # Policy: 5 requests / 10 seconds / (client, view).
 # -----------------------------------------------------------------------------
@@ -234,6 +272,13 @@ def preview_debug_model(request, *args, **kwargs):
 
 # ---------- Auth-required endpoints ----------
 
+def _safe_int(val: Any) -> int:  # CHANGED:
+    try:                           # CHANGED:
+        return int(val)            # CHANGED:
+    except Exception:              # CHANGED:
+        return 0                   # CHANGED:
+
+
 @csrf_exempt
 @_rate_limited("preview")  # applies only to authed requests now           # CHANGED:
 def preview(request, *args, **kwargs):
@@ -266,21 +311,41 @@ def preview(request, *args, **kwargs):
                 status=status_code,
             )
 
-        normalized = _normalize(payload)
-        data = {"ok": True, "result": normalized, "ver": VER}
-        return _json_response(data, view=view_name, status=200)
+        normalized = _normalize(payload)                                   # CHANGED:
+        html_out = _derive_html_from_payload(payload, normalized)          # CHANGED:
+        result = dict(normalized)                                          # CHANGED:
+        result["html"] = html_out                                          # CHANGED:
+
+        data = {"ok": True, "result": result, "ver": VER}                  # CHANGED:
+        return _json_response(data, view=view_name, status=200)            # CHANGED:
 
     finally:
         dur_ms = int((time.perf_counter() - t0) * 1000)
         try:
-            logger.info(
-                "ppa.preview %s %s addr=%s status=%s dur_ms=%s",
-                request.method,
-                getattr(request, "path", "-"),
-                _client_addr(request),
-                status_code,
-                dur_ms,
-            )
+            # CHANGED: structured, safe logging parity with store()
+            base_line = {  # CHANGED:
+                "method": request.method,  # CHANGED:
+                "path": getattr(request, "path", "-"),  # CHANGED:
+                "addr": _client_addr(request),  # CHANGED:
+                "status": status_code,  # CHANGED:
+                "dur_ms": dur_ms,  # CHANGED:
+            }  # CHANGED:
+            try:  # CHANGED:
+                # Safely access locals if early exit occurred                  # CHANGED:
+                _payload = locals().get("payload") if isinstance(locals().get("payload"), dict) else {}  # CHANGED:
+                _norm = locals().get("normalized") if isinstance(locals().get("normalized"), dict) else {}  # CHANGED:
+                install = (_payload.get("install") or _payload.get("site") or "-")  # CHANGED:
+                extra = {  # CHANGED:
+                    "install": str(install)[:120] if install else "-",  # CHANGED:
+                    "status_norm": (_norm.get("status") or "-"),  # CHANGED:
+                    "title_len": _safe_int(len(_norm.get("title", ""))),  # CHANGED:
+                    "content_len": _safe_int(len(_norm.get("content", ""))),  # CHANGED:
+                    "tags_n": _safe_int(len(_norm.get("tags", []))),  # CHANGED:
+                    "cats_n": _safe_int(len(_norm.get("categories", []))),  # CHANGED:
+                }  # CHANGED:
+            except Exception:  # CHANGED:
+                extra = {}  # CHANGED:
+            logger.info("ppa.preview %s", {**base_line, **extra})  # CHANGED:
         except Exception:  # pragma: no cover
             pass
 
@@ -291,12 +356,14 @@ def preview(request, *args, **kwargs):
 try:
     from .store import store  # type: ignore
 except Exception:  # pragma: no cover
+    @csrf_exempt  # CHANGED:
+    @_rate_limited("store")  # CHANGED:
     def store(request, *args, **kwargs):  # type: ignore
-        # Structured placeholder if store.py fails to import
+        """Structured placeholder if store.py fails to import."""  # CHANGED:
         data = _error_payload("unavailable", "store view unavailable")
         resp = JsonResponse(data, status=503)
-        resp = _with_headers(resp, view="normalize")
-        return resp
+        resp = _with_headers(resp, view="store")  # CHANGED:
+        return resp  # CHANGED:
 
 
 # Back-compat alias
@@ -311,7 +378,8 @@ __all__ = [
     "preview", "preview_view", "store", "store_view",
     # helpers
     "_with_headers", "_json_response", "_normalize",
-    "_auth_first", "_error_payload", "_client_addr", "_is_authed",  # CHANGED:
+    "_auth_first", "_error_payload", "_client_addr", "_is_authed",
+    "_looks_like_html", "_text_to_html", "_derive_html_from_payload",  # CHANGED:
     # rate limit
     "_rate_limited",
 ]
