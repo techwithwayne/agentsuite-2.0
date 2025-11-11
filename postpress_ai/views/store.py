@@ -3,7 +3,8 @@ PostPress AI — views.store
 
 CHANGE LOG
 ----------
-2025-11-05 • Add light rate-limit/debounce (5 req/10s per client) with structured 429; keep X-PPA-View=normalize.  # CHANGED:
+2025-11-10 • Parity with WP controller response shape: surface optional {id, permalink, edit_link} top-level and in result.meta; set X-PPA-View=store.  # CHANGED:
+2025-11-05 • Add light rate-limit/debounce (5 req/10s per client) with structured 429; keep X-PPA-View=normalize.
 2025-11-05 • Structured error shape + safe request logging; ver=pa.v1; keep X-PPA-View: normalize.
 2025-10-27 • Add robust exception guard to return JSON 500 with headers (no PA HTML page).
 2025-10-26 • Normalize-only store view, auth-first, CSRF-exempt.
@@ -29,7 +30,7 @@ from . import (  # type: ignore
     _with_headers,
     VER,
     _error_payload,
-    _rate_limited,  # CHANGED:
+    _rate_limited,
 )
 
 # Local logger (safe, no secrets).
@@ -44,13 +45,34 @@ def _client_addr(request) -> str:
     return request.META.get("REMOTE_ADDR", "") or "-"
 
 
+def _extract_injected_meta(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Pull optional WP-provided identifiers/links so Django's /store/ mirrors WP controller shape.
+    We DO NOT construct these; we only surface what was provided.
+    """
+    # CHANGED: begin meta extraction
+    pid = payload.get("id") or payload.get("wp_post_id") or payload.get("post_id")
+    permalink = payload.get("permalink") or payload.get("link") or payload.get("url")
+    edit_link = payload.get("edit_link") or payload.get("edit")
+
+    meta: Dict[str, Any] = {}
+    if pid is not None:
+        meta["id"] = pid
+    if isinstance(permalink, str) and permalink.strip():
+        meta["permalink"] = permalink.strip()
+    if isinstance(edit_link, str) and edit_link.strip():
+        meta["edit_link"] = edit_link.strip()
+    return meta
+    # CHANGED: end meta extraction
+
+
 @csrf_exempt
-@_rate_limited("normalize")  # CHANGED: keep breadcrumb header aligned with store’s view label
+@_rate_limited("store")  # CHANGED: breadcrumb label now matches the view name
 def store(request, *args, **kwargs):  # noqa: D401
     """Normalize-only store endpoint. POST only. CSRF-exempt. Auth-first."""
     t0 = time.perf_counter()
     status_code = 200
-    view_name = "normalize"
+    view_name = "store"  # CHANGED: was "normalize"
     try:
         # Enforce method (ensure headers even for 405)
         if request.method != "POST":
@@ -77,9 +99,21 @@ def store(request, *args, **kwargs):  # noqa: D401
                 status=status_code,
             )
 
+        # Normalize core fields (no WP writes here; this is still "normalize-only")
         normalized = _normalize(payload)
-        data = {"ok": True, "result": normalized, "ver": VER}  # CHANGED:
-        return _json_response(data, view=view_name, status=200)  # CHANGED:
+
+        # CHANGED: If WP passed back identifiers/links (after creating a local draft),
+        # surface them top-level AND under result.meta for parity and convenience.
+        injected_meta = _extract_injected_meta(payload)  # CHANGED:
+        result: Dict[str, Any] = {"ok": True, "result": normalized, "ver": VER}  # CHANGED:
+        if injected_meta:  # CHANGED:
+            # Attach under result.meta
+            result["result"] = {**normalized, "meta": injected_meta}  # CHANGED:
+            # Also mirror at top-level for simpler client access (parity with WP)  # CHANGED:
+            for k, v in injected_meta.items():
+                result[k] = v  # CHANGED:
+
+        return _json_response(result, view=view_name, status=200)  # CHANGED:
 
     except Exception as exc:  # final guard to avoid PA HTML error page
         # Trim the exception text to something compact; avoid leaking internals
