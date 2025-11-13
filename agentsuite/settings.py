@@ -383,10 +383,10 @@ LOGGING = {
             'level': 'INFO',
             'class': 'logging.handlers.RotatingFileHandler',
             'filename': LOG_DIR / 'webdoctor.log',
-            'maxBytes': 1024*1024*15,  # 15MB
+            'maxBytes': 1024*1024*15,
             'backupCount': 10,
             'formatter': 'verbose',
-            'encoding': 'utf-8',  # CHANGED: ensure UTF-8 writes/rotation
+            'encoding': 'utf-8',
         },
         'console': {
             'level': 'INFO',
@@ -410,19 +410,29 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
+
+        # ============================================================
+        # 2025-11-13 • Add PostPress AI view logger → INFO to webdoctor.log  # CHANGED:
+        # ============================================================
+        'postpress_ai.views': {                                                 # CHANGED:
+            'handlers': ['file', 'console'],                                    # CHANGED:
+            'level': 'INFO',                                                    # CHANGED:
+            'propagate': False,                                                 # CHANGED:
+        },                                                                       # CHANGED:
     },
 }
 
-# Defensive: ensure ANY RotatingFileHandler gets UTF-8 if not set explicitly                   # CHANGED:
-try:  # CHANGED:
-    if isinstance(LOGGING, dict):  # CHANGED:
-        handlers = LOGGING.setdefault("handlers", {})  # CHANGED:
-        for _name, _h in list(handlers.items()):  # CHANGED:
-            cls = str(_h.get("class", "")).rsplit(".", 1)[-1]  # CHANGED:
-            if cls == "RotatingFileHandler" and not _h.get("encoding"):  # CHANGED:
-                _h["encoding"] = "utf-8"  # CHANGED:
-except Exception:  # CHANGED:
-    pass  # CHANGED:
+# Defensive: ensure ANY RotatingFileHandler gets UTF-8 if not set explicitly
+try:
+    if isinstance(LOGGING, dict):
+        handlers = LOGGING.setdefault("handlers", {})
+        for _name, _h in list(handlers.items()):
+            cls = str(_h.get("class", "")).rsplit(".", 1)[-1]
+            if cls == "RotatingFileHandler" and not _h.get("encoding"):
+                _h["encoding"] = "utf-8"
+except Exception:
+    pass
+
 
 # ========= Stripe =========
 DEPLOY_BASE_URL = os.getenv("DEPLOY_BASE_URL", "https://apps.techwithwayne.com").rstrip("/")
