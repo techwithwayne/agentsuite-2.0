@@ -3,6 +3,7 @@ PostPress AI — views.store
 
 CHANGE LOG
 ----------
+2025-11-16.2 • Review for WP mode parity; docstring clarified; no behavior change.  # CHANGED:
 2025-11-16 • Preserve optional 'mode' hint in result + telemetry.                 # CHANGED:
 2025-11-13 • Add client_view/xhr logging parity with preview; no behavior changes.        # CHANGED:
 2025-11-11 • Doc/clarity pass; confirm parity & headers; no behavior change.             # (prev)
@@ -82,7 +83,7 @@ def _safe_int(val: Any) -> int:
 @csrf_exempt
 @_rate_limited("store")
 def store(request, *args, **kwargs):  # noqa: D401
-    """Normalize-only store endpoint. POST only. CSRF-exempt. Auth-first."""
+    """Normalize-only store endpoint. POST only. CSRF-exempt. Auth-first. Accepts optional 'mode' hint from WP (draft/publish/update) for logging and downstream decisions."""  # CHANGED:
     t0 = time.perf_counter()
     status_code = 200
     view_name = "store"
