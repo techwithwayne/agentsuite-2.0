@@ -1,6 +1,11 @@
 # agentsuite/postpress_ai/assistant_runner.py
 """
 Assistant v2 runner for PostPress AI.
+
+CHANGE LOG
+----------
+2025-11-16 • Harden JSON parsing, strip code fences, normalize output shape, and enforce Yoast/slug/keyphrase rules server-side (A–D: structure, quality, tools, hardening).  # CHANGED:
+
 - Creates/runs an OpenAI Assistant with server-side tool calling.
 - Tools are deterministic helpers to keep the model on rails:
   * enforce_yoast_limits(title, max_len=60, max_meta_len=155)
@@ -110,9 +115,11 @@ def title_variants(subject: str, tone: Optional[str] = None, genre: Optional[str
     return seeds
 
 
-def extract_focus_keyphrase(subject: Optional[str] = None,
-                            body: Optional[str] = None,
-                            hints: Optional[List[str]] = None) -> str:
+def extract_focus_keyphrase(
+    subject: Optional[str] = None,
+    body: Optional[str] = None,
+    hints: Optional[List[str]] = None,
+) -> str:
     """
     Naive extractor that prefers provided hints > subject > salient body tokens.
     Ensures 'Iowa' presence when natural (avoid keyword stuffing).
@@ -131,6 +138,91 @@ def extract_focus_keyphrase(subject: Optional[str] = None,
     # Remove hyphens for keyphrase per Wayne’s rule
     kp = kp.replace("-", " ")
     return kp.strip()
+
+
+def _strip_code_fences(text: str) -> str:  # CHANGED:
+    """
+    Remove leading/trailing ``` or ```json fences if present and return inner content.  # CHANGED:
+    Safe no-op if no fences are found.                                                 # CHANGED:
+    """  # CHANGED:
+    if not text:  # CHANGED:
+        return text  # CHANGED:
+    s = text.strip()  # CHANGED:
+    if s.startswith("```"):  # CHANGED:
+        # Prefer the first fenced block if present                                     # CHANGED:
+        m = re.search(r"```(?:json)?\s*(.*?)```", s, re.DOTALL)  # CHANGED:
+        if m:  # CHANGED:
+            return m.group(1).strip()  # CHANGED:
+        lines = s.splitlines()  # CHANGED:
+        if len(lines) >= 2:  # CHANGED:
+            if lines[0].startswith("```") and lines[-1].startswith("```"):  # CHANGED:
+                return "\n".join(lines[1:-1]).strip()  # CHANGED:
+            return "\n".join(lines[1:]).strip()  # CHANGED:
+    return text  # CHANGED:
+
+
+def _normalize_assistant_output(subject: str, keywords: List[str], raw: Dict[str, Any]) -> Dict[str, Any]:  # CHANGED:
+    """
+    Normalize assistant output into the strict PostPress AI contract.                 # CHANGED:
+    Guarantees: title (str), outline (list[str]), body_markdown (str),               # CHANGED:
+    meta: {focus_keyphrase, meta_description, slug}.                                 # CHANGED:
+    """  # CHANGED:
+    safe_subject = (subject or "").strip()  # CHANGED:
+    title = str(raw.get("title") or safe_subject or "Untitled").strip()  # CHANGED:
+    if not title:  # CHANGED:
+        title = "Untitled"  # CHANGED:
+
+    outline_raw = raw.get("outline")  # CHANGED:
+    outline: List[str] = []  # CHANGED:
+    if isinstance(outline_raw, list):  # CHANGED:
+        outline = [str(x).strip() for x in outline_raw if str(x).strip()]  # CHANGED:
+    elif outline_raw:  # CHANGED:
+        outline = [str(outline_raw).strip()]  # CHANGED:
+    if not outline:  # CHANGED:
+        outline = outline_sections(title)  # CHANGED:
+
+    body_markdown = str(raw.get("body_markdown") or "").strip()  # CHANGED:
+
+    meta_in = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}  # CHANGED:
+    meta_dict: Dict[str, Any] = dict(meta_in) if isinstance(meta_in, dict) else {}  # CHANGED:
+
+    focus_keyphrase = extract_focus_keyphrase(  # CHANGED:
+        subject=title or safe_subject or None,  # CHANGED:
+        body=body_markdown or None,  # CHANGED:
+        hints=keywords,  # CHANGED:
+    )  # CHANGED:
+
+    yoast_limits = enforce_yoast_limits(title)  # CHANGED:
+    meta_description_raw = meta_dict.get("meta_description")  # CHANGED:
+    if meta_description_raw:  # CHANGED:
+        meta_description = str(meta_description_raw).strip()  # CHANGED:
+    else:  # CHANGED:
+        meta_description = yoast_limits["meta_hint"]  # CHANGED:
+
+    max_meta = yoast_limits.get("max_meta", 155)  # CHANGED:
+    if len(meta_description) > max_meta:  # CHANGED:
+        meta_description = meta_description[: max_meta - 1].rstrip(" -–—:") + "…"  # CHANGED:
+
+    slug = compute_slug(title)  # CHANGED:
+
+    # Preserve any extra meta keys but ensure our core fields take precedence.       # CHANGED:
+    extra_meta = {
+        k: v for k, v in meta_dict.items() if k not in {"focus_keyphrase", "meta_description", "slug"}
+    }  # CHANGED:
+
+    meta = {  # CHANGED:
+        "focus_keyphrase": focus_keyphrase,  # CHANGED:
+        "meta_description": meta_description,  # CHANGED:
+        "slug": slug,  # CHANGED:
+        **extra_meta,  # CHANGED:
+    }  # CHANGED:
+
+    return {  # CHANGED:
+        "title": title,  # CHANGED:
+        "outline": outline,  # CHANGED:
+        "body_markdown": body_markdown,  # CHANGED:
+        "meta": meta,  # CHANGED:
+    }  # CHANGED:
 
 
 # ---------------------------
@@ -247,14 +339,15 @@ class AssistantRunner:
             name="PostPress AI Writer",
             instructions=(
                 "You are a senior content strategist for PostPress AI. "
-                "You will produce long-form, human, helpful content for small businesses in Iowa. "
-                "Always respect Yoast ranges (title <= ~60 chars, meta <= ~155 chars). "
-                "Prefer natural phrasing over keyword stuffing. "
-                "When helpful, call the provided tools. "
+                "You write long-form, human, helpful content for small businesses in Iowa. "
+                "Use clear Markdown headings in body_markdown and aim for roughly 2000+ words of useful, non-fluffy content. "
+                "Always respect Yoast ranges (title <= ~60 chars, meta description <= ~155 chars). "
+                "Prefer natural phrasing over keyword stuffing; include 'Iowa' only where it feels natural. "
+                "When helpful, call the provided tools to shape titles, slugs, outlines, and focus keyphrases. "
                 "Return your FINAL answer as STRICT JSON only with keys: "
                 "{title, outline, body_markdown, meta:{focus_keyphrase, meta_description, slug}}. "
-                "Do not include Markdown code fences around the JSON."
-            ),
+                "Do not include Markdown code fences, preambles, or commentary around the JSON."
+            ),  # CHANGED:
             tools=self._build_tools(),
             model=getattr(settings, "PPA_ASSISTANT_MODEL", "gpt-4o-mini"),
         )
@@ -272,21 +365,29 @@ class AssistantRunner:
         tone = payload.get("tone", "").strip() or "Friendly"
         audience = payload.get("audience", "") or None
         length = payload.get("length", "") or "~2000 words"
-        keywords = payload.get("keywords") or []
+        raw_keywords = payload.get("keywords") or []  # CHANGED:
+        if isinstance(raw_keywords, str):  # CHANGED:
+            keywords = [raw_keywords]  # CHANGED:
+        elif isinstance(raw_keywords, list):  # CHANGED:
+            keywords = [str(k).strip() for k in raw_keywords if str(k).strip()]  # CHANGED:
+        else:  # CHANGED:
+            keywords = []  # CHANGED:
 
         user_msg = {
             "role": "user",
             "content": (
-                "Please generate a blog post.\n"
+                "Please generate a long-form blog post for small business owners.\n"
                 f"Subject: {subject}\n"
                 f"Genre: {genre}\n"
                 f"Tone: {tone}\n"
                 f"Audience: {audience or 'general small business owners'}\n"
                 f"Target length: {length}\n"
                 f"Keywords (optional, non-stuffed): {', '.join(keywords) if keywords else 'none'}\n\n"
-                "Output strictly as JSON with keys: title, outline, body_markdown, meta:{focus_keyphrase, meta_description, slug}.\n"
-                "If you need scaffolding, call the tools. Otherwise, produce final JSON."
-            ),
+                "The body_markdown must be at least ~2000 words of useful, specific content with clear Markdown headings (#, ##, ###) and minimal fluff.\n"
+                "Output strictly as JSON only (no Markdown code fences, no commentary) with keys: "
+                "title, outline, body_markdown, meta:{focus_keyphrase, meta_description, slug}.\n"
+                "If you need scaffolding, call the tools provided; your FINAL response must be a single JSON object only."
+            ),  # CHANGED:
         }
 
         thread = self.client.beta.threads.create()
@@ -362,6 +463,9 @@ class AssistantRunner:
         if not content_text:
             raise RuntimeError("No assistant content returned.")
 
+        # Strip any accidental ```json fences before JSON parsing.           # CHANGED:
+        content_text = _strip_code_fences(content_text)                      # CHANGED:
+
         # Try strict JSON first
         data: Dict[str, Any]
         try:
@@ -381,16 +485,16 @@ class AssistantRunner:
                 },
             }
 
-        # Ensure required keys exist
-        data.setdefault("title", subject or "Untitled")
-        data.setdefault("outline", outline_sections(subject or "Your Topic"))
-        data.setdefault("body_markdown", "")
-        data.setdefault("meta", {})
-        data["meta"].setdefault("focus_keyphrase", extract_focus_keyphrase(subject=subject, hints=keywords))
-        data["meta"].setdefault("meta_description", enforce_yoast_limits(data["title"])["meta_hint"])
-        data["meta"].setdefault("slug", compute_slug(data["title"]))
+        # Normalize to strict contract and harden types/lengths.             # CHANGED:
+        if "title" not in data and isinstance(data.get("result"), dict):     # CHANGED:
+            data = data["result"]                                            # CHANGED:
 
-        return data
+        normalized = _normalize_assistant_output(
+            subject=subject,
+            keywords=keywords,
+            raw=data,
+        )  # CHANGED:
+        return normalized  # CHANGED:
 
 
 def run_postpress_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
