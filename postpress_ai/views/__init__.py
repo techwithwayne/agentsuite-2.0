@@ -3,6 +3,9 @@ PostPress AI — views package
 
 CHANGE LOG
 ----------
+2025-11-16 • preview(): add provider='django' at top-level JSON for parity with store; no other behavior changes.  # CHANGED:
+2025-11-13 • Add debug_headers view (GET, auth-first) to inspect safe headers; keep contract + headers.   # CHANGED:
+2025-11-13 • Log incoming X-PPA-View/X-Requested-With in preview() for WP/Django header parity.              # CHANGED:
 2025-11-11 • preview(): guarantee result.html via server-side fallback from content/text; keep headers + rate limit.  # CHANGED:
 2025-11-11 • Fix SyntaxError: avoid backslashes in f-string expression in _text_to_html().                           # CHANGED:
 2025-11-10 • preview(): add structured, safe logging parity (install/status_norm/lengths/tags_n/cats_n).  # CHANGED:
@@ -142,6 +145,34 @@ def _client_addr(request) -> str:
     return request.META.get("REMOTE_ADDR", "") or "-"
 
 
+def _incoming_view_header(request) -> str:  # CHANGED:
+    """
+    Return the client-sent X-PPA-View header (if any), trimmed.            # CHANGED:
+    Typically set by the WP proxy as 'composer', 'testbed', etc.          # CHANGED:
+    """                                                                   # CHANGED:
+    try:                                                                  # CHANGED:
+        hv = request.headers.get("X-PPA-View")                            # CHANGED:
+    except Exception:                                                     # CHANGED:
+        hv = None                                                         # CHANGED:
+    if not hv:                                                            # CHANGED:
+        hv = request.META.get("HTTP_X_PPA_VIEW", "")                      # CHANGED:
+    return (hv or "").strip()                                            # CHANGED:
+
+
+def _incoming_xhr_header(request) -> str:  # CHANGED:
+    """
+    Return the incoming X-Requested-With header (best-effort).            # CHANGED:
+    Used only for parity/logging; not security-sensitive.                 # CHANGED:
+    """                                                                   # CHANGED:
+    try:                                                                  # CHANGED:
+        hv = request.headers.get("X-Requested-With")                      # CHANGED:
+    except Exception:                                                     # CHANGED:
+        hv = None                                                         # CHANGED:
+    if not hv:                                                            # CHANGED:
+        hv = request.META.get("HTTP_X_REQUESTED_WITH", "")                # CHANGED:
+    return (hv or "").strip()                                            # CHANGED:
+
+
 # -----------------------------------------------------------------------------
 # HTML fallback helpers for preview                                                   # CHANGED:
 # -----------------------------------------------------------------------------
@@ -247,7 +278,7 @@ def version(request, *args, **kwargs):
     payload = {
         "ok": True,
         "v": VER,
-        "views": ["health", "version", "preview", "store", "preview_debug_model"],
+        "views": ["health", "version", "preview", "store", "preview_debug_model", "debug_headers"],  # CHANGED:
         "mode": "normalize-only",
     }
     return _json_response(payload, view="version")
@@ -268,6 +299,46 @@ def preview_debug_model(request, *args, **kwargs):
         "author": "str",
     }
     return _json_response({"ok": True, "schema": model, "ver": VER}, view="preview-debug-model")
+
+
+def debug_headers(request, *args, **kwargs):  # CHANGED:
+    """Inspect safe request headers + auth state for debugging WP → Django parity."""  # CHANGED:
+    view_name = "debug-headers"  # CHANGED:
+    if request.method != "GET":  # CHANGED:
+        return _with_headers(HttpResponseNotAllowed(["GET"]), view=view_name)  # CHANGED:
+
+    auth_resp = _auth_first(request)  # CHANGED:
+    if auth_resp is not None:  # CHANGED:
+        return _with_headers(auth_resp, view=view_name)  # CHANGED:
+
+    safe_keys = [  # CHANGED:
+        "X-PPA-View",  # CHANGED:
+        "X-Requested-With",  # CHANGED:
+        "X-PPA-Nonce",  # CHANGED:
+        "X-WP-Nonce",  # CHANGED:
+        "User-Agent",  # CHANGED:
+        "Content-Type",  # CHANGED:
+    ]  # CHANGED:
+    safe_headers: Dict[str, Optional[str]] = {}  # CHANGED:
+    for key in safe_keys:  # CHANGED:
+        meta_key = "HTTP_" + key.upper().replace("-", "_")  # CHANGED:
+        val = request.headers.get(key) if hasattr(request, "headers") else None  # CHANGED:
+        if val is None:  # CHANGED:
+            val = request.META.get(meta_key)  # CHANGED:
+        safe_headers[key] = val  # CHANGED:
+
+    info = {  # CHANGED:
+        "method": request.method,  # CHANGED:
+        "path": getattr(request, "path", "-"),  # CHANGED:
+        "addr": _client_addr(request),  # CHANGED:
+        "is_authed": _is_authed(request),  # CHANGED:
+        "has_auth_header": bool(_extract_auth(request)),  # CHANGED:
+        "client_view": _incoming_view_header(request),  # CHANGED:
+        "xhr": _incoming_xhr_header(request),  # CHANGED:
+        "safe_headers": safe_headers,  # CHANGED:
+    }  # CHANGED:
+    data = {"ok": True, "info": info, "ver": VER}  # CHANGED:
+    return _json_response(data, view=view_name, status=200)  # CHANGED:
 
 
 # ---------- Auth-required endpoints ----------
@@ -316,7 +387,7 @@ def preview(request, *args, **kwargs):
         result = dict(normalized)                                          # CHANGED:
         result["html"] = html_out                                          # CHANGED:
 
-        data = {"ok": True, "result": result, "ver": VER}                  # CHANGED:
+        data = {"ok": True, "provider": "django", "result": result, "ver": VER}  # CHANGED:
         return _json_response(data, view=view_name, status=200)            # CHANGED:
 
     finally:
@@ -342,6 +413,8 @@ def preview(request, *args, **kwargs):
                     "content_len": _safe_int(len(_norm.get("content", ""))),  # CHANGED:
                     "tags_n": _safe_int(len(_norm.get("tags", []))),  # CHANGED:
                     "cats_n": _safe_int(len(_norm.get("categories", []))),  # CHANGED:
+                    "client_view": _incoming_view_header(request),  # CHANGED:
+                    "xhr": _incoming_xhr_header(request),  # CHANGED:
                 }  # CHANGED:
             except Exception:  # CHANGED:
                 extra = {}  # CHANGED:
@@ -359,7 +432,7 @@ except Exception:  # pragma: no cover
     @csrf_exempt  # CHANGED:
     @_rate_limited("store")  # CHANGED:
     def store(request, *args, **kwargs):  # type: ignore
-        """Structured placeholder if store.py fails to import."""  # CHANGED:
+        """Structured placeholder if store view unavailable."""  # CHANGED:
         data = _error_payload("unavailable", "store view unavailable")
         resp = JsonResponse(data, status=503)
         resp = _with_headers(resp, view="store")  # CHANGED:
@@ -374,12 +447,13 @@ store_view = store
 __all__ = [
     "VER",
     # views
-    "health", "version", "preview_debug_model",
+    "health", "version", "preview_debug_model", "debug_headers",  # CHANGED:
     "preview", "preview_view", "store", "store_view",
     # helpers
     "_with_headers", "_json_response", "_normalize",
     "_auth_first", "_error_payload", "_client_addr", "_is_authed",
     "_looks_like_html", "_text_to_html", "_derive_html_from_payload",  # CHANGED:
+    "_incoming_view_header", "_incoming_xhr_header",  # CHANGED:
     # rate limit
     "_rate_limited",
 ]
