@@ -3,6 +3,7 @@ PostPress AI — views.store
 
 CHANGE LOG
 ----------
+2025-11-16 • Preserve optional 'mode' hint in result + telemetry.                 # CHANGED:
 2025-11-13 • Add client_view/xhr logging parity with preview; no behavior changes.        # CHANGED:
 2025-11-11 • Doc/clarity pass; confirm parity & headers; no behavior change.             # (prev)
 2025-11-10 • Add structured, safe logging parity: install/wp_post_id/status/lengths...   # (prev)
@@ -28,33 +29,44 @@ from . import (  # type: ignore
     _json_response,
     _normalize,
     _with_headers,
-    VER,
+    _client_addr,
     _error_payload,
-    _rate_limited,
     _incoming_view_header,      # CHANGED:
     _incoming_xhr_header,       # CHANGED:
+    _rate_limited,
+    VER,
 )
 
-logger = logging.getLogger("postpress_ai.views")
-
-
-def _client_addr(request) -> str:
-    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "") or "-"
+logger = logging.getLogger(__name__)
 
 
 def _extract_injected_meta(payload: Dict[str, Any]) -> Dict[str, Any]:
-    pid = payload.get("id") or payload.get("wp_post_id") or payload.get("post_id")
-    permalink = payload.get("permalink") or payload.get("link") or payload.get("url")
-    edit_link = payload.get("edit_link") or payload.get("edit")
+    """
+    Extract optional meta values that WP can inject into the payload.
 
+    The WP controller may send some meta alongside the core content fields so they
+    can be mirrored back at the top-level of the response for convenience and so
+    structured logging can capture them.
+    """
     meta: Dict[str, Any] = {}
-    if pid is not None:
-        meta["id"] = pid
+
+    install = payload.get("install") or payload.get("site")
+    if isinstance(install, str) and install.strip():
+        meta["install"] = install.strip()
+
+    wp_post_id = payload.get("id") or payload.get("wp_post_id")
+    if isinstance(wp_post_id, (str, int)):
+        meta["id"] = wp_post_id
+
+    status = payload.get("status")
+    if isinstance(status, str) and status.strip():
+        meta["status"] = status.strip()
+
+    permalink = payload.get("permalink")
     if isinstance(permalink, str) and permalink.strip():
         meta["permalink"] = permalink.strip()
+
+    edit_link = payload.get("edit_link")
     if isinstance(edit_link, str) and edit_link.strip():
         meta["edit_link"] = edit_link.strip()
     return meta
@@ -98,6 +110,15 @@ def store(request, *args, **kwargs):  # noqa: D401
             )
 
         normalized = _normalize(payload)
+        # Ensure optional 'mode' hint is preserved in the normalized result.      # CHANGED:
+        try:                                                                     # CHANGED:
+            if isinstance(payload, dict) and isinstance(normalized, dict):      # CHANGED:
+                mode_val = payload.get("mode")                                   # CHANGED:
+                if isinstance(mode_val, str) and mode_val.strip():              # CHANGED:
+                    normalized["mode"] = mode_val.strip().lower()               # CHANGED:
+        except Exception:                                                        # CHANGED:
+            # Logging will still include a safe placeholder if this fails.      # CHANGED:
+            pass                                                                # CHANGED:
         injected_meta = _extract_injected_meta(payload)
 
         result: Dict[str, Any] = {"ok": True, "result": normalized, "ver": VER}
@@ -140,6 +161,13 @@ def store(request, *args, **kwargs):  # noqa: D401
                     "content_len": _safe_int(len(normalized.get("content", ""))) if isinstance(normalized, dict) else 0,
                     "tags_n": _safe_int(len(normalized.get("tags", []) if isinstance(normalized, dict) else [])),
                     "cats_n": _safe_int(len(normalized.get("categories", []) if isinstance(normalized, dict) else [])),
+
+                    # Simple mode hint for telemetry (draft/publish/update).       # CHANGED:
+                    "mode": (                                                          # CHANGED:
+                        (normalized.get("mode") if isinstance(normalized, dict) else None)  # CHANGED:
+                        or (payload.get("mode") if isinstance(payload, dict) else None)      # CHANGED:
+                        or "-"                                                          # CHANGED:
+                    ),                                                          # CHANGED:
 
                     # ------------------------
                     # NEW parity fields        # CHANGED:
