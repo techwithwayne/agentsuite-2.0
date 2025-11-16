@@ -3,6 +3,7 @@ PostPress AI — views.store
 
 CHANGE LOG
 ----------
+2025-11-16.3 • Add provider='django' to JSON result for parity with preview.      # CHANGED:
 2025-11-16.2 • Review for WP mode parity; docstring clarified; no behavior change.  # CHANGED:
 2025-11-16 • Preserve optional 'mode' hint in result + telemetry.                 # CHANGED:
 2025-11-13 • Add client_view/xhr logging parity with preview; no behavior changes.        # CHANGED:
@@ -122,7 +123,12 @@ def store(request, *args, **kwargs):  # noqa: D401
             pass                                                                # CHANGED:
         injected_meta = _extract_injected_meta(payload)
 
-        result: Dict[str, Any] = {"ok": True, "result": normalized, "ver": VER}
+        result: Dict[str, Any] = {
+            "ok": True,
+            "provider": "django",  # CHANGED:
+            "result": normalized,
+            "ver": VER,
+        }  # CHANGED:
         if injected_meta:
             result["result"] = {**normalized, "meta": injected_meta}
             for k, v in injected_meta.items():
