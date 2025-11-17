@@ -3,7 +3,7 @@ Assistant runner for PostPress AI (Chat Completions).
 
 CHANGE LOG
 ----------
-2025-11-18 • Switch /generate/ from Assistants v2 + tools to a single Chat Completion with JSON output, keeping the same normalized contract.  # CHANGED:
+2025-11-18 • Switch /generate/ from Assistants v2 + tools to a single Chat Completions call with JSON output, keeping the same normalized contract.  # CHANGED:
 2025-11-17 • Add bounded polling (max wait) + brief sleep to avoid long cURL timeouts from WP and surface structured errors instead.
 2025-11-16 • Harden JSON parsing, strip code fences, normalize output shape, and enforce Yoast/slug/keyphrase rules server-side (A–D: structure, quality, tools, hardening).
 
@@ -17,55 +17,110 @@ CHANGE LOG
 
 Notes:
 - Keeps the external contract for run_postpress_generate(payload) unchanged.
-- Does NOT use Assistants threads/runs or tools anymore for /generate/.
+- Does NOT alter the public JSON response shape used by WordPress proxy or admin.js.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
-import re
-from typing import Any, Dict, List, Optional
+import textwrap
+from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
 
 try:
     from openai import OpenAI
-except Exception:  # pragma: no cover
-    OpenAI = None  # type: ignore
+except Exception:  # pragma: no cover - import guard
+    OpenAI = None  # type: ignore[assignment]
 
-import logging
+
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------
-# Helper (deterministic) tools
-# ---------------------------
-def enforce_yoast_limits(title: str, max_len: int = 60, max_meta_len: int = 155) -> Dict[str, Any]:
+def strip_code_fences(raw: str) -> str:
     """
-    Trim a proposed SEO title and meta description boundary hints.
-    Returns guidance only; model still crafts final text.
+    Remove surrounding ```json ... ``` fences if the model returns them.
+    Some Chat Completions models still like to wrap JSON this way.
     """
-    safe_title = title.strip()
-    if len(safe_title) > max_len:
-        safe_title = safe_title[: max_len - 1].rstrip(" -–—:") + "…"
-    # Provide a templated meta description hint the model can refine.
-    hint_meta = f"{safe_title} – actionable tips for small businesses in Iowa."
-    if len(hint_meta) > max_meta_len:
-        hint_meta = hint_meta[: max_meta_len - 1].rstrip(" -–—:") + "…"
-    return {"title_hint": safe_title, "meta_hint": hint_meta, "max_title": max_len, "max_meta": max_meta_len}
+    if not isinstance(raw, str):
+        return raw
+    text = raw.strip()
+    if text.startswith("```"):
+        # Strip first line ``` or ```json
+        lines = text.splitlines()
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        # Strip trailing fence if present
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
+def safe_json_loads(raw: str) -> Dict[str, Any]:
+    """
+    Parse JSON with a bit of resilience:
+    - Strip Markdown code fences.
+    - If parsing fails, raise ValueError with a short message.
+    """
+    txt = strip_code_fences(raw)
+    try:
+        data = json.loads(txt)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ValueError(f"Could not parse JSON from assistant: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Assistant JSON root must be an object")
+    return data
+
+
+def enforce_yoast_limits(title: str, meta_description: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    """
+    Enforce Yoast-like limits on title + meta description:
+    - Title ~<= 60 chars
+    - Meta description ~<= 155 chars
+    """
+    t = (title or "").strip()
+    if len(t) > 60:
+        t = t[:57].rstrip() + "…"
+
+    if meta_description is None:
+        return t, None
+
+    m = meta_description.strip()
+    if len(m) > 155:
+        m = m[:152].rstrip() + "…"
+
+    return t, m
 
 
 def compute_slug(title: str) -> str:
     """
-    Convert a title into a WP-friendly, hyphenated slug.
-    (Per Wayne’s rule, permalinks use hyphenation; keyphrases/alt text do not.)
+    Compute a slug from the title.
+    Keep it URL-safe and lowercase; remove non-word chars.
     """
-    s = title.lower()
-    s = re.sub(r"[^a-z0-9\s-]", "", s)
-    s = re.sub(r"\s+", "-", s).strip("-")
-    s = re.sub(r"-{2,}", "-", s)
-    return s or "post"
+    import re
+
+    t = (title or "").strip().lower()
+    # Remove HTML tags if any were introduced.
+    t = re.sub(r"<[^>]+>", "", t)
+    # Normalize unicode accents where possible
+    try:
+        import unicodedata
+
+        t = unicodedata.normalize("NFKD", t)
+    except Exception:  # pragma: no cover - very narrow edge
+        pass
+    # Remove non-word characters, keep spaces/hyphens
+    t = re.sub(r"[^\w\s-]+", "", t)
+    # Collapse whitespace to single hyphens
+    t = re.sub(r"\s+", "-", t)
+    # Collapse multiple hyphens
+    t = re.sub(r"-+", "-", t)
+    # Trim leading/trailing hyphens
+    t = t.strip("-")
+    return t or "post"
 
 
 def outline_sections(topic: str, audience: Optional[str] = None, length: str = "~2000 words") -> List[str]:
@@ -105,118 +160,108 @@ def title_variants(subject: str, tone: Optional[str] = None, genre: Optional[str
 
 
 def extract_focus_keyphrase(
-    subject: Optional[str] = None,
-    body: Optional[str] = None,
+    subject: Optional[str],
+    title: Optional[str],
+    body: Optional[str],
     hints: Optional[List[str]] = None,
 ) -> str:
     """
-    Naive extractor that prefers provided hints > subject > salient body tokens.
+    Derive a focus keyphrase in a stable way:
+    - Prefer first hint if provided.
+    - Else prefer subject > title > salient body tokens.
     Ensures 'Iowa' presence when natural (avoid keyword stuffing).
     """
     if hints:
         kp = hints[0]
     elif subject:
         kp = subject
+    elif title:
+        kp = title
+    elif body:
+        text = body.strip().splitlines()[0]
+        kp = text[:80]
     else:
-        # Very simple fallback: pick a 2–4 word noun-ish phrase from body.
-        kp = "website performance in Iowa"
+        kp = "Iowa small business website tips"
 
-    # Ensure natural Iowa presence
-    if "iowa" not in kp.lower():
-        kp = f"{kp} in Iowa"
-    # Remove hyphens for keyphrase per Wayne’s rule
+    kp = kp.strip()
+
+    # Remove hyphens for Yoast keyphrase (Wayne's rule).
     kp = kp.replace("-", " ")
-    return kp.strip()
+
+    # Ensure Iowa appears naturally if not present.
+    if "iowa" not in kp.lower():
+        kp = kp + " in Iowa"
+
+    return kp
 
 
-def _strip_code_fences(text: str) -> str:
+def _normalize_assistant_output(
+    subject: Optional[str],
+    keywords: List[str],
+    raw: Dict[str, Any],
+) -> Dict[str, Any]:
     """
-    Remove leading/trailing ``` or ```json fences if present and return inner content.
-    Safe no-op if no fences are found.
+    Normalize the assistant JSON into the contract:
+
+    {
+      "title": str,
+      "outline": [str, ...],
+      "body_markdown": str,
+      "meta": {
+        "focus_keyphrase": str,
+        "meta_description": str,
+        "slug": str
+      }
+    }
+
+    We intentionally keep Yoast rules and slug logic on the server side
+    so UI/JS can stay simpler and we can reuse this for other surfaces.
     """
-    if not text:
-        return text
-    s = text.strip()
-    if s.startswith("```"):
-        # Prefer the first fenced block if present
-        m = re.search(r"```(?:json)?\s*(.*?)```", s, re.DOTALL)
-        if m:
-            return m.group(1).strip()
-        lines = s.splitlines()
-        if len(lines) >= 2:
-            if lines[0].startswith("```") and lines[-1].startswith("```"):
-                return "\n".join(lines[1:-1]).strip()
-            return "\n".join(lines[1:]).strip()
-    return text
+    title = (raw.get("title") or "").strip()
+    outline_raw = raw.get("outline") or []
+    if not isinstance(outline_raw, list):
+        outline_raw = []
 
+    body_markdown = (raw.get("body_markdown") or raw.get("body") or "").strip()
 
-def _normalize_assistant_output(subject: str, keywords: List[str], raw: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalize model output into the strict PostPress AI contract.
-    Guarantees: title (str), outline (list[str]), body_markdown (str),
-    meta: {focus_keyphrase, meta_description, slug}.
-    """
-    safe_subject = (subject or "").strip()
-    title = str(raw.get("title") or safe_subject or "Untitled").strip()
-    if not title:
-        title = "Untitled"
+    meta_dict = raw.get("meta") or {}
+    if not isinstance(meta_dict, dict):
+        meta_dict = {}
 
-    outline_raw = raw.get("outline")
-    outline: List[str] = []
-    if isinstance(outline_raw, list):
-        outline = [str(x).strip() for x in outline_raw if str(x).strip()]
-    elif outline_raw:
-        outline = [str(outline_raw).strip()]
-    if not outline:
-        outline = outline_sections(title)
-
-    body_markdown = str(raw.get("body_markdown") or "").strip()
-
-    meta_in = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
-    meta_dict: Dict[str, Any] = dict(meta_in) if isinstance(meta_in, dict) else {}
-
-    focus_keyphrase = extract_focus_keyphrase(
-        subject=title or safe_subject or None,
-        body=body_markdown or None,
-        hints=keywords,
-    )
+    # Compute focus keyphrase if missing or empty
+    focus = (meta_dict.get("focus_keyphrase") or "").strip()
+    if not focus:
+        focus = extract_focus_keyphrase(
+            subject=subject or title or None,
+            title=title or None,
+            body=body_markdown or None,
+            hints=keywords,
+        )
 
     yoast_limits = enforce_yoast_limits(title)
     meta_description_raw = meta_dict.get("meta_description")
-    if meta_description_raw:
-        meta_description = str(meta_description_raw).strip()
+    if isinstance(meta_description_raw, str):
+        _, meta_description = enforce_yoast_limits(title, meta_description_raw)
     else:
-        meta_description = yoast_limits["meta_hint"]
+        _, meta_description = yoast_limits
 
-    max_meta = yoast_limits.get("max_meta", 155)
-    if len(meta_description) > max_meta:
-        meta_description = meta_description[: max_meta - 1].rstrip(" -–—:") + "…"
+    slug_raw = (meta_dict.get("slug") or "").strip()
+    if not slug_raw:
+        slug_raw = compute_slug(title)
 
-    slug = compute_slug(title)
-
-    # Preserve any extra meta keys but ensure our core fields take precedence.
-    extra_meta = {
-        k: v for k, v in meta_dict.items() if k not in {"focus_keyphrase", "meta_description", "slug"}
-    }
-
-    meta = {
-        "focus_keyphrase": focus_keyphrase,
-        "meta_description": meta_description,
-        "slug": slug,
-        **extra_meta,
-    }
-
-    return {
-        "title": title,
-        "outline": outline,
+    normalized = {
+        "title": yoast_limits[0],
+        "outline": outline_raw,
         "body_markdown": body_markdown,
-        "meta": meta,
+        "meta": {
+            "focus_keyphrase": focus,
+            "meta_description": meta_description,
+            "slug": slug_raw,
+        },
     }
+    return normalized
 
 
-# ---------------------------
-# Chat Completion Runner
-# ---------------------------
 class AssistantRunner:
     """
     Thin wrapper around OpenAI Chat Completions for /generate/.
@@ -234,9 +279,10 @@ class AssistantRunner:
         self.model = (
             getattr(settings, "PPA_CHAT_MODEL", None)
             or os.getenv("PPA_CHAT_MODEL")
-            or getattr(settings, "PPA_ASSISTANT_MODEL", "gpt-4o-mini")  # reuse existing setting if present
+            or "gpt-4.1-mini"
         )
 
+    # ---------------------------------------------------------------------  # /generate/
     def run_generate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Main entrypoint for /generate/ view.
@@ -246,7 +292,30 @@ class AssistantRunner:
         genre = (payload.get("genre") or "").strip() or "How-to"
         tone = (payload.get("tone") or "").strip() or "Friendly"
         audience = (payload.get("audience") or "") or None
-        length = (payload.get("length") or "") or "~1500 words"
+
+        # Derive target length from explicit payload length or word_count (preferred)                   # CHANGED:
+        raw_len = (payload.get("length") or "").strip()                                              # CHANGED:
+        # word_count can be sent from the UI as int or string; coerce safely                         # CHANGED:
+        wc_raw = payload.get("word_count")                                                           # CHANGED:
+        wc_val: int = 0                                                                              # CHANGED:
+        try:                                                                                         # CHANGED:
+            if isinstance(wc_raw, (int, float)):                                                     # CHANGED:
+                wc_val = int(wc_raw)                                                                 # CHANGED:
+            elif isinstance(wc_raw, str) and wc_raw.strip():                                         # CHANGED:
+                wc_val = int(float(wc_raw.strip()))                                                  # CHANGED:
+        except Exception:                                                                            # CHANGED:
+            wc_val = 0                                                                               # CHANGED:
+        # Clamp to a reasonable blog range if provided                                               # CHANGED:
+        if wc_val and wc_val < 300:                                                                  # CHANGED:
+            wc_val = 300                                                                             # CHANGED:
+        elif wc_val and wc_val > 6000:                                                               # CHANGED:
+            wc_val = 6000                                                                            # CHANGED:
+        if wc_val:                                                                                   # CHANGED:
+            length = f"~{wc_val} words"                                                              # CHANGED:
+        elif raw_len:                                                                                # CHANGED:
+            length = raw_len                                                                         # CHANGED:
+        else:                                                                                        # CHANGED:
+            length = "~1500 words"                                                                   # CHANGED:
 
         raw_keywords = payload.get("keywords") or []
         if isinstance(raw_keywords, str):
@@ -262,7 +331,7 @@ class AssistantRunner:
             "Your response MUST be a single JSON object with keys: "
             "title, outline, body_markdown, meta:{focus_keyphrase, meta_description, slug}. "
             "Do not include any extra commentary, explanations, or Markdown code fences. "
-            "Aim for roughly 1200–1800 words of useful content in body_markdown. "
+            f"Aim for approximately {wc_val or 1500} words of useful content in body_markdown. "  # CHANGED:
             "Respect Yoast-style ranges (title ~<= 60 chars, meta_description ~<= 155 chars) and avoid keyword stuffing."
         )
 
@@ -304,41 +373,25 @@ class AssistantRunner:
                 first_part = message.content[0]
                 if hasattr(first_part, "text") and hasattr(first_part.text, "value"):
                     content_text = first_part.text.value
+                elif isinstance(first_part, dict) and "text" in first_part:
+                    content_text = str(first_part["text"])
                 else:
-                    # Fallback: try plain content string
-                    content_text = str(getattr(message, "content", "")) or None
+                    content_text = str(message.content)
             else:
-                # Older-style: message.content is just a string
-                content_text = str(getattr(message, "content", "")) or None
-        except Exception as parse_exc:
-            logger.error("[PPA] Failed to extract chat content: %s", parse_exc, exc_info=True)
-            raise RuntimeError("Failed to extract content from chat completion response") from parse_exc
+                # Older-style: message.content is already a string
+                content_text = getattr(message, "content", None) or ""
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("[PPA] Could not extract content from Chat response: %s", exc, exc_info=True)
+            raise
 
         if not content_text:
-            raise RuntimeError("No content returned from chat completion.")
+            raise ValueError("Assistant returned empty content")
 
-        content_text = _strip_code_fences(content_text)
-
-        # Try strict JSON first
         try:
-            data: Dict[str, Any] = json.loads(content_text)
-        except json.JSONDecodeError:
-            logger.debug("[PPA] Chat returned non-JSON text; building fallback.")
-            t = subject or "Untitled"
-            data = {
-                "title": t,
-                "outline": outline_sections(subject or "Your Topic"),
-                "body_markdown": content_text,
-                "meta": {
-                    "focus_keyphrase": extract_focus_keyphrase(subject=subject, hints=keywords),
-                    "meta_description": f"{t} – A practical guide for Iowa small businesses.",
-                    "slug": compute_slug(t),
-                },
-            }
-
-        # Some models may wrap the object as {"result": {...}}; unwrap it if so.
-        if "title" not in data and isinstance(data.get("result"), dict):
-            data = data["result"]
+            data = safe_json_loads(content_text)
+        except Exception as exc:
+            logger.error("[PPA] Could not parse assistant JSON: %s", exc, exc_info=True)
+            raise
 
         normalized = _normalize_assistant_output(
             subject=subject,
