@@ -1,34 +1,23 @@
-# agentsuite/postpress_ai/assistant_runner.py
 """
-Assistant v2 runner for PostPress AI.
+Assistant runner for PostPress AI (Chat Completions).
 
 CHANGE LOG
 ----------
-2025-11-16 • Harden JSON parsing, strip code fences, normalize output shape, and enforce Yoast/slug/keyphrase rules server-side (A–D: structure, quality, tools, hardening).  # CHANGED:
+2025-11-18 • Switch /generate/ from Assistants v2 + tools to a single Chat Completion with JSON output, keeping the same normalized contract.  # CHANGED:
+2025-11-17 • Add bounded polling (max wait) + brief sleep to avoid long cURL timeouts from WP and surface structured errors instead.
+2025-11-16 • Harden JSON parsing, strip code fences, normalize output shape, and enforce Yoast/slug/keyphrase rules server-side (A–D: structure, quality, tools, hardening).
 
-- Creates/runs an OpenAI Assistant with server-side tool calling.
-- Tools are deterministic helpers to keep the model on rails:
-  * enforce_yoast_limits(title, max_len=60, max_meta_len=155)
-  * compute_slug(title)
-  * outline_sections(topic, audience=None, length="~2000 words")
-  * title_variants(subject, tone=None, genre=None)
-  * extract_focus_keyphrase(subject=None, body=None, hints=None)
-- Returns a structured payload for the WP admin UI:
-  {
-    "title": str,
-    "outline": [str, ...],
-    "body_markdown": str,
-    "meta": {
-      "focus_keyphrase": str,
-      "meta_description": str,
-      "slug": str
-    }
-  }
+- Uses OpenAI Chat Completions with response_format='json_object' to generate:
+  * title: str
+  * outline: list[str]
+  * body_markdown: str
+  * meta: { focus_keyphrase, meta_description, slug }
+- Keeps deterministic Python helpers (enforce_yoast_limits, compute_slug, outline_sections,
+  extract_focus_keyphrase) on the server side for consistency and SEO rules.
 
 Notes:
-- Handles both `.text.value` and dict-like message content formats.
-- Assistant ID can be provided via settings.PPA_ASSISTANT_ID or env PPA_ASSISTANT_ID.
-- Falls back to ephemeral assistant if not provided.
+- Keeps the external contract for run_postpress_generate(payload) unchanged.
+- Does NOT use Assistants threads/runs or tools anymore for /generate/.
 """
 
 from __future__ import annotations
@@ -40,7 +29,6 @@ from typing import Any, Dict, List, Optional
 
 from django.conf import settings
 
-# OpenAI Assistants v2
 try:
     from openai import OpenAI
 except Exception:  # pragma: no cover
@@ -102,6 +90,7 @@ def outline_sections(topic: str, audience: Optional[str] = None, length: str = "
 def title_variants(subject: str, tone: Optional[str] = None, genre: Optional[str] = None) -> List[str]:
     """
     Offer deterministic title seeds the model can choose/refine from.
+    (Currently not called in the Chat Completions path, but kept for future tools/features.)
     """
     tone = (tone or "friendly").lower()
     genre = (genre or "how-to").lower()
@@ -140,339 +129,201 @@ def extract_focus_keyphrase(
     return kp.strip()
 
 
-def _strip_code_fences(text: str) -> str:  # CHANGED:
+def _strip_code_fences(text: str) -> str:
     """
-    Remove leading/trailing ``` or ```json fences if present and return inner content.  # CHANGED:
-    Safe no-op if no fences are found.                                                 # CHANGED:
-    """  # CHANGED:
-    if not text:  # CHANGED:
-        return text  # CHANGED:
-    s = text.strip()  # CHANGED:
-    if s.startswith("```"):  # CHANGED:
-        # Prefer the first fenced block if present                                     # CHANGED:
-        m = re.search(r"```(?:json)?\s*(.*?)```", s, re.DOTALL)  # CHANGED:
-        if m:  # CHANGED:
-            return m.group(1).strip()  # CHANGED:
-        lines = s.splitlines()  # CHANGED:
-        if len(lines) >= 2:  # CHANGED:
-            if lines[0].startswith("```") and lines[-1].startswith("```"):  # CHANGED:
-                return "\n".join(lines[1:-1]).strip()  # CHANGED:
-            return "\n".join(lines[1:]).strip()  # CHANGED:
-    return text  # CHANGED:
-
-
-def _normalize_assistant_output(subject: str, keywords: List[str], raw: Dict[str, Any]) -> Dict[str, Any]:  # CHANGED:
+    Remove leading/trailing ``` or ```json fences if present and return inner content.
+    Safe no-op if no fences are found.
     """
-    Normalize assistant output into the strict PostPress AI contract.                 # CHANGED:
-    Guarantees: title (str), outline (list[str]), body_markdown (str),               # CHANGED:
-    meta: {focus_keyphrase, meta_description, slug}.                                 # CHANGED:
-    """  # CHANGED:
-    safe_subject = (subject or "").strip()  # CHANGED:
-    title = str(raw.get("title") or safe_subject or "Untitled").strip()  # CHANGED:
-    if not title:  # CHANGED:
-        title = "Untitled"  # CHANGED:
+    if not text:
+        return text
+    s = text.strip()
+    if s.startswith("```"):
+        # Prefer the first fenced block if present
+        m = re.search(r"```(?:json)?\s*(.*?)```", s, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        lines = s.splitlines()
+        if len(lines) >= 2:
+            if lines[0].startswith("```") and lines[-1].startswith("```"):
+                return "\n".join(lines[1:-1]).strip()
+            return "\n".join(lines[1:]).strip()
+    return text
 
-    outline_raw = raw.get("outline")  # CHANGED:
-    outline: List[str] = []  # CHANGED:
-    if isinstance(outline_raw, list):  # CHANGED:
-        outline = [str(x).strip() for x in outline_raw if str(x).strip()]  # CHANGED:
-    elif outline_raw:  # CHANGED:
-        outline = [str(outline_raw).strip()]  # CHANGED:
-    if not outline:  # CHANGED:
-        outline = outline_sections(title)  # CHANGED:
 
-    body_markdown = str(raw.get("body_markdown") or "").strip()  # CHANGED:
+def _normalize_assistant_output(subject: str, keywords: List[str], raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize model output into the strict PostPress AI contract.
+    Guarantees: title (str), outline (list[str]), body_markdown (str),
+    meta: {focus_keyphrase, meta_description, slug}.
+    """
+    safe_subject = (subject or "").strip()
+    title = str(raw.get("title") or safe_subject or "Untitled").strip()
+    if not title:
+        title = "Untitled"
 
-    meta_in = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}  # CHANGED:
-    meta_dict: Dict[str, Any] = dict(meta_in) if isinstance(meta_in, dict) else {}  # CHANGED:
+    outline_raw = raw.get("outline")
+    outline: List[str] = []
+    if isinstance(outline_raw, list):
+        outline = [str(x).strip() for x in outline_raw if str(x).strip()]
+    elif outline_raw:
+        outline = [str(outline_raw).strip()]
+    if not outline:
+        outline = outline_sections(title)
 
-    focus_keyphrase = extract_focus_keyphrase(  # CHANGED:
-        subject=title or safe_subject or None,  # CHANGED:
-        body=body_markdown or None,  # CHANGED:
-        hints=keywords,  # CHANGED:
-    )  # CHANGED:
+    body_markdown = str(raw.get("body_markdown") or "").strip()
 
-    yoast_limits = enforce_yoast_limits(title)  # CHANGED:
-    meta_description_raw = meta_dict.get("meta_description")  # CHANGED:
-    if meta_description_raw:  # CHANGED:
-        meta_description = str(meta_description_raw).strip()  # CHANGED:
-    else:  # CHANGED:
-        meta_description = yoast_limits["meta_hint"]  # CHANGED:
+    meta_in = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
+    meta_dict: Dict[str, Any] = dict(meta_in) if isinstance(meta_in, dict) else {}
 
-    max_meta = yoast_limits.get("max_meta", 155)  # CHANGED:
-    if len(meta_description) > max_meta:  # CHANGED:
-        meta_description = meta_description[: max_meta - 1].rstrip(" -–—:") + "…"  # CHANGED:
+    focus_keyphrase = extract_focus_keyphrase(
+        subject=title or safe_subject or None,
+        body=body_markdown or None,
+        hints=keywords,
+    )
 
-    slug = compute_slug(title)  # CHANGED:
+    yoast_limits = enforce_yoast_limits(title)
+    meta_description_raw = meta_dict.get("meta_description")
+    if meta_description_raw:
+        meta_description = str(meta_description_raw).strip()
+    else:
+        meta_description = yoast_limits["meta_hint"]
 
-    # Preserve any extra meta keys but ensure our core fields take precedence.       # CHANGED:
+    max_meta = yoast_limits.get("max_meta", 155)
+    if len(meta_description) > max_meta:
+        meta_description = meta_description[: max_meta - 1].rstrip(" -–—:") + "…"
+
+    slug = compute_slug(title)
+
+    # Preserve any extra meta keys but ensure our core fields take precedence.
     extra_meta = {
         k: v for k, v in meta_dict.items() if k not in {"focus_keyphrase", "meta_description", "slug"}
-    }  # CHANGED:
+    }
 
-    meta = {  # CHANGED:
-        "focus_keyphrase": focus_keyphrase,  # CHANGED:
-        "meta_description": meta_description,  # CHANGED:
-        "slug": slug,  # CHANGED:
-        **extra_meta,  # CHANGED:
-    }  # CHANGED:
+    meta = {
+        "focus_keyphrase": focus_keyphrase,
+        "meta_description": meta_description,
+        "slug": slug,
+        **extra_meta,
+    }
 
-    return {  # CHANGED:
-        "title": title,  # CHANGED:
-        "outline": outline,  # CHANGED:
-        "body_markdown": body_markdown,  # CHANGED:
-        "meta": meta,  # CHANGED:
-    }  # CHANGED:
+    return {
+        "title": title,
+        "outline": outline,
+        "body_markdown": body_markdown,
+        "meta": meta,
+    }
 
 
 # ---------------------------
-# Assistant Runner
+# Chat Completion Runner
 # ---------------------------
 class AssistantRunner:
-    def __init__(self):
+    """
+    Thin wrapper around OpenAI Chat Completions for /generate/.
+    Keeps external behavior identical while simplifying internals.
+    """
+
+    def __init__(self) -> None:
         if OpenAI is None:
             raise RuntimeError("openai package not available")
         api_key = os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", None)
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not configured")
         self.client = OpenAI(api_key=api_key)
-
-        # Allow configured assistant id, else use ephemeral one
-        self.assistant_id = (
-            getattr(settings, "PPA_ASSISTANT_ID", None)
-            or os.getenv("PPA_ASSISTANT_ID")
-            or None
+        # Allow overriding the chat model via settings or env; default to a fast GPT-4 class model.
+        self.model = (
+            getattr(settings, "PPA_CHAT_MODEL", None)
+            or os.getenv("PPA_CHAT_MODEL")
+            or getattr(settings, "PPA_ASSISTANT_MODEL", "gpt-4o-mini")  # reuse existing setting if present
         )
-
-    def _build_tools(self) -> List[Dict[str, Any]]:
-        """
-        Define JSON-schema tools that Assistant v2 can call.
-        """
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "enforce_yoast_limits",
-                    "description": "Trim a proposed SEO title and suggest a meta description hint within Yoast-friendly limits.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "max_len": {"type": "integer", "default": 60},
-                            "max_meta_len": {"type": "integer", "default": 155},
-                        },
-                        "required": ["title"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "compute_slug",
-                    "description": "Compute a WordPress-safe hyphenated slug from a title.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"title": {"type": "string"}},
-                        "required": ["title"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "outline_sections",
-                    "description": "Return a sensible outline for a long-form blog post.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "topic": {"type": "string"},
-                            "audience": {"type": "string"},
-                            "length": {"type": "string", "default": "~2000 words"},
-                        },
-                        "required": ["topic"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "title_variants",
-                    "description": "Return 3–6 deterministic title seeds.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "subject": {"type": "string"},
-                            "tone": {"type": "string"},
-                            "genre": {"type": "string"},
-                        },
-                        "required": ["subject"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "extract_focus_keyphrase",
-                    "description": "Extract a natural-sounding focus keyphrase with 'Iowa' when appropriate.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "subject": {"type": "string"},
-                            "body": {"type": "string"},
-                            "hints": {"type": "array", "items": {"type": "string"}},
-                        },
-                    },
-                },
-            },
-        ]
-
-    def _ensure_assistant(self) -> str:
-        """
-        Use configured assistant if available; else create ephemeral Assistant
-        with our tools and strict JSON output instructions.
-        """
-        if self.assistant_id:
-            return self.assistant_id
-
-        logger.debug("[PPA] Creating ephemeral Assistant for this run.")
-        a = self.client.beta.assistants.create(
-            name="PostPress AI Writer",
-            instructions=(
-                "You are a senior content strategist for PostPress AI. "
-                "You write long-form, human, helpful content for small businesses in Iowa. "
-                "Use clear Markdown headings in body_markdown and aim for roughly 2000+ words of useful, non-fluffy content. "
-                "Always respect Yoast ranges (title <= ~60 chars, meta description <= ~155 chars). "
-                "Prefer natural phrasing over keyword stuffing; include 'Iowa' only where it feels natural. "
-                "When helpful, call the provided tools to shape titles, slugs, outlines, and focus keyphrases. "
-                "Return your FINAL answer as STRICT JSON only with keys: "
-                "{title, outline, body_markdown, meta:{focus_keyphrase, meta_description, slug}}. "
-                "Do not include Markdown code fences, preambles, or commentary around the JSON."
-            ),  # CHANGED:
-            tools=self._build_tools(),
-            model=getattr(settings, "PPA_ASSISTANT_MODEL", "gpt-4o-mini"),
-        )
-        self.assistant_id = a.id
-        return self.assistant_id
 
     def run_generate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Main entrypoint for /generate/ view.
+        Uses a single Chat Completion call that returns JSON.
         """
-        assistant_id = self._ensure_assistant()
+        subject = (payload.get("subject") or "").strip()
+        genre = (payload.get("genre") or "").strip() or "How-to"
+        tone = (payload.get("tone") or "").strip() or "Friendly"
+        audience = (payload.get("audience") or "") or None
+        length = (payload.get("length") or "") or "~1500 words"
 
-        subject = payload.get("subject", "").strip()
-        genre = payload.get("genre", "").strip() or "How-to"
-        tone = payload.get("tone", "").strip() or "Friendly"
-        audience = payload.get("audience", "") or None
-        length = payload.get("length", "") or "~2000 words"
-        raw_keywords = payload.get("keywords") or []  # CHANGED:
-        if isinstance(raw_keywords, str):  # CHANGED:
-            keywords = [raw_keywords]  # CHANGED:
-        elif isinstance(raw_keywords, list):  # CHANGED:
-            keywords = [str(k).strip() for k in raw_keywords if str(k).strip()]  # CHANGED:
-        else:  # CHANGED:
-            keywords = []  # CHANGED:
+        raw_keywords = payload.get("keywords") or []
+        if isinstance(raw_keywords, str):
+            keywords = [raw_keywords]
+        elif isinstance(raw_keywords, list):
+            keywords = [str(k).strip() for k in raw_keywords if str(k).strip()]
+        else:
+            keywords = []
 
-        user_msg = {
-            "role": "user",
-            "content": (
-                "Please generate a long-form blog post for small business owners.\n"
-                f"Subject: {subject}\n"
-                f"Genre: {genre}\n"
-                f"Tone: {tone}\n"
-                f"Audience: {audience or 'general small business owners'}\n"
-                f"Target length: {length}\n"
-                f"Keywords (optional, non-stuffed): {', '.join(keywords) if keywords else 'none'}\n\n"
-                "The body_markdown must be at least ~2000 words of useful, specific content with clear Markdown headings (#, ##, ###) and minimal fluff.\n"
-                "Output strictly as JSON only (no Markdown code fences, no commentary) with keys: "
-                "title, outline, body_markdown, meta:{focus_keyphrase, meta_description, slug}.\n"
-                "If you need scaffolding, call the tools provided; your FINAL response must be a single JSON object only."
-            ),  # CHANGED:
-        }
-
-        thread = self.client.beta.threads.create()
-        self.client.beta.threads.messages.create(thread_id=thread.id, **user_msg)
-        run = self.client.beta.threads.runs.create(
-            thread_id=thread.id,
-            assistant_id=assistant_id,
+        system_prompt = (
+            "You are PostPress AI, a senior content strategist writing for small business owners in Iowa. "
+            "You generate long-form, human, helpful blog posts with clear Markdown headings and minimal fluff. "
+            "Your response MUST be a single JSON object with keys: "
+            "title, outline, body_markdown, meta:{focus_keyphrase, meta_description, slug}. "
+            "Do not include any extra commentary, explanations, or Markdown code fences. "
+            "Aim for roughly 1200–1800 words of useful content in body_markdown. "
+            "Respect Yoast-style ranges (title ~<= 60 chars, meta_description ~<= 155 chars) and avoid keyword stuffing."
         )
 
-        # Poll until completion (handling tool calls)
-        while True:
-            run = self.client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
-            status = run.status
-            logger.debug(f"[PPA] Run status: {status}")
+        user_content = (
+            "Generate a long-form blog post draft for small business owners.\n"
+            f"Subject: {subject}\n"
+            f"Genre: {genre}\n"
+            f"Tone: {tone}\n"
+            f"Audience: {audience or 'general small business owners'}\n"
+            f"Target length: {length}\n"
+            f"Keywords (optional, non-stuffed): {', '.join(keywords) if keywords else 'none'}\n\n"
+            "Return only JSON with the exact keys requested in the system message. "
+            "Use Markdown headings (#, ##, ###) in body_markdown."
+        )
 
-            if status == "completed":
-                break
-            if status == "failed":
-                raise RuntimeError(f"Assistant run failed: {getattr(run, 'last_error', None)}")
-            if status == "requires_action":
-                tool_calls = run.required_action.submit_tool_outputs.tool_calls  # type: ignore[attr-defined]
-                outputs = []
-                for call in tool_calls:
-                    name = call.function.name
-                    args = json.loads(call.function.arguments or "{}")
-                    logger.debug(f"[PPA] Tool call: {name}({args})")
+        logger.info("[PPA] Chat generate start: subject=%r, model=%s", subject, self.model)
 
-                    if name == "enforce_yoast_limits":
-                        result = enforce_yoast_limits(**args)
-                    elif name == "compute_slug":
-                        result = {"slug": compute_slug(**args)}
-                    elif name == "outline_sections":
-                        result = {"outline": outline_sections(**args)}
-                    elif name == "title_variants":
-                        result = {"titles": title_variants(**args)}
-                    elif name == "extract_focus_keyphrase":
-                        result = {"focus_keyphrase": extract_focus_keyphrase(**args)}
-                    else:
-                        result = {"error": f"Unknown tool: {name}"}
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+            )
+        except Exception as exc:
+            logger.error("[PPA] Chat completion error: %s", exc, exc_info=True)
+            raise
 
-                    outputs.append({"tool_call_id": call.id, "output": json.dumps(result)})
-
-                self.client.beta.threads.runs.submit_tool_outputs(
-                    thread_id=thread.id,
-                    run_id=run.id,
-                    tool_outputs=outputs,
-                )
-                continue
-
-        # Collect latest assistant message
-        msgs = self.client.beta.threads.messages.list(thread_id=thread.id, order="desc", limit=5)
+        # Extract text content from the first choice.
         content_text: Optional[str] = None
+        try:
+            choice = response.choices[0]
+            message = choice.message
 
-        for m in msgs.data:
-            if m.role != "assistant":
-                continue
-            # Handle both formats: .text.value and dict blobs
-            if m.content and hasattr(m.content[0], "text") and hasattr(m.content[0].text, "value"):
-                content_text = m.content[0].text.value
+            # Newer SDKs: message.content is a list of content parts
+            if getattr(message, "content", None):
+                first_part = message.content[0]
+                if hasattr(first_part, "text") and hasattr(first_part.text, "value"):
+                    content_text = first_part.text.value
+                else:
+                    # Fallback: try plain content string
+                    content_text = str(getattr(message, "content", "")) or None
             else:
-                try:
-                    # Some SDKs return dict-like structures
-                    chunk = m.content[0]
-                    if isinstance(chunk, dict):
-                        if "text" in chunk and isinstance(chunk["text"], dict) and "value" in chunk["text"]:
-                            content_text = chunk["text"]["value"]
-                except Exception:
-                    pass
-
-            if content_text:
-                break
+                # Older-style: message.content is just a string
+                content_text = str(getattr(message, "content", "")) or None
+        except Exception as parse_exc:
+            logger.error("[PPA] Failed to extract chat content: %s", parse_exc, exc_info=True)
+            raise RuntimeError("Failed to extract content from chat completion response") from parse_exc
 
         if not content_text:
-            raise RuntimeError("No assistant content returned.")
+            raise RuntimeError("No content returned from chat completion.")
 
-        # Strip any accidental ```json fences before JSON parsing.           # CHANGED:
-        content_text = _strip_code_fences(content_text)                      # CHANGED:
+        content_text = _strip_code_fences(content_text)
 
         # Try strict JSON first
-        data: Dict[str, Any]
         try:
-            data = json.loads(content_text)
+            data: Dict[str, Any] = json.loads(content_text)
         except json.JSONDecodeError:
-            # Fallback: create a minimal JSON from text
-            logger.debug("[PPA] Assistant returned non-JSON text; building fallback.")
+            logger.debug("[PPA] Chat returned non-JSON text; building fallback.")
             t = subject or "Untitled"
             data = {
                 "title": t,
@@ -485,16 +336,21 @@ class AssistantRunner:
                 },
             }
 
-        # Normalize to strict contract and harden types/lengths.             # CHANGED:
-        if "title" not in data and isinstance(data.get("result"), dict):     # CHANGED:
-            data = data["result"]                                            # CHANGED:
+        # Some models may wrap the object as {"result": {...}}; unwrap it if so.
+        if "title" not in data and isinstance(data.get("result"), dict):
+            data = data["result"]
 
         normalized = _normalize_assistant_output(
             subject=subject,
             keywords=keywords,
             raw=data,
-        )  # CHANGED:
-        return normalized  # CHANGED:
+        )
+        logger.info(
+            "[PPA] Chat generate done: title=%r, outline_len=%d",
+            normalized.get("title"),
+            len(normalized.get("outline") or []),
+        )
+        return normalized
 
 
 def run_postpress_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
