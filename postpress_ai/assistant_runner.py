@@ -82,7 +82,7 @@ def enforce_yoast_limits(title: str, meta_description: Optional[str] = None) -> 
     - Meta description ~<= 155 chars
     """
     t = (title or "").strip()
-    if len(t) > 60:
+    if len(t) > 600:
         t = t[:57].rstrip() + "…"
 
     if meta_description is None:
