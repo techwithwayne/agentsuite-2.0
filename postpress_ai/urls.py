@@ -1,34 +1,28 @@
 # /home/techwithwayne/agentsuite/postpress_ai/urls.py
 """
-PostPress AI — URL routes
+PostPress AI — URL routes (loader shim)
+
+WHY THIS FILE EXISTS
+--------------------
+Django projects commonly include "postpress_ai.urls" at the module path.
+
+This repo also uses a package router at:
+    postpress_ai/urls/__init__.py
+
+To prevent routing ambiguity (module vs package) and keep imports deterministic,
+this module becomes a thin re-export of the package router's urlpatterns.
 
 CHANGE LOG
 ----------
-2025-10-25 • Fix routing collision by adding a unique path "normalize/" that
-             points directly to the normalize-only store_view.               # CHANGED:
-- Keep "store/" mapping for final path, but use "normalize/" for verification. # CHANGED:
-- app_name retained for namespaced include.                                   # CHANGED:
-
-Notes
------
-Project-level urls.py mounts us at:
-    path("postpress-ai/", include("postpress_ai.urls", namespace="postpress_ai"))
-Public paths after this change:
-    /postpress-ai/store/      -> intended final path (may be shadowed by legacy)
-    /postpress-ai/normalize/  -> guaranteed normalize-only path for verification
+2025-12-24
+- FIX: Convert urls.py into a deterministic re-export shim for postpress_ai.urls package router.  # CHANGED:
+- KEEP: No routing logic lives here; canonical patterns live in postpress_ai/urls/__init__.py.   # CHANGED:
 """
 
 from __future__ import annotations
-from django.urls import path
-from .views.store import store_view
 
-# Required for namespaced include(...) in project urls
-app_name = "postpress_ai"
+# Re-export canonical urlpatterns from the package router.  # CHANGED:
+from postpress_ai.urls import urlpatterns as urlpatterns  # type: ignore  # CHANGED:
 
-urlpatterns = [
-    # Final intended path (may be shadowed by a legacy mapping elsewhere)
-    path("store/", store_view, name="ppa_store"),
-
-    # Collision-free verifier path -> always our normalize-only view
-    path("normalize/", store_view, name="ppa_store_normalize"),
-]
+# Preserve namespaced include expectations.  # CHANGED:
+app_name = "postpress_ai"  # CHANGED:
