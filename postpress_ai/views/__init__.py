@@ -278,7 +278,7 @@ def version(request, *args, **kwargs):
     payload = {
         "ok": True,
         "v": VER,
-        "views": ["health", "version", "preview", "store", "preview_debug_model", "debug_headers"],  # CHANGED:
+        "views": ["health", "version", "preview", "store", "generate", "preview_debug_model", "debug_headers"],  # CHANGED:
         "mode": "normalize-only",
     }
     return _json_response(payload, view="version")
@@ -423,6 +423,114 @@ def preview(request, *args, **kwargs):
             pass
 
 
+@csrf_exempt  # CHANGED:
+@_rate_limited("generate")  # CHANGED:
+def generate(request, *args, **kwargs):  # CHANGED:
+    """AI generate endpoint. POST only. CSRF-exempt. Auth-first.           # CHANGED:
+                                                                             # CHANGED:
+    This wraps the Assistant-backed generator (run_postpress_generate)      # CHANGED:
+    and passes its JSON payload through to WordPress.                       # CHANGED:
+    """                                                                     # CHANGED:
+    t0 = time.perf_counter()  # CHANGED:
+    status_code = 200  # CHANGED:
+    view_name = "generate"  # CHANGED:
+    try:  # CHANGED:
+        if request.method != "POST":  # CHANGED:
+            status_code = 405  # CHANGED:
+            resp = _with_headers(HttpResponseNotAllowed(["POST"]), view=view_name)  # CHANGED:
+            return resp  # CHANGED:
+
+        auth_resp = _auth_first(request)  # CHANGED:
+        if auth_resp is not None:  # CHANGED:
+            resp = _with_headers(auth_resp, view=view_name)  # CHANGED:
+            status_code = resp.status_code  # CHANGED:
+            return resp  # CHANGED:
+
+        try:  # CHANGED:
+            raw = request.body.decode("utf-8") if request.body else "{}"  # CHANGED:
+            payload = json.loads(raw) if raw.strip() else {}  # CHANGED:
+            if not isinstance(payload, dict):  # CHANGED:
+                raise ValueError("JSON root must be an object")  # CHANGED:
+        except Exception as exc:  # CHANGED:
+            status_code = 400  # CHANGED:
+            return _json_response(  # CHANGED:
+                _error_payload("invalid_json", f"{exc}", {"hint": "Root must be an object"}),  # CHANGED:
+                view=view_name,  # CHANGED:
+                status=status_code,  # CHANGED:
+            )  # CHANGED:
+
+        # Import the Assistant runner lazily to avoid any circular import surprises.  # CHANGED:
+        try:  # CHANGED:
+            from postpress_ai.assistant_runner import run_postpress_generate  # type: ignore  # CHANGED:
+        except Exception as exc:  # CHANGED:
+            logger.exception("ppa.generate import_error", extra={"addr": _client_addr(request)})  # CHANGED:
+            status_code = 500  # CHANGED:
+            return _json_response(  # CHANGED:
+                _error_payload("generate_import_error", "generate backend unavailable", {"detail": str(exc)}),  # CHANGED:
+                view=view_name,  # CHANGED:
+                status=status_code,  # CHANGED:
+            )  # CHANGED:
+
+        try:  # CHANGED:
+            result_obj = run_postpress_generate(payload)  # CHANGED:
+        except Exception as exc:  # CHANGED:
+            logger.exception("ppa.generate exception", extra={"addr": _client_addr(request)})  # CHANGED:
+            status_code = 500  # CHANGED:
+            return _json_response(  # CHANGED:
+                _error_payload("generate_exception", "generate failed", {"detail": str(exc)}),  # CHANGED:
+                view=view_name,  # CHANGED:
+                status=status_code,  # CHANGED:
+            )  # CHANGED:
+
+        if not isinstance(result_obj, dict):  # CHANGED:
+            status_code = 500  # CHANGED:
+            return _json_response(  # CHANGED:
+                _error_payload(  # CHANGED:
+                    "generate_invalid_result",  # CHANGED:
+                    "generate backend returned non-object payload",  # CHANGED:
+                    {"kind": type(result_obj).__name__},  # CHANGED:
+                ),  # CHANGED:
+                view=view_name,  # CHANGED:
+                status=status_code,  # CHANGED:
+            )  # CHANGED:
+
+        # Normalize minimal contract fields without disturbing the backend shape.     # CHANGED:
+        if "ver" not in result_obj:  # CHANGED:
+            result_obj["ver"] = VER  # CHANGED:
+        if "provider" not in result_obj:  # CHANGED:
+            result_obj["provider"] = "django"  # CHANGED:
+        if "ok" not in result_obj:  # CHANGED:
+            # If there's an explicit error, default ok=False; otherwise assume success.  # CHANGED:
+            result_obj["ok"] = False if "error" in result_obj else True  # CHANGED:
+
+        status_code = 200  # CHANGED:
+        return _json_response(result_obj, view=view_name, status=status_code)  # CHANGED:
+
+    finally:  # CHANGED:
+        dur_ms = int((time.perf_counter() - t0) * 1000)  # CHANGED:
+        try:  # CHANGED:
+            base_line = {  # CHANGED:
+                "method": request.method,  # CHANGED:
+                "path": getattr(request, "path", "-"),  # CHANGED:
+                "addr": _client_addr(request),  # CHANGED:
+                "status": status_code,  # CHANGED:
+                "dur_ms": dur_ms,  # CHANGED:
+            }  # CHANGED:
+            try:  # CHANGED:
+                _payload = locals().get("payload") if isinstance(locals().get("payload"), dict) else {}  # CHANGED:
+                install = (_payload.get("install") or _payload.get("site") or "-")  # CHANGED:
+                extra = {  # CHANGED:
+                    "install": str(install)[:120] if install else "-",  # CHANGED:
+                    "client_view": _incoming_view_header(request),  # CHANGED:
+                    "xhr": _incoming_xhr_header(request),  # CHANGED:
+                }  # CHANGED:
+            except Exception:  # CHANGED:
+                extra = {}  # CHANGED:
+            logger.info("ppa.generate %s", {**base_line, **extra})  # CHANGED:
+        except Exception:  # pragma: no cover
+            pass  # CHANGED:
+
+
 # -----------------------------------------------------------------------------
 # Import store AFTER helpers are defined to avoid circular import.
 # -----------------------------------------------------------------------------
@@ -447,13 +555,28 @@ store_view = store
 __all__ = [
     "VER",
     # views
-    "health", "version", "preview_debug_model", "debug_headers",  # CHANGED:
-    "preview", "preview_view", "store", "store_view",
+    "health",
+    "version",
+    "preview_debug_model",
+    "debug_headers",
+    "preview",
+    "preview_view",
+    "store",
+    "store_view",
+    "generate",  # CHANGED:
     # helpers
-    "_with_headers", "_json_response", "_normalize",
-    "_auth_first", "_error_payload", "_client_addr", "_is_authed",
-    "_looks_like_html", "_text_to_html", "_derive_html_from_payload",  # CHANGED:
-    "_incoming_view_header", "_incoming_xhr_header",  # CHANGED:
+    "_with_headers",
+    "_json_response",
+    "_normalize",
+    "_auth_first",
+    "_error_payload",
+    "_client_addr",
+    "_is_authed",
+    "_looks_like_html",
+    "_text_to_html",
+    "_derive_html_from_payload",
+    "_incoming_view_header",
+    "_incoming_xhr_header",
     # rate limit
     "_rate_limited",
 ]
