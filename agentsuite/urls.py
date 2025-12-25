@@ -1,6 +1,14 @@
+# /home/techwithwayne/agentsuite/agentsuite/urls.py
 """
 CHANGE LOG
 ----------
+2025-12-24
+- ADD: Project-level /postpress-ai/license/* endpoints before include() for precedence.  # CHANGED:
+       activate/verify/deactivate → postpress_ai.views.license (Django authoritative). # CHANGED:
+- ADD: Project-level /postpress-ai/license/debug-auth/ endpoint before include() for precedence.  # CHANGED:
+       debug-auth → postpress_ai.views.debug_model.license_debug_auth (safe booleans only).       # CHANGED:
+- FIX: Normalize change markers in this file to use '# CHANGED:' consistently.  # CHANGED:
+
 2025-11-10
 - ADD: Root-level aliases /preview/ and /store/ → canonical postpress_ai views.          # CHANGED:
 - KEEP: Direct /postpress-ai/store/ override precedence and /postpress-ai include.       # CHANGED:
@@ -16,11 +24,21 @@ CHANGE LOG
 """
 
 from django.contrib import admin
-from postpress_ai.views.store import store_view  # CHANGED: PPA direct override
-from postpress_ai import views as ppa_views      # CHANGED: for root-level aliases
-
+from django.http import JsonResponse  # CHANGED: for health/version JSON responses
 from django.urls import path, include
-from django.http import JsonResponse  # ADDED: for health/version JSON responses
+
+from postpress_ai import views as ppa_views  # CHANGED: for root-level aliases
+from postpress_ai.views.store import store_view  # CHANGED: PPA direct override
+
+# Licensing endpoints (project-level precedence)  # CHANGED:
+from postpress_ai.views.license import (  # CHANGED:
+    license_activate,  # CHANGED:
+    license_verify,  # CHANGED:
+    license_deactivate,  # CHANGED:
+)
+
+# Debug auth endpoint (project-level precedence)  # CHANGED:
+from postpress_ai.views.debug_model import license_debug_auth  # CHANGED:
 
 # App-level views used here
 from webdoctor import views as webdoctor_views
@@ -29,21 +47,31 @@ from barista_assistant.views import success_view
 app_name = "webdoctor"
 
 # --- Minimal inline endpoints for PostPress AI readiness ------------------------
-def ppa_health_view(request):
-    """Liveness probe for PostPress AI integration."""
-    return JsonResponse({"ok": True})
+def ppa_health_view(request):  # CHANGED:
+    """Liveness probe for PostPress AI integration."""  # CHANGED:
+    return JsonResponse({"ok": True})  # CHANGED:
 
-def ppa_version_view(request):
-    """Version probe for PostPress AI; bump string on releases."""
-    return JsonResponse({"version": "postpress-ai.v2.1-2025-10-30"})
+
+def ppa_version_view(request):  # CHANGED:
+    """Version probe for PostPress AI; bump string on releases."""  # CHANGED:
+    return JsonResponse({"version": "postpress-ai.v2.1-2025-10-30"})  # CHANGED:
+
 
 urlpatterns = [
     # Root-level aliases to canonical PPA views (in addition to the prefixed include)  # CHANGED:
-    path("preview/", ppa_views.preview, name="ppa-preview-root"),                      # CHANGED:
-    path("store/",   ppa_views.store,   name="ppa-store-root"),                        # CHANGED:
+    path("preview/", ppa_views.preview, name="ppa-preview-root"),  # CHANGED:
+    path("store/", ppa_views.store, name="ppa-store-root"),  # CHANGED:
 
     # PostPress AI direct store (normalize-only override; precedence over include)
     path("postpress-ai/store/", store_view, name="ppa_store_direct"),
+
+    # PostPress AI licensing endpoints (placed BEFORE include to take precedence)  # CHANGED:
+    path("postpress-ai/license/activate/", license_activate, name="ppa_license_activate"),  # CHANGED:
+    path("postpress-ai/license/verify/", license_verify, name="ppa_license_verify"),  # CHANGED:
+    path("postpress-ai/license/deactivate/", license_deactivate, name="ppa_license_deactivate"),  # CHANGED:
+
+    # PostPress AI debug auth endpoint (placed BEFORE include to take precedence)  # CHANGED:
+    path("postpress-ai/license/debug-auth/", license_debug_auth, name="ppa_license_debug_auth"),  # CHANGED:
 
     # PostPress AI readiness endpoints (placed BEFORE include to take precedence)
     path("postpress-ai/health/", ppa_health_view, name="ppa_health"),
