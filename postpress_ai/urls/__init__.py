@@ -7,8 +7,10 @@ CHANGE LOG
 2025-12-24
 - FIX: Remove invalid import 'from .urls import ...' (no postpress_ai/urls/urls.py exists).  # CHANGED:
 - KEEP: Provide deterministic urlpatterns for include("postpress_ai.urls").                  # CHANGED:
-- ADD: /license/* endpoints here too (project-level routes still take precedence).           # CHANGED:
 - ADD: /normalize/ collision-free path for store_view verifier.                              # CHANGED:
+- CHANGE: REMOVE /license/* endpoints from this app-level include to prevent duplicate routes # CHANGED:
+          in show_urls and to enforce that project-level routing is the single canonical      # CHANGED:
+          surface for licensing under /postpress-ai/license/*.                                # CHANGED:
 """
 
 from __future__ import annotations
@@ -17,11 +19,6 @@ from django.urls import path  # CHANGED:
 
 from postpress_ai import views as ppa_views  # CHANGED:
 from postpress_ai.views.store import store_view  # CHANGED:
-from postpress_ai.views.license import (  # CHANGED:
-    license_activate,  # CHANGED:
-    license_verify,  # CHANGED:
-    license_deactivate,  # CHANGED:
-)
 
 app_name = "postpress_ai"
 
@@ -37,8 +34,12 @@ urlpatterns = [
     # Collision-free verifier path -> normalize-only store_view
     path("normalize/", store_view, name="ppa-store-normalize"),  # CHANGED:
 
-    # Licensing endpoints (Django authoritative; project-level routes still override precedence)  # CHANGED:
-    path("license/activate/", license_activate, name="license_activate"),  # CHANGED:
-    path("license/verify/", license_verify, name="license_verify"),  # CHANGED:
-    path("license/deactivate/", license_deactivate, name="license_deactivate"),  # CHANGED:
+    # NOTE (LOCKED):
+    # Licensing routes are intentionally NOT included here.                                     # CHANGED:
+    # They are project-level only in agentsuite/urls.py under:                                  # CHANGED:
+    #   /postpress-ai/license/activate/                                                         # CHANGED:
+    #   /postpress-ai/license/verify/                                                           # CHANGED:
+    #   /postpress-ai/license/deactivate/                                                       # CHANGED:
+    #   /postpress-ai/license/debug-auth/                                                       # CHANGED:
+    # This prevents duplicate route listings and keeps the authoritative surface centralized.   # CHANGED:
 ]
