@@ -27,10 +27,12 @@ from __future__ import annotations  # CHANGED:
 # 2025-12-24: Auth source corrected: shared key is read from os.environ["PPA_SHARED_KEY"] only.     # CHANGED:
 #            (Matches hardened proxy behavior: tests must patch os.environ, not settings.)         # CHANGED:
 # 2025-12-24: Deactivate is allowed even if license is inactive/expired (cleanup-safe + idempotent).# CHANGED:
+# 2025-12-24: Harden auth compare: normalize header/env values + constant-time compare (prevents false 401s).  # CHANGED:
 
 import json  # CHANGED:
 import os  # CHANGED:
 import re  # CHANGED:
+import hmac  # CHANGED:
 from dataclasses import dataclass  # CHANGED:
 from typing import Any, Dict, Optional  # CHANGED:
 from urllib.parse import urlparse  # CHANGED:
@@ -98,6 +100,23 @@ def _get_client_ip(request: HttpRequest) -> str:  # CHANGED:
     return ip.strip()[:64] if ip else "unknown"  # CHANGED:
 
 
+def _norm(value: Any) -> str:  # CHANGED:
+    """
+    Normalize auth values consistently:
+    - cast to str
+    - strip whitespace/newlines
+    - rely on existing header normalizer patterns when possible
+    """  # CHANGED:
+    if value is None:  # CHANGED:
+        return ""  # CHANGED:
+    if not isinstance(value, str):  # CHANGED:
+        try:  # CHANGED:
+            value = str(value)  # CHANGED:
+        except Exception:  # CHANGED:
+            return ""  # CHANGED:
+    return value.strip()  # CHANGED:
+
+
 def _get_shared_key() -> str:  # CHANGED:
     """
     Shared secret injected by the WP PHP controller server-side (X-PPA-Key).
@@ -107,7 +126,8 @@ def _get_shared_key() -> str:  # CHANGED:
     Tests must patch os.environ.
     """  # CHANGED:
     key = os.environ.get("PPA_SHARED_KEY", "")  # CHANGED:
-    if not key or not isinstance(key, str):  # CHANGED:
+    key = _norm(key)  # CHANGED:
+    if not key:  # CHANGED:
         raise APIError(  # CHANGED:
             code="server_misconfig",  # CHANGED:
             message="Licensing not configured (PPA_SHARED_KEY missing).",  # CHANGED:
@@ -122,8 +142,15 @@ def _require_shared_key(request: HttpRequest) -> None:  # CHANGED:
     Require server-to-server auth header. This blocks any direct browser calls by default.
     """  # CHANGED:
     expected = _get_shared_key()  # CHANGED:
-    provided = request.headers.get("X-PPA-Key") or request.META.get("HTTP_X_PPA_KEY")  # CHANGED:
-    if not provided or provided != expected:  # CHANGED:
+
+    # Prefer request.headers, fallback to META; normalize either way.  # CHANGED:
+    provided = request.headers.get("X-PPA-Key")  # CHANGED:
+    if provided is None:  # CHANGED:
+        provided = request.META.get("HTTP_X_PPA_KEY")  # CHANGED:
+    provided = _norm(provided)  # CHANGED:
+
+    # Constant-time compare to avoid timing side-channels and reduce false mismatches.  # CHANGED:
+    if (not provided) or (not hmac.compare_digest(provided, expected)):  # CHANGED:
         raise APIError(  # CHANGED:
             code="unauthorized",  # CHANGED:
             message="Unauthorized.",  # CHANGED:
