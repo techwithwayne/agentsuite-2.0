@@ -28,6 +28,7 @@ from __future__ import annotations  # CHANGED:
 #            (Matches hardened proxy behavior: tests must patch os.environ, not settings.)         # CHANGED:
 # 2025-12-24: Deactivate is allowed even if license is inactive/expired (cleanup-safe + idempotent).# CHANGED:
 # 2025-12-24: Harden auth compare: normalize header/env values + constant-time compare (prevents false 401s).  # CHANGED:
+# 2025-12-24: FIX: Enforce LOCKED env auth semantic: read via os.environ["PPA_SHARED_KEY"] (not .get()).       # CHANGED:
 
 import json  # CHANGED:
 import os  # CHANGED:
@@ -117,6 +118,23 @@ def _norm(value: Any) -> str:  # CHANGED:
     return value.strip()  # CHANGED:
 
 
+def _read_shared_key_env() -> str:  # CHANGED:
+    """
+    LOCKED AUTH SOURCE (env-only):
+
+    Licensing must read from os.environ["PPA_SHARED_KEY"].
+    We mirror that exact semantic, but safely handle missing env by returning "".
+
+    NOTE:
+      - Does NOT consult Django settings.
+      - Does NOT log or return secrets.
+    """  # CHANGED:
+    try:  # CHANGED:
+        return os.environ["PPA_SHARED_KEY"]  # CHANGED:
+    except KeyError:  # CHANGED:
+        return ""  # CHANGED:
+
+
 def _get_shared_key() -> str:  # CHANGED:
     """
     Shared secret injected by the WP PHP controller server-side (X-PPA-Key).
@@ -125,7 +143,7 @@ def _get_shared_key() -> str:  # CHANGED:
     Auth reads from os.environ["PPA_SHARED_KEY"], not Django settings.
     Tests must patch os.environ.
     """  # CHANGED:
-    key = os.environ.get("PPA_SHARED_KEY", "")  # CHANGED:
+    key = _read_shared_key_env()  # CHANGED:
     key = _norm(key)  # CHANGED:
     if not key:  # CHANGED:
         raise APIError(  # CHANGED:
