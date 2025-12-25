@@ -8,6 +8,7 @@ CHANGE LOG
 - FIX: Align preview debug auth to os.environ["PPA_SHARED_KEY"] (same as licensing).  # CHANGED:
 - FIX: Ensure module path matches project import (debug_model.py, singular).          # CHANGED:
 - KEEP: No secrets returned/logged; only safe booleans + lengths.                    # CHANGED:
+- FIX: Read shared key via os.environ["PPA_SHARED_KEY"] semantics (no settings fallback).  # CHANGED:
 """
 
 from __future__ import annotations
@@ -36,6 +37,23 @@ def _is_test_env(request: HttpRequest) -> bool:
     return host == "testserver"
 
 
+def _read_shared_key_env() -> str:  # CHANGED:
+    """
+    LOCKED AUTH SOURCE (env-only):
+
+    Licensing endpoints read from os.environ["PPA_SHARED_KEY"].
+    We mirror that semantic here, but safely handle missing env by returning "".
+
+    NOTE:
+      - This does NOT consult Django settings.
+      - This does NOT log or return secrets.
+    """  # CHANGED:
+    try:  # CHANGED:
+        return os.environ["PPA_SHARED_KEY"]  # CHANGED:
+    except KeyError:  # CHANGED:
+        return ""  # CHANGED:
+
+
 def preview_debug_model(request: HttpRequest) -> JsonResponse | HttpResponse:
     """
     GET: Returns current preview provider/model details; requires valid X-PPA-Key
@@ -50,7 +68,7 @@ def preview_debug_model(request: HttpRequest) -> JsonResponse | HttpResponse:
     provided = _normalize_header_value(request.META.get("HTTP_X_PPA_KEY", ""))
 
     # IMPORTANT: Preview/store/licensing auth is env-driven (NOT Django settings).  # CHANGED:
-    expected_raw = os.environ.get("PPA_SHARED_KEY", "")  # CHANGED:
+    expected_raw = _read_shared_key_env()  # CHANGED:
     expected = _normalize_header_value(expected_raw)  # CHANGED:
 
     ok = _is_test_env(request) or (bool(expected) and (provided == expected))  # CHANGED:
@@ -134,8 +152,8 @@ def license_debug_auth(request: HttpRequest) -> JsonResponse | HttpResponse:  # 
     if request.method != "GET":
         return _json_response({"ok": False, "error": "method.not_allowed"}, 405, request)
 
-    expected_raw = os.environ.get("PPA_SHARED_KEY", "")
-    expected = _normalize_header_value(expected_raw)
+    expected_raw = _read_shared_key_env()  # CHANGED:
+    expected = _normalize_header_value(expected_raw)  # CHANGED:
     provided = _normalize_header_value(request.META.get("HTTP_X_PPA_KEY", ""))
 
     has_env = bool(expected)
