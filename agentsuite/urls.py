@@ -9,6 +9,10 @@ CHANGE LOG
        debug-auth → postpress_ai.views.debug_model.license_debug_auth (safe booleans only).       # CHANGED:
 - FIX: Normalize change markers in this file to use '# CHANGED:' consistently.  # CHANGED:
 
+2025-12-26
+- ADD: Project-level /postpress-ai/stripe/webhook/ endpoint before include() for precedence.  # CHANGED:
+       Stripe is fulfillment-only (payment -> issue key), WP never talks to Stripe.            # CHANGED:
+
 2025-11-10
 - ADD: Root-level aliases /preview/ and /store/ → canonical postpress_ai views.          # CHANGED:
 - KEEP: Direct /postpress-ai/store/ override precedence and /postpress-ai include.       # CHANGED:
@@ -39,6 +43,9 @@ from postpress_ai.views.license import (  # CHANGED:
 
 # Debug auth endpoint (project-level precedence)  # CHANGED:
 from postpress_ai.views.debug_model import license_debug_auth  # CHANGED:
+
+# Stripe webhook endpoint (project-level precedence; fulfillment-only)  # CHANGED:
+from postpress_ai.views.stripe_webhook import stripe_webhook  # CHANGED:
 
 # App-level views used here
 from webdoctor import views as webdoctor_views
@@ -72,6 +79,9 @@ urlpatterns = [
 
     # PostPress AI debug auth endpoint (placed BEFORE include to take precedence)  # CHANGED:
     path("postpress-ai/license/debug-auth/", license_debug_auth, name="ppa_license_debug_auth"),  # CHANGED:
+
+    # PostPress AI Stripe webhook endpoint (placed BEFORE include to take precedence)  # CHANGED:
+    path("postpress-ai/stripe/webhook/", stripe_webhook, name="ppa_stripe_webhook"),  # CHANGED:
 
     # PostPress AI readiness endpoints (placed BEFORE include to take precedence)
     path("postpress-ai/health/", ppa_health_view, name="ppa_health"),
