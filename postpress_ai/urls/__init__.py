@@ -11,6 +11,10 @@ CHANGE LOG
 - CHANGE: REMOVE /license/* endpoints from this app-level include to prevent duplicate routes # CHANGED:
           in show_urls and to enforce that project-level routing is the single canonical      # CHANGED:
           surface for licensing under /postpress-ai/license/*.                                # CHANGED:
+
+2025-12-26
+- ADD: Stripe webhook route at app-level surface: /stripe/webhook/                            # CHANGED:
+       (Stripe is fulfillment-only; WP never talks to Stripe; licensing remains project-level)# CHANGED:
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from django.urls import path  # CHANGED:
 
 from postpress_ai import views as ppa_views  # CHANGED:
 from postpress_ai.views.store import store_view  # CHANGED:
+from postpress_ai.views.stripe_webhook import stripe_webhook  # CHANGED:
 
 app_name = "postpress_ai"
 
@@ -33,6 +38,9 @@ urlpatterns = [
 
     # Collision-free verifier path -> normalize-only store_view
     path("normalize/", store_view, name="ppa-store-normalize"),  # CHANGED:
+
+    # Stripe (fulfillment-only)
+    path("stripe/webhook/", stripe_webhook, name="ppa-stripe-webhook"),  # CHANGED:
 
     # NOTE (LOCKED):
     # Licensing routes are intentionally NOT included here.                                     # CHANGED:
