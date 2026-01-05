@@ -3,6 +3,9 @@ PostPress AI — views package
 
 CHANGE LOG
 ----------
+2026-01-04 • AUTH: pa.v1 wrapper now accepts license_key + site_url activation by delegating to views.utils._ppa_key_ok(); shared-key still supported.  # CHANGED:
+2026-01-04 • AUTH: _is_authed() considers license auth too, so rate limiting counts authed license traffic correctly.                                   # CHANGED:
+
 2025-11-16 • preview(): add provider='django' at top-level JSON for parity with store; no other behavior changes.  # CHANGED:
 2025-11-13 • Add debug_headers view (GET, auth-first) to inspect safe headers; keep contract + headers.   # CHANGED:
 2025-11-13 • Log incoming X-PPA-View/X-Requested-With in preview() for WP/Django header parity.              # CHANGED:
@@ -65,11 +68,92 @@ def _extract_auth(request) -> str:
     return ""
 
 
+def _body_mentions_license_fields(request) -> bool:  # CHANGED:
+    """
+    Best-effort: detect whether the JSON body contains license auth fields.  # CHANGED:
+    Used only to choose 401 vs 403 when auth fails.                           # CHANGED:
+    """  # CHANGED:
+    try:  # CHANGED:
+        raw = request.body.decode("utf-8") if getattr(request, "body", None) else ""  # CHANGED:
+        if not raw.strip():  # CHANGED:
+            return False  # CHANGED:
+        payload = json.loads(raw)  # CHANGED:
+        if not isinstance(payload, dict):  # CHANGED:
+            return False  # CHANGED:
+        # Known fields (no guessing): license_key + site_url.                # CHANGED:
+        return bool(payload.get("license_key")) or bool(payload.get("site_url"))  # CHANGED:
+    except Exception:  # CHANGED:
+        return False  # CHANGED:
+
+
+def _ppa_option_a_ok(request) -> bool:  # CHANGED:
+    """
+    Bridge to postpress_ai.views.utils._ppa_key_ok(), which implements:       # CHANGED:
+      - shared-key auth (preferred when present)                              # CHANGED:
+      - OR license_key + site_url activation validation                       # CHANGED:
+
+    This keeps legacy pa.v1 views working without requiring shared keys per customer.  # CHANGED:
+    """  # CHANGED:
+    fn = None  # CHANGED:
+    try:  # CHANGED:
+        from postpress_ai.views import utils as _u  # CHANGED:
+        fn = getattr(_u, "_ppa_key_ok", None)  # CHANGED:
+    except Exception:  # CHANGED:
+        fn = None  # CHANGED:
+
+    if not fn:  # CHANGED:
+        return False  # CHANGED:
+
+    # First attempt: modern signature fn(request).                             # CHANGED:
+    try:  # CHANGED:
+        return bool(fn(request))  # CHANGED:
+    except TypeError:  # CHANGED:
+        # Some versions accept fn(request, body_dict).                         # CHANGED:
+        body: Dict[str, Any] = {}  # CHANGED:
+        try:  # CHANGED:
+            raw = request.body.decode("utf-8") if getattr(request, "body", None) else ""  # CHANGED:
+            payload = json.loads(raw) if raw.strip() else {}  # CHANGED:
+            if isinstance(payload, dict):  # CHANGED:
+                body = payload  # CHANGED:
+        except Exception:  # CHANGED:
+            body = {}  # CHANGED:
+        try:  # CHANGED:
+            return bool(fn(request, body))  # CHANGED:
+        except Exception:  # CHANGED:
+            return False  # CHANGED:
+    except Exception:  # CHANGED:
+        return False  # CHANGED:
+
+
+def _inject_shared_key_if_present(request) -> None:  # CHANGED:
+    """
+    If the server has PPA_SHARED_KEY, inject it into request.META for          # CHANGED:
+    downstream legacy checks that still look only at HTTP_X_PPA_KEY.           # CHANGED:
+    """  # CHANGED:
+    sk = _get_shared_key()  # CHANGED:
+    if not sk:  # CHANGED:
+        return  # CHANGED:
+    try:  # CHANGED:
+        request.META["HTTP_X_PPA_KEY"] = sk  # CHANGED:
+    except Exception:  # CHANGED:
+        pass  # CHANGED:
+
+
 def _is_authed(request) -> bool:  # CHANGED:
     """Fast boolean check for auth success without constructing a response."""  # CHANGED:
     presented = _extract_auth(request)  # CHANGED:
     expected = _get_shared_key()        # CHANGED:
-    return bool(presented) and bool(expected) and (presented == expected)  # CHANGED:
+
+    # Fast-path: classic shared-key auth.                                       # CHANGED:
+    if bool(presented) and bool(expected) and (presented == expected):  # CHANGED:
+        return True  # CHANGED:
+
+    # Option A: license_key + site_url activation (delegated to utils).         # CHANGED:
+    # Avoid extra work if request has no header key and body doesn't advertise license fields.  # CHANGED:
+    if presented or _body_mentions_license_fields(request):  # CHANGED:
+        return _ppa_option_a_ok(request)  # CHANGED:
+
+    return False  # CHANGED:
 
 
 def _error_payload(err_type: str, message: str, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -90,16 +174,29 @@ def _auth_first(request) -> Optional[HttpResponse]:
     Enforce auth before any other processing.
 
     - No key presented  -> 401
-    - Wrong key         -> 403
+    - Wrong/invalid     -> 403
+
+    Auth can be satisfied by:
+      - Shared key (PPA_SHARED_KEY) via X-PPA-Key / Bearer
+      - OR license_key + site_url activation (Option A) via views.utils._ppa_key_ok()  # CHANGED:
     """
     presented = _extract_auth(request)
     expected = _get_shared_key()
 
-    if not presented:
-        return JsonResponse(_error_payload("missing_key", "missing authentication key"), status=401)
-    if not expected or presented != expected:
-        return JsonResponse(_error_payload("forbidden", "invalid authentication key"), status=403)
-    return None
+    # Fast-path: shared-key auth.                                               # CHANGED:
+    if presented and expected and presented == expected:  # CHANGED:
+        return None  # CHANGED:
+
+    # Option A: license auth via utils._ppa_key_ok().                           # CHANGED:
+    if _ppa_option_a_ok(request):  # CHANGED:
+        _inject_shared_key_if_present(request)  # CHANGED:
+        return None  # CHANGED:
+
+    # Choose 401 vs 403.                                                        # CHANGED:
+    if not presented and not _body_mentions_license_fields(request):  # CHANGED:
+        return JsonResponse(_error_payload("missing_key", "missing authentication key"), status=401)  # CHANGED:
+
+    return JsonResponse(_error_payload("forbidden", "invalid authentication key"), status=403)  # CHANGED:
 
 
 def _normalize(payload: Dict[str, Any]) -> Dict[str, Any]:

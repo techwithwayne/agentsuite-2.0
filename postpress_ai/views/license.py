@@ -10,9 +10,14 @@ Licensing endpoints (Django is authoritative):
 LOCKED RULES
 - WordPress never decides license validity.
 - WP → admin-ajax → PHP controller → Django only.
-- No browser → Django calls.
 - No CORS / ALLOWED_HOSTS widening.
 - Strict server-side (no grace period by default).
+
+OPTION A (Customer-friendly auth)  # CHANGED:
+- Customers SHOULD NOT need a shared key on every WordPress site.            # CHANGED:
+- These license endpoints now accept license_key + site_url WITHOUT          # CHANGED:
+  requiring X-PPA-Key (shared key).                                         # CHANGED:
+- Shared key auth remains supported as an OPTIONAL internal/proxy path.      # CHANGED:
 
 Response envelope (consistent):
   { "ok": true|false, "data": {...}, "error": {...}, "ver": "license.v1" }
@@ -29,6 +34,8 @@ from __future__ import annotations  # CHANGED:
 # 2025-12-24: Deactivate is allowed even if license is inactive/expired (cleanup-safe + idempotent).# CHANGED:
 # 2025-12-24: Harden auth compare: normalize header/env values + constant-time compare (prevents false 401s).  # CHANGED:
 # 2025-12-24: FIX: Enforce LOCKED env auth semantic: read via os.environ["PPA_SHARED_KEY"] (not .get()).       # CHANGED:
+# 2026-01-04: OPTION A: Allow license endpoints to authenticate via license_key + site_url (no shared key).   # CHANGED:
+#            Shared key remains an optional/internal path. No response shape changes.                         # CHANGED:
 
 import json  # CHANGED:
 import os  # CHANGED:
@@ -155,9 +162,39 @@ def _get_shared_key() -> str:  # CHANGED:
     return key  # CHANGED:
 
 
+def _shared_key_header_valid(request: HttpRequest) -> bool:  # CHANGED:
+    """
+    OPTION A SUPPORT (non-fatal shared-key check):
+
+    Returns True ONLY if:
+      - env shared key exists, AND
+      - provided X-PPA-Key matches it (constant-time compare)
+
+    IMPORTANT:
+      - If missing/invalid, we return False (we do NOT raise 401 here), because
+        license endpoints also support license_key + site_url auth now.       # CHANGED:
+    """  # CHANGED:
+    expected = _norm(_read_shared_key_env())  # CHANGED:
+    if not expected:  # CHANGED:
+        return False  # CHANGED:
+
+    provided = request.headers.get("X-PPA-Key")  # CHANGED:
+    if provided is None:  # CHANGED:
+        provided = request.META.get("HTTP_X_PPA_KEY")  # CHANGED:
+    provided = _norm(provided)  # CHANGED:
+    if not provided:  # CHANGED:
+        return False  # CHANGED:
+
+    return bool(hmac.compare_digest(provided, expected))  # CHANGED:
+
+
 def _require_shared_key(request: HttpRequest) -> None:  # CHANGED:
     """
-    Require server-to-server auth header. This blocks any direct browser calls by default.
+    Strict shared-key enforcement (legacy behavior).
+
+    NOTE:
+    - We keep this for any INTERNAL endpoints that still want strict server-to-server auth.
+    - License endpoints no longer call this under Option A.                    # CHANGED:
     """  # CHANGED:
     expected = _get_shared_key()  # CHANGED:
 
@@ -358,14 +395,20 @@ def license_activate(request: HttpRequest) -> JsonResponse:  # CHANGED:
     Input JSON:
       { "license_key": "...", "site_url": "https://example.com" }
 
+    Auth (Option A):
+      - If X-PPA-Key matches env PPA_SHARED_KEY -> allowed (internal/proxy path)
+      - Otherwise -> allowed via license_key + site_url (customer path)        # CHANGED:
+
     Output:
       ok + activation state (display-only; Django remains the source of truth)
     """  # CHANGED:
     try:  # CHANGED:
-        _require_shared_key(request)  # CHANGED:
         payload = _parse_json_body(request)  # CHANGED:
         license_key = _clean_license_key(payload.get("license_key"))  # CHANGED:
         site_url = _normalize_site_url(payload.get("site_url"))  # CHANGED:
+
+        # Option A: shared key is OPTIONAL for license endpoints.               # CHANGED:
+        _shared_key_header_valid(request)  # CHANGED: (call for symmetry; result not required)
 
         ip = _get_client_ip(request)  # CHANGED:
         _rate_limit_or_raise(scope="activate", ip=ip, license_key=license_key)  # CHANGED:
@@ -449,14 +492,20 @@ def license_verify(request: HttpRequest) -> JsonResponse:  # CHANGED:
     Input JSON:
       { "license_key": "...", "site_url": "https://example.com" }
 
+    Auth (Option A):
+      - If X-PPA-Key matches env PPA_SHARED_KEY -> allowed (internal/proxy path)
+      - Otherwise -> allowed via license_key + site_url (customer path)        # CHANGED:
+
     Output:
       ok true if license active AND activation exists.
     """  # CHANGED:
     try:  # CHANGED:
-        _require_shared_key(request)  # CHANGED:
         payload = _parse_json_body(request)  # CHANGED:
         license_key = _clean_license_key(payload.get("license_key"))  # CHANGED:
         site_url = _normalize_site_url(payload.get("site_url"))  # CHANGED:
+
+        # Option A: shared key is OPTIONAL for license endpoints.               # CHANGED:
+        _shared_key_header_valid(request)  # CHANGED: (call for symmetry; result not required)
 
         ip = _get_client_ip(request)  # CHANGED:
         _rate_limit_or_raise(scope="verify", ip=ip, license_key=license_key)  # CHANGED:
@@ -509,14 +558,20 @@ def license_deactivate(request: HttpRequest) -> JsonResponse:  # CHANGED:
     Input JSON:
       { "license_key": "...", "site_url": "https://example.com" }
 
+    Auth (Option A):
+      - If X-PPA-Key matches env PPA_SHARED_KEY -> allowed (internal/proxy path)
+      - Otherwise -> allowed via license_key + site_url (customer path)        # CHANGED:
+
     Output:
       ok true (idempotent)
     """  # CHANGED:
     try:  # CHANGED:
-        _require_shared_key(request)  # CHANGED:
         payload = _parse_json_body(request)  # CHANGED:
         license_key = _clean_license_key(payload.get("license_key"))  # CHANGED:
         site_url = _normalize_site_url(payload.get("site_url"))  # CHANGED:
+
+        # Option A: shared key is OPTIONAL for license endpoints.               # CHANGED:
+        _shared_key_header_valid(request)  # CHANGED: (call for symmetry; result not required)
 
         ip = _get_client_ip(request)  # CHANGED:
         _rate_limit_or_raise(scope="deactivate", ip=ip, license_key=license_key)  # CHANGED:
