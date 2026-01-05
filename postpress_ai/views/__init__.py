@@ -3,8 +3,8 @@ PostPress AI — views package
 
 CHANGE LOG
 ----------
-2026-01-04 • AUTH: pa.v1 wrapper now accepts license_key + site_url activation by delegating to views.utils._ppa_key_ok(); shared-key still supported.  # CHANGED:
-2026-01-04 • AUTH: _is_authed() considers license auth too, so rate limiting counts authed license traffic correctly.                                   # CHANGED:
+2026-01-05 • FIX: pa.v1 auth guard now delegates to views.utils._ppa_key_ok() so content endpoints accept Option A (license_key+site_url) without shared key.  # CHANGED:
+2026-01-05 • HARDEN: Cache auth result on request to avoid double DB checks (rate-limit + view).                                                       # CHANGED:
 
 2025-11-16 • preview(): add provider='django' at top-level JSON for parity with store; no other behavior changes.  # CHANGED:
 2025-11-13 • Add debug_headers view (GET, auth-first) to inspect safe headers; keep contract + headers.   # CHANGED:
@@ -68,92 +68,63 @@ def _extract_auth(request) -> str:
     return ""
 
 
-def _body_mentions_license_fields(request) -> bool:  # CHANGED:
+def _ppa_auth_ok(request) -> bool:  # CHANGED:
     """
-    Best-effort: detect whether the JSON body contains license auth fields.  # CHANGED:
-    Used only to choose 401 vs 403 when auth fails.                           # CHANGED:
+    Unified auth check used by pa.v1 endpoints.                               # CHANGED:
+    Delegates to postpress_ai.views.utils._ppa_key_ok() which supports:        # CHANGED:
+    - Shared-key auth (X-PPA-Key)                                              # CHANGED:
+    - Option A: license_key + site_url activation validation (body/headers)   # CHANGED:
+                                                                              # CHANGED:
+    Caches success on the request object to avoid duplicate checks (rate limit + view).  # CHANGED:
     """  # CHANGED:
+    if getattr(request, "_ppa_authed", False):  # CHANGED:
+        return True  # CHANGED:
     try:  # CHANGED:
-        raw = request.body.decode("utf-8") if getattr(request, "body", None) else ""  # CHANGED:
+        from postpress_ai.views.utils import _ppa_key_ok  # type: ignore  # CHANGED:
+        ok = bool(_ppa_key_ok(request))  # CHANGED:
+    except Exception:  # CHANGED:
+        ok = False  # CHANGED:
+    if ok:  # CHANGED:
+        try:  # CHANGED:
+            setattr(request, "_ppa_authed", True)  # CHANGED:
+        except Exception:  # pragma: no cover  # CHANGED:
+            pass  # CHANGED:
+    return ok  # CHANGED:
+
+
+def _has_any_auth_material(request) -> bool:  # CHANGED:
+    """
+    Best-effort: decide if the client even attempted auth.                     # CHANGED:
+    Used only to choose 401 (missing_key) vs 403 (forbidden).                  # CHANGED:
+    """  # CHANGED:
+    if _extract_auth(request):  # CHANGED:
+        return True  # CHANGED:
+
+    # Header fallbacks that utils._ppa_key_ok() may accept
+    hdrs = getattr(request, "headers", {})  # CHANGED:
+    if hdrs.get("X-PPA-License-Key") or request.META.get("HTTP_X_PPA_LICENSE_KEY"):  # CHANGED:
+        return True  # CHANGED:
+    if hdrs.get("X-PPA-Site-Url") or request.META.get("HTTP_X_PPA_SITE_URL"):  # CHANGED:
+        return True  # CHANGED:
+
+    # Body (JSON object) fallbacks
+    try:  # CHANGED:
+        raw = request.body.decode("utf-8") if request.body else ""  # CHANGED:
         if not raw.strip():  # CHANGED:
             return False  # CHANGED:
         payload = json.loads(raw)  # CHANGED:
         if not isinstance(payload, dict):  # CHANGED:
             return False  # CHANGED:
-        # Known fields (no guessing): license_key + site_url.                # CHANGED:
-        return bool(payload.get("license_key")) or bool(payload.get("site_url"))  # CHANGED:
+        lk = payload.get("license_key") or payload.get("licenseKey")  # CHANGED:
+        su = payload.get("site_url") or payload.get("siteUrl")  # CHANGED:
+        return bool(str(lk or "").strip()) or bool(str(su or "").strip())  # CHANGED:
     except Exception:  # CHANGED:
         return False  # CHANGED:
-
-
-def _ppa_option_a_ok(request) -> bool:  # CHANGED:
-    """
-    Bridge to postpress_ai.views.utils._ppa_key_ok(), which implements:       # CHANGED:
-      - shared-key auth (preferred when present)                              # CHANGED:
-      - OR license_key + site_url activation validation                       # CHANGED:
-
-    This keeps legacy pa.v1 views working without requiring shared keys per customer.  # CHANGED:
-    """  # CHANGED:
-    fn = None  # CHANGED:
-    try:  # CHANGED:
-        from postpress_ai.views import utils as _u  # CHANGED:
-        fn = getattr(_u, "_ppa_key_ok", None)  # CHANGED:
-    except Exception:  # CHANGED:
-        fn = None  # CHANGED:
-
-    if not fn:  # CHANGED:
-        return False  # CHANGED:
-
-    # First attempt: modern signature fn(request).                             # CHANGED:
-    try:  # CHANGED:
-        return bool(fn(request))  # CHANGED:
-    except TypeError:  # CHANGED:
-        # Some versions accept fn(request, body_dict).                         # CHANGED:
-        body: Dict[str, Any] = {}  # CHANGED:
-        try:  # CHANGED:
-            raw = request.body.decode("utf-8") if getattr(request, "body", None) else ""  # CHANGED:
-            payload = json.loads(raw) if raw.strip() else {}  # CHANGED:
-            if isinstance(payload, dict):  # CHANGED:
-                body = payload  # CHANGED:
-        except Exception:  # CHANGED:
-            body = {}  # CHANGED:
-        try:  # CHANGED:
-            return bool(fn(request, body))  # CHANGED:
-        except Exception:  # CHANGED:
-            return False  # CHANGED:
-    except Exception:  # CHANGED:
-        return False  # CHANGED:
-
-
-def _inject_shared_key_if_present(request) -> None:  # CHANGED:
-    """
-    If the server has PPA_SHARED_KEY, inject it into request.META for          # CHANGED:
-    downstream legacy checks that still look only at HTTP_X_PPA_KEY.           # CHANGED:
-    """  # CHANGED:
-    sk = _get_shared_key()  # CHANGED:
-    if not sk:  # CHANGED:
-        return  # CHANGED:
-    try:  # CHANGED:
-        request.META["HTTP_X_PPA_KEY"] = sk  # CHANGED:
-    except Exception:  # CHANGED:
-        pass  # CHANGED:
 
 
 def _is_authed(request) -> bool:  # CHANGED:
     """Fast boolean check for auth success without constructing a response."""  # CHANGED:
-    presented = _extract_auth(request)  # CHANGED:
-    expected = _get_shared_key()        # CHANGED:
-
-    # Fast-path: classic shared-key auth.                                       # CHANGED:
-    if bool(presented) and bool(expected) and (presented == expected):  # CHANGED:
-        return True  # CHANGED:
-
-    # Option A: license_key + site_url activation (delegated to utils).         # CHANGED:
-    # Avoid extra work if request has no header key and body doesn't advertise license fields.  # CHANGED:
-    if presented or _body_mentions_license_fields(request):  # CHANGED:
-        return _ppa_option_a_ok(request)  # CHANGED:
-
-    return False  # CHANGED:
+    return _ppa_auth_ok(request)  # CHANGED:
 
 
 def _error_payload(err_type: str, message: str, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -173,30 +144,19 @@ def _auth_first(request) -> Optional[HttpResponse]:
     """
     Enforce auth before any other processing.
 
-    - No key presented  -> 401
-    - Wrong/invalid     -> 403
-
-    Auth can be satisfied by:
-      - Shared key (PPA_SHARED_KEY) via X-PPA-Key / Bearer
-      - OR license_key + site_url activation (Option A) via views.utils._ppa_key_ok()  # CHANGED:
+    - No auth presented -> 401
+    - Auth presented but invalid -> 403
     """
-    presented = _extract_auth(request)
-    expected = _get_shared_key()
-
-    # Fast-path: shared-key auth.                                               # CHANGED:
-    if presented and expected and presented == expected:  # CHANGED:
+    if getattr(request, "_ppa_authed", False):  # CHANGED:
         return None  # CHANGED:
 
-    # Option A: license auth via utils._ppa_key_ok().                           # CHANGED:
-    if _ppa_option_a_ok(request):  # CHANGED:
-        _inject_shared_key_if_present(request)  # CHANGED:
-        return None  # CHANGED:
-
-    # Choose 401 vs 403.                                                        # CHANGED:
-    if not presented and not _body_mentions_license_fields(request):  # CHANGED:
+    if not _has_any_auth_material(request):  # CHANGED:
         return JsonResponse(_error_payload("missing_key", "missing authentication key"), status=401)  # CHANGED:
 
-    return JsonResponse(_error_payload("forbidden", "invalid authentication key"), status=403)  # CHANGED:
+    if not _ppa_auth_ok(request):  # CHANGED:
+        return JsonResponse(_error_payload("forbidden", "invalid authentication key"), status=403)  # CHANGED:
+
+    return None  # CHANGED:
 
 
 def _normalize(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -316,7 +276,7 @@ _rate_buckets: Dict[Tuple[str, str], deque] = defaultdict(deque)
 def _rate_limited(view_label: str):
     """
     Decorator to apply a tiny token-bucket style limit per (client_addr, view_label).
-    **Now counts only authenticated requests**; unauthenticated requests bypass the bucket
+    **Now counts only authenticated hits**; unauthenticated requests bypass the bucket
     (they still receive 401/403 from the view itself).                                     # CHANGED:
     """
 
