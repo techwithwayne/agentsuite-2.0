@@ -10,6 +10,7 @@ PostPress AI — Django Admin Registrations
            • Add License admin listing with SAFE masked key display (no full key exposure). # CHANGED:
            • Forward-compatible: Activation admin auto-registers when model exists.         # CHANGED:
 2026-01-10 • Register Customer Command Center models + Plan model so they show in admin.   # CHANGED:
+2026-01-10 • Add EmailLog admin + inline under Customer for license-email visibility.      # CHANGED:
 """
 
 from django.contrib import admin  # CHANGED:
@@ -43,6 +44,12 @@ try:  # CHANGED:
     from .models.plan import Plan  # CHANGED:
 except Exception:  # CHANGED:
     Plan = None  # type: ignore  # CHANGED:
+
+# CHANGED: Email log model
+try:  # CHANGED:
+    from .models.email_log import EmailLog  # CHANGED:
+except Exception:  # CHANGED:
+    EmailLog = None  # type: ignore  # CHANGED:
 
 
 # --------------------------------------------------------------------------------------
@@ -125,6 +132,22 @@ if Plan is not None:  # CHANGED:
 
 
 # --------------------------------------------------------------------------------------
+# EmailLog (shows sent/failed license emails)
+# --------------------------------------------------------------------------------------
+
+
+if EmailLog is not None:  # CHANGED:
+
+    @admin.register(EmailLog)  # CHANGED:
+    class EmailLogAdmin(admin.ModelAdmin):  # CHANGED:
+        list_display = ("id", "email_type", "to_email", "subject", "status", "created_at", "sent_at")  # CHANGED:
+        list_filter = ("email_type", "status", "provider")  # CHANGED:
+        search_fields = ("to_email", "subject", "provider_message_id")  # CHANGED:
+        ordering = ("-created_at",)  # CHANGED:
+        readonly_fields = ("created_at", "sent_at")  # CHANGED:
+
+
+# --------------------------------------------------------------------------------------
 # Customer Command Center
 # --------------------------------------------------------------------------------------
 
@@ -150,6 +173,18 @@ if CustomerNote is not None:  # CHANGED:
         show_change_link = True  # CHANGED:
 
 
+# CHANGED: Inline EmailLog under Customer so you can see "Welcome..." delivery history.
+if EmailLog is not None:  # CHANGED:
+
+    class EmailLogInline(admin.TabularInline):  # CHANGED:
+        model = EmailLog  # CHANGED:
+        extra = 0  # CHANGED:
+        fields = ("email_type", "to_email", "subject", "status", "created_at", "sent_at")  # CHANGED:
+        readonly_fields = ("to_email", "subject", "created_at", "sent_at")  # CHANGED:
+        show_change_link = True  # CHANGED:
+        can_delete = False  # CHANGED:
+
+
 if Customer is not None:  # CHANGED:
 
     @admin.register(Customer)  # CHANGED:
@@ -162,5 +197,7 @@ if Customer is not None:  # CHANGED:
         inlines = []  # CHANGED:
         if CustomerSite is not None:  # CHANGED:
             inlines.append(CustomerSiteInline)  # CHANGED:
+        if EmailLog is not None:  # CHANGED:
+            inlines.append(EmailLogInline)  # CHANGED:
         if CustomerNote is not None:  # CHANGED:
             inlines.append(CustomerNoteInline)  # CHANGED:
