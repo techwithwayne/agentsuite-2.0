@@ -29,6 +29,11 @@ ENV VARS
 - ADD: Email License key to purchaser (transactional).                                      # CHANGED:
 - KEEP: Defensive mapping to existing License model fields (no guessing required fields).    # CHANGED:
 - NOTE: Tier naming normalized to "Tyler" (product_tier metadata still allowed).             # CHANGED:
+
+2026-01-10.1  # CHANGED:
+- ADD: Command Center wiring (Customer + Plan + Subscription + Entitlement + EmailLog).      # CHANGED:
+- ADD: Idempotent email send (Stripe retries won’t spam).                                   # CHANGED:
+- KEEP: Existing License enforcement/shape untouched.                                       # CHANGED:
 """
 
 from __future__ import annotations
@@ -48,9 +53,17 @@ from postpress_ai.license_keys import generate_unique_license_key  # CHANGED:
 from postpress_ai.models.license import License  # CHANGED:
 from postpress_ai.models.order import Order
 
+# CHANGED: Command Center models
+from postpress_ai.models.customer import Customer  # CHANGED:
+from postpress_ai.models.plan import Plan, seed_default_plans  # CHANGED:
+from postpress_ai.models.subscription import Subscription  # CHANGED:
+from postpress_ai.models.entitlement import Entitlement  # CHANGED:
+from postpress_ai.models.email_log import EmailLog  # CHANGED:
+
 log = logging.getLogger("webdoctor")
 
-WEBHOOK_VER = "stripe-webhook.v2025-12-26.3"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-01-10.1"  # CHANGED:
+LICENSE_EMAIL_SUBJECT = "Welcome to PostPress AI — here’s your key"  # CHANGED:
 
 
 def _json_response(
@@ -140,6 +153,262 @@ def _mask_key(k: str) -> str:  # CHANGED:
     return f"{k[:4]}…{k[-4:]}"  # CHANGED:
 
 
+# --------------------------------------------------------------------------------------
+# CHANGED: Command Center helpers (Customer/Plan/Subscription/Entitlement/EmailLog)
+# --------------------------------------------------------------------------------------
+
+
+def _split_name(full_name: str) -> tuple[str, str]:  # CHANGED:
+    full_name = (full_name or "").strip()  # CHANGED:
+    if not full_name:  # CHANGED:
+        return "", ""  # CHANGED:
+    parts = full_name.split()  # CHANGED:
+    first = parts[0] if parts else ""  # CHANGED:
+    last = " ".join(parts[1:]) if len(parts) > 1 else ""  # CHANGED:
+    return first, last  # CHANGED:
+
+
+def _upsert_customer_from_order(order: Order) -> Customer:  # CHANGED:
+    """
+    Create/update Customer using Order identity fields.
+    """
+    email = (order.purchaser_email or "").strip().lower()  # CHANGED:
+    if not email:  # CHANGED:
+        raise RuntimeError("Order missing purchaser_email; cannot upsert Customer.")  # CHANGED:
+
+    first, last = _split_name(order.purchaser_name or "")  # CHANGED:
+
+    customer, _created = Customer.objects.update_or_create(  # CHANGED:
+        email=email,
+        defaults={
+            "first_name": first,
+            "last_name": last,
+            "source": "stripe_webhook",
+        },
+    )
+    # Touch last_seen_at (support visibility)  # CHANGED:
+    try:  # CHANGED:
+        customer.last_seen_at = getattr(order, "updated_at", None)  # CHANGED:
+        customer.save(update_fields=["last_seen_at"])  # CHANGED:
+    except Exception:
+        pass  # CHANGED:
+    return customer  # CHANGED:
+
+
+def _resolve_plan_code(metadata: dict[str, Any]) -> str:  # CHANGED:
+    """
+    Best-effort plan selection from Stripe metadata.
+    We keep "tier" normalized to Tyler, but plan selection can still vary.
+
+    Supported metadata keys (first match wins):
+    - plan_code
+    - plan
+    - ppa_plan
+    - product_tier
+    - tier
+
+    Defaults to "solo".
+    """
+    md = metadata or {}  # CHANGED:
+    for k in ["plan_code", "plan", "ppa_plan", "product_tier", "tier"]:  # CHANGED:
+        v = (md.get(k) or "").strip().lower()  # CHANGED:
+        if v:
+            return v  # CHANGED:
+    return "solo"  # CHANGED:
+
+
+def _resolve_plan(plan_code: str) -> Plan:  # CHANGED:
+    """
+    Map plan_code to a Plan row. Seed defaults if missing.
+    """
+    seed_default_plans()  # CHANGED:
+    code = (plan_code or "").strip().lower() or "solo"  # CHANGED:
+
+    # Normalize common aliases  # CHANGED:
+    alias = {  # CHANGED:
+        "unlimited": "agency_unlimited_byo",
+        "agency_unlimited": "agency_unlimited_byo",
+        "agency-byo": "agency_unlimited_byo",
+        "byo": "agency_unlimited_byo",
+    }.get(code)
+    if alias:
+        code = alias  # CHANGED:
+
+    plan = Plan.objects.filter(code=code).first()  # CHANGED:
+    if plan:
+        return plan  # CHANGED:
+
+    # Fallback: keep fulfillment moving  # CHANGED:
+    return Plan.objects.get(code="solo")  # CHANGED:
+
+
+def _upsert_subscription_for_session(  # CHANGED:
+    *,
+    customer: Customer,
+    plan: Plan,
+    session_obj: dict[str, Any],
+) -> Subscription:
+    """
+    Create/update Subscription record idempotently by checkout session id.
+    Even if mode='payment' (one-time), this remains useful as a command center record.
+    """
+    session_id = _safe_str(session_obj.get("id"))  # CHANGED:
+    stripe_customer_id = _safe_str(session_obj.get("customer"))  # CHANGED:
+    stripe_subscription_id = _safe_str(session_obj.get("subscription"))  # CHANGED:
+    stripe_payment_intent_id = _safe_str(session_obj.get("payment_intent"))  # CHANGED:
+
+    existing = Subscription.objects.filter(stripe_checkout_session_id=session_id).first()  # CHANGED:
+    if existing:  # CHANGED:
+        dirty = False  # CHANGED:
+        if existing.customer_id != customer.id:
+            existing.customer = customer
+            dirty = True
+        if existing.plan_id != plan.id:
+            existing.plan = plan
+            dirty = True
+        if stripe_customer_id and existing.stripe_customer_id != stripe_customer_id:
+            existing.stripe_customer_id = stripe_customer_id
+            dirty = True
+        if stripe_subscription_id and existing.stripe_subscription_id != stripe_subscription_id:
+            existing.stripe_subscription_id = stripe_subscription_id
+            dirty = True
+        if stripe_payment_intent_id and existing.stripe_payment_intent_id != stripe_payment_intent_id:
+            existing.stripe_payment_intent_id = stripe_payment_intent_id
+            dirty = True
+        if existing.status != Subscription.STATUS_ACTIVE:
+            existing.status = Subscription.STATUS_ACTIVE
+            dirty = True
+        if dirty:
+            existing.save()
+        return existing  # CHANGED:
+
+    return Subscription.objects.create(  # CHANGED:
+        customer=customer,
+        plan=plan,
+        status=Subscription.STATUS_ACTIVE,
+        stripe_customer_id=stripe_customer_id or "",
+        stripe_subscription_id=stripe_subscription_id or "",
+        stripe_payment_intent_id=stripe_payment_intent_id or "",
+        stripe_checkout_session_id=session_id or "",
+        meta={},
+    )
+
+
+def _ensure_entitlement(  # CHANGED:
+    *,
+    customer: Customer,
+    plan: Plan,
+    lic: License,
+    sub: Subscription,
+) -> Entitlement:
+    """
+    Create entitlement idempotently (one per license).
+    """
+    existing = Entitlement.objects.filter(license=lic).first()  # CHANGED:
+    if existing:
+        dirty = False  # CHANGED:
+        if existing.customer_id != customer.id:
+            existing.customer = customer
+            dirty = True
+        if existing.plan_id != plan.id:
+            existing.plan = plan
+            dirty = True
+        if existing.subscription_id != sub.id:
+            existing.subscription = sub
+            dirty = True
+        if existing.status != Entitlement.STATUS_ACTIVE:
+            existing.status = Entitlement.STATUS_ACTIVE
+            dirty = True
+        if dirty:
+            existing.save()
+        return existing  # CHANGED:
+
+    return Entitlement.objects.create(  # CHANGED:
+        customer=customer,
+        plan=plan,
+        subscription=sub,
+        license=lic,
+        status=Entitlement.STATUS_ACTIVE,
+        meta={},
+    )
+
+
+def _email_already_sent(event_id: str, to_email: str) -> bool:  # CHANGED:
+    """
+    Prevent duplicate email sends on Stripe webhook retries.
+    """
+    event_id = (event_id or "").strip()  # CHANGED:
+    to_email = (to_email or "").strip().lower()  # CHANGED:
+    if not event_id or not to_email:
+        return False  # CHANGED:
+    return EmailLog.objects.filter(
+        email_type=EmailLog.TYPE_LICENSE_KEY,
+        to_email=to_email,
+        status=EmailLog.STATUS_SENT,
+        meta__stripe_event_id=event_id,
+    ).exists()  # CHANGED:
+
+
+def _send_license_email_with_log(  # CHANGED:
+    *,
+    event_id: str,
+    order: Order,
+    lic: License,
+    license_key: str,
+    product_tier: str,
+    customer: Optional[Customer] = None,
+) -> bool:
+    """
+    Send license email once (idempotent), with EmailLog audit trail.
+    Returns True if email was sent OR previously sent for this event.
+    """
+    to_email = (order.purchaser_email or "").strip().lower()  # CHANGED:
+    if not to_email:
+        return False  # CHANGED:
+
+    if _email_already_sent(event_id, to_email):  # CHANGED:
+        return True  # CHANGED: already sent on a previous retry
+
+    elog = EmailLog.objects.create(  # CHANGED:
+        customer=customer,
+        to_email=to_email,
+        subject=LICENSE_EMAIL_SUBJECT,
+        email_type=EmailLog.TYPE_LICENSE_KEY,
+        provider="sendgrid",
+        status=EmailLog.STATUS_QUEUED,
+        meta={
+            "stripe_event_id": event_id,
+            "order_id": getattr(order, "id", None),
+            "license_id": getattr(lic, "id", None),
+            "license_last4": (license_key or "")[-4:],
+            "product_tier": product_tier,
+        },
+    )
+
+    # Keep compatibility with your existing send_license_key_email signature.
+    # If send_license_key_email supports subject in the future, we pass it; if not, we fallback.  # CHANGED:
+    kwargs = {  # CHANGED:
+        "to_email": to_email,
+        "license_key": license_key,
+        "purchaser_name": order.purchaser_name or None,
+        "product_tier": product_tier,
+        "subject": LICENSE_EMAIL_SUBJECT,  # CHANGED:
+    }
+
+    try:  # CHANGED:
+        try:
+            send_license_key_email(**kwargs)  # CHANGED:
+        except TypeError:
+            kwargs.pop("subject", None)  # CHANGED:
+            send_license_key_email(**kwargs)  # CHANGED:
+
+        elog.mark_sent()  # CHANGED:
+        return True  # CHANGED:
+    except Exception as e:
+        elog.mark_failed(_safe_str(e))  # CHANGED:
+        raise  # CHANGED: Stripe should retry during build/wiring phase
+
+
 def _issue_or_get_license_for_order(  # CHANGED:
     *,
     order: Order,
@@ -224,10 +493,10 @@ def _handle_checkout_session_completed(event: Dict[str, Any]) -> Dict[str, Any]:
     - Persist Order (idempotent)
     - Issue License (idempotent)
     - Email License key to purchaser (transactional)
+    - Command Center wiring (Customer/Plan/Subscription/Entitlement/EmailLog)
 
     Still intentionally deferred (later):
     - Checkout session creation
-    - Webhook → richer DB persistence / reporting
     """
     obj = (event.get("data") or {}).get("object") or {}
 
@@ -250,17 +519,20 @@ def _handle_checkout_session_completed(event: Dict[str, Any]) -> Dict[str, Any]:
     metadata = obj.get("metadata") or {}
 
     # Tier naming: EVERYTHING is Tyler now.  # CHANGED:
-    # We still accept product metadata for future segmentation, but the top-level tier is "Tyler".  # CHANGED:
-    meta_tier = metadata.get("product_tier") or metadata.get("tier") or ""  # CHANGED:
-    tier = "Tyler" if not _safe_str(meta_tier).strip() else "Tyler"  # CHANGED: (hard normalized)
+    # We still accept metadata for plan selection, but "tier" itself is normalized.  # CHANGED:
+    _meta_tier = metadata.get("product_tier") or metadata.get("tier") or ""  # CHANGED:
+    tier = "Tyler"  # CHANGED: locked normalization
+
+    plan_code = _resolve_plan_code(metadata)  # CHANGED:
 
     log.info(
-        "PPA Stripe webhook: checkout.session.completed session_id=%s payment_status=%s mode=%s email=%s tier=%s amount_total=%s currency=%s",
+        "PPA Stripe webhook: checkout.session.completed session_id=%s payment_status=%s mode=%s email=%s tier=%s plan_code=%s amount_total=%s currency=%s",
         _safe_str(session_id),
         _safe_str(payment_status),
         _safe_str(mode),
         _safe_str(customer_email),
         _safe_str(tier),
+        _safe_str(plan_code),
         _safe_str(amount_total),
         _safe_str(currency),
     )
@@ -286,7 +558,7 @@ def _handle_checkout_session_completed(event: Dict[str, Any]) -> Dict[str, Any]:
                 "status": normalized_status,
                 "raw_session": raw_session or None,
                 "raw_event": raw_event or None,
-                "notes": (f"tier={_safe_str(tier)}" if tier else None),
+                "notes": (f"tier={_safe_str(tier)} plan_code={_safe_str(plan_code)}" if tier else None),
             },
         )
 
@@ -330,7 +602,7 @@ def _handle_checkout_session_completed(event: Dict[str, Any]) -> Dict[str, Any]:
                 dirty = True
 
             if tier:
-                tier_note = f"tier={_safe_str(tier)}"
+                tier_note = f"tier={_safe_str(tier)} plan_code={_safe_str(plan_code)}"
                 if not order.notes:
                     order.notes = tier_note
                     dirty = True
@@ -346,19 +618,31 @@ def _handle_checkout_session_completed(event: Dict[str, Any]) -> Dict[str, Any]:
             order=order, session_obj=obj, tier=tier  # CHANGED:
         )  # CHANGED:
 
-        # ---- Email (transactional) ----
+        # ---- Command Center wiring (idempotent-ish) ----
+        customer: Optional[Customer] = None  # CHANGED:
+        sub: Optional[Subscription] = None  # CHANGED:
+        ent: Optional[Entitlement] = None  # CHANGED:
+
+        if (order.purchaser_email or "").strip():  # CHANGED:
+            customer = _upsert_customer_from_order(order)  # CHANGED:
+            plan = _resolve_plan(plan_code)  # CHANGED:
+            sub = _upsert_subscription_for_session(customer=customer, plan=plan, session_obj=obj)  # CHANGED:
+            ent = _ensure_entitlement(customer=customer, plan=plan, lic=lic, sub=sub)  # CHANGED:
+
+        # ---- Email (transactional + idempotent + logged) ----
         emailed = False  # CHANGED:
         if (order.purchaser_email or "").strip():  # CHANGED:
-            # If email sending fails, we raise and return 500 so Stripe retries (during this wiring phase).  # CHANGED:
-            send_license_key_email(  # CHANGED:
-                to_email=order.purchaser_email or "",  # CHANGED:
-                license_key=license_key,  # CHANGED:
-                purchaser_name=order.purchaser_name or None,  # CHANGED:
-                product_tier="Tyler",  # CHANGED:
+            emailed = _send_license_email_with_log(  # CHANGED:
+                event_id=event_id,
+                order=order,
+                lic=lic,
+                license_key=license_key,
+                product_tier="Tyler",
+                customer=customer,
             )  # CHANGED:
-            emailed = True  # CHANGED:
-            # Mark order fulfilled once the license is emailed.  # CHANGED:
-            if order.status != "fulfilled":  # CHANGED:
+
+            # Mark order fulfilled once the license is emailed (or confirmed already emailed).  # CHANGED:
+            if emailed and order.status != "fulfilled":  # CHANGED:
                 order.status = "fulfilled"  # CHANGED:
                 order.save(update_fields=["status", "updated_at"])  # CHANGED:
         else:
@@ -368,11 +652,11 @@ def _handle_checkout_session_completed(event: Dict[str, Any]) -> Dict[str, Any]:
                 order.save(update_fields=["status", "updated_at"])  # CHANGED:
 
     log.info(  # CHANGED:
-        "PPA Stripe webhook: license=%s created=%s emailed=%s key=%s",  # CHANGED:
-        getattr(lic, "id", None),  # CHANGED:
-        bool(created_license),  # CHANGED:
-        bool(emailed),  # CHANGED:
-        _mask_key(_safe_str(license_key)),  # CHANGED:
+        "PPA Stripe webhook: license=%s created=%s emailed=%s key=%s",
+        getattr(lic, "id", None),
+        bool(created_license),
+        bool(emailed),
+        _mask_key(_safe_str(license_key)),
     )  # CHANGED:
 
     return {
@@ -381,13 +665,14 @@ def _handle_checkout_session_completed(event: Dict[str, Any]) -> Dict[str, Any]:
         "payment_status": payment_status,
         "email": customer_email,
         "tier": "Tyler",
+        "plan_code": plan_code,  # CHANGED:
         "order_db_id": order.id,
         "order_created": bool(created_order),
         "order_status": order.status,
         "license_db_id": getattr(lic, "id", None),
         "license_created": bool(created_license),
         "license_emailed": bool(emailed),
-        "license_key_masked": _mask_key(_safe_str(license_key)),  # CHANGED:
+        "license_key_masked": _mask_key(_safe_str(license_key)),
     }
 
 
