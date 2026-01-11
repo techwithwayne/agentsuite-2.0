@@ -15,6 +15,8 @@ Design rules:
 - Link to Customer when possible.
 
 CHANGE LOG
+- 2026-01-11: ADD DB-enforced idempotency: stripe_event_id field + unique constraint
+             on (stripe_event_id, to_email). Keep meta['stripe_event_id'] for audit.  # CHANGED:
 - 2026-01-10: Create EmailLog model for Command Center visibility.  # CHANGED:
 """
 
@@ -39,7 +41,6 @@ class EmailLog(models.Model):
     """
 
     # Link to customer when available.
-    # If Customer import failed (shouldn't), we still allow logs without FK.
     customer = models.ForeignKey(  # CHANGED:
         "postpress_ai.Customer",
         on_delete=models.SET_NULL,
@@ -51,6 +52,18 @@ class EmailLog(models.Model):
     # Core routing
     to_email = models.EmailField()  # CHANGED:
     subject = models.CharField(max_length=255)  # CHANGED:
+
+    # Stripe idempotency (DB-enforced)
+    # NOTE:
+    # - We store this as a real column so idempotency does NOT depend on JSON lookups.
+    # - Allow NULL so legacy rows (or non-stripe emails) don’t violate uniqueness.
+    stripe_event_id = models.CharField(  # CHANGED:
+        max_length=255,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Stripe event id (evt_...) used to prevent duplicate email sends on webhook retries.",
+    )
 
     # What kind of email was this?
     TYPE_LICENSE_KEY = "license_key"
@@ -91,6 +104,7 @@ class EmailLog(models.Model):
     error_message = models.TextField(blank=True, default="")  # CHANGED:
 
     # Minimal context (safe): store masked key details, plan code, site_url, etc.
+    # Keep stripe_event_id here too for audit/back-compat, but DO NOT rely on it for uniqueness.
     meta = models.JSONField(default=dict, blank=True)  # CHANGED:
 
     created_at = models.DateTimeField(default=timezone.now, editable=False)  # CHANGED:
@@ -98,11 +112,17 @@ class EmailLog(models.Model):
 
     class Meta:
         ordering = ["-created_at"]  # CHANGED:
+        constraints = [  # CHANGED:
+            models.UniqueConstraint(
+                fields=["stripe_event_id", "to_email"],
+                name="uniq_email_event_per_recipient",
+            )
+        ]
 
     def __str__(self) -> str:  # CHANGED:
         return f"{self.email_type} → {self.to_email} ({self.status})"
 
-    # Convenience helpers (optional but nice)
+    # Convenience helpers
     def mark_sent(self, provider_message_id: str = "") -> None:
         self.status = self.STATUS_SENT  # CHANGED:
         if provider_message_id:
