@@ -14,15 +14,16 @@ LOCKED INTENT
 - Do NOT redesign Early Bird/license plumbing.
 
 ENV VARS (LOCKED BEHAVIOR)
-- PPA_STRIPE_MODE: "live" | "test"  (default: live)                         # CHANGED:
-- STRIPE_LIVE_WEBHOOK_SECRET (preferred when mode=live)                      # CHANGED:
-- STRIPE_TEST_WEBHOOK_SECRET (preferred when mode=test)                      # CHANGED:
-- STRIPE_WEBHOOK_SECRET (fallback for legacy deployments)                     # CHANGED:
+- PPA_STRIPE_MODE: "live" | "test"  (default: live)                          # CHANGED:
+- STRIPE_LIVE_WEBHOOK_SECRET (preferred when mode=live)                       # CHANGED:
+- STRIPE_TEST_WEBHOOK_SECRET (preferred when mode=test)                       # CHANGED:
+- STRIPE_WEBHOOK_SECRET (fallback for legacy deployments)                      # CHANGED:
 
 CHANGE LOG
+- 2026-01-11: FIX: Remove stray CHANGE LOG text that got pasted into runtime code (syntax breaker).  # CHANGED:
 - 2026-01-11: ADD mode-aware webhook secret selection via PPA_STRIPE_MODE and
              STRIPE_{LIVE|TEST}_WEBHOOK_SECRET with fallback STRIPE_WEBHOOK_SECRET.
-             Log mode + env var name only; never log secret.                  # CHANGED:
+             Log mode + env var name only; never log secret.                   # CHANGED:
 - 2026-01-11: HARDEN EmailLog idempotency: lookup pre-migration safe (no column assumption)
              + IntegrityError guard for concurrent deliveries when unique constraint exists. # CHANGED:
 - 2026-01-10: Webhook persists Order + License first, then Command Center wiring, then EmailLog + email.
@@ -45,7 +46,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_VER = "stripe-webhook.v2026-01-11.1"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-01-11.2"  # CHANGED:
 
 
 # ---------------------------
@@ -118,7 +119,6 @@ def _normalize_tier(raw: Optional[str]) -> str:
     s = (raw or "").strip().lower()
     if not s:
         return "tyler"
-    # Common variants
     if s in {"tyler", "early bird tyler", "tyler early bird", "solo", "earlybird", "early-bird"}:
         return "tyler"
     return s
@@ -159,7 +159,6 @@ def _email_log_lookup_locked(to_email: str, stripe_event_id: str):  # CHANGED:
 
     EmailLog = _model("postpress_ai", "EmailLog")  # CHANGED:
 
-    has_col = False  # CHANGED:
     try:  # CHANGED:
         EmailLog._meta.get_field("stripe_event_id")  # CHANGED:
         has_col = True  # CHANGED:
@@ -270,7 +269,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     event_type = (event or {}).get("type", "")
 
     if event_type != "checkout.session.completed":
-        # Acknowledge unhandled events (Stripe expects 2xx).
         return JsonResponse({"ok": True, "ver": WEBHOOK_VER, "data": {"event": event_type, "handled": False}})
 
     session = ((event or {}).get("data") or {}).get("object") or {}
@@ -293,18 +291,17 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     license_created = False
 
     # Persist minimal snapshots for audit/debug (not secrets)
-    raw_event_safe = None
-    raw_session_safe = None
     try:
         raw_event_safe = json.loads(payload.decode("utf-8"))
     except Exception:
         raw_event_safe = {"id": event_id, "type": event_type}
 
-    # Session already a dict-ish; ensure JSON serializable
     try:
         raw_session_safe = json.loads(json.dumps(session))
     except Exception:
         raw_session_safe = {"id": session_id, "payment_status": payment_status}
+
+    license_obj = None  # CHANGED: ensure exists after atomic block for later email section
 
     with transaction.atomic():
         # --- Order upsert (idempotent by stripe_session_id) ---
@@ -316,7 +313,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             )
             order_created = bool(created)
         else:
-            # Fallback: try a generic get_or_create if field names differ
             order = Order.objects.order_by("-id").first()
 
         if order is not None:
@@ -329,11 +325,9 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             try:
                 order.save()
             except Exception:
-                # Keep webhook stable even if optional fields fail
                 logger.exception("PPA:order_save_failed session=%s", session_id)
 
         # --- License upsert (idempotent by stripe_session_id) ---
-        license_obj = None
         if _has_field(License, "stripe_session_id"):
             license_obj, created = License.objects.get_or_create(  # type: ignore
                 stripe_session_id=session_id,
@@ -341,7 +335,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             )
             license_created = bool(created)
         else:
-            # If License links to Order, try that; else just grab the latest
             if _has_field(License, "order_id") and order is not None:
                 license_obj, created = License.objects.get_or_create(  # type: ignore
                     order=order,
@@ -351,13 +344,11 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             else:
                 license_obj = License.objects.order_by("-id").first()
 
-        # Set license shape defensively
         if license_obj is not None:
             _set_if_field(license_obj, "email", customer_email)
             _set_if_field(license_obj, "tier", tier)
             _set_if_field(license_obj, "plan_code", plan_code)
 
-            # Ensure Tyler max_sites=3 if present; plan model can override
             Plan = _model("postpress_ai", "Plan")
             plan_obj = None
             try:
@@ -369,12 +360,10 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             max_sites = _derive_max_sites_from_plan(plan_obj, fallback=3 if plan_code == "tyler" else 1)
             _set_if_field(license_obj, "max_sites", max_sites)
 
-            # If model has a status/active flag, keep it consistent
             if payment_status == "paid":
                 _set_if_field(license_obj, "status", "active")
                 _set_if_field(license_obj, "is_active", True)
 
-            # If License links to Order, keep it
             if order is not None:
                 _set_if_field(license_obj, "order", order)
 
@@ -384,7 +373,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 logger.exception("PPA:license_save_failed session=%s", session_id)
 
     # Command Center wiring happens AFTER Order + License (LOCKED ordering)
-    # Upserts are defensive: if your schema differs, we try not to explode.
     customer_db_id = None
     plan_db_id = None
     subscription_db_id = None
@@ -396,7 +384,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
         Subscription = _model("postpress_ai", "Subscription")
         Entitlement = _model("postpress_ai", "Entitlement")
 
-        # Customer upsert (email as natural key)
         customer_obj = None
         if customer_email and _has_field(Customer, "email"):
             customer_obj, _ = Customer.objects.get_or_create(email=customer_email, defaults={})  # type: ignore
@@ -407,7 +394,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             except Exception:
                 pass
 
-        # Plan upsert (code as natural key)
         plan_obj = None
         if _has_field(Plan, "code"):
             plan_obj, _ = Plan.objects.get_or_create(code=plan_code, defaults={})  # type: ignore
@@ -420,7 +406,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             except Exception:
                 pass
 
-        # Subscription upsert (best-effort)
         subscription_obj = None
         if customer_obj is not None and plan_obj is not None:
             if _has_field(Subscription, "customer") and _has_field(Subscription, "plan"):
@@ -436,7 +421,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 except Exception:
                     pass
 
-        # Entitlement upsert (best-effort)
         if subscription_obj is not None and _has_field(Entitlement, "subscription"):
             entitlement_obj, _ = Entitlement.objects.get_or_create(subscription=subscription_obj, defaults={})  # type: ignore
             entitlement_db_id = getattr(entitlement_obj, "id", None)
@@ -447,41 +431,63 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             except Exception:
                 pass
 
-        # Link EmailLog to Customer later when we create it (if possible)
-
     except Exception:
         logger.exception("PPA:command_center_wiring_failed session=%s", session_id)
 
-    # Email delivery (idempotent on Stripe retries)
-    # 1) Check existing
-    if customer_email and event_id:
-        existing = _email_log_lookup_locked(to_email=customer_email, stripe_event_id=event_id)  # CHANGED:
-        if existing:
-            return JsonResponse(
-                {
-                    "ok": True,
-                    "ver": WEBHOOK_VER,
-                    "data": {
-                        "event": event_type,
-                        "session_id": session_id,
-                        "payment_status": payment_status,
-                        "email": customer_email,
-                        "tier": tier.title() if tier else tier,
-                        "plan_code": plan_code,
-                        "order_created": order_created,
-                        "license_created": license_created,
-                        "license_emailed": True,
-                        "email_skipped": True,
-                        "email_reason": "EmailLog exists",
-                        "customer_db_id": customer_db_id,
-                        "plan_db_id": plan_db_id,
-                        "subscription_db_id": subscription_db_id,
-                        "entitlement_db_id": entitlement_db_id,
-                    },
-                }
-            )
+    # If we don't have the minimum for email, still return OK (Stripe wants 2xx).
+    if not customer_email or not event_id:
+        return JsonResponse(
+            {
+                "ok": True,
+                "ver": WEBHOOK_VER,
+                "data": {
+                    "event": event_type,
+                    "session_id": session_id,
+                    "payment_status": payment_status,
+                    "email": customer_email,
+                    "tier": tier.title() if tier else tier,
+                    "plan_code": plan_code,
+                    "order_created": order_created,
+                    "license_created": license_created,
+                    "license_emailed": False,
+                    "email_skipped": True,
+                    "email_reason": "missing_email_or_event_id",
+                    "customer_db_id": customer_db_id,
+                    "plan_db_id": plan_db_id,
+                    "subscription_db_id": subscription_db_id,
+                    "entitlement_db_id": entitlement_db_id,
+                },
+            }
+        )
 
-    # 2) Create EmailLog row first (winner sends)
+    # Email delivery (idempotent on Stripe retries)
+    existing = _email_log_lookup_locked(to_email=customer_email, stripe_event_id=event_id)  # CHANGED:
+    if existing:
+        return JsonResponse(
+            {
+                "ok": True,
+                "ver": WEBHOOK_VER,
+                "data": {
+                    "event": event_type,
+                    "session_id": session_id,
+                    "payment_status": payment_status,
+                    "email": customer_email,
+                    "tier": tier.title() if tier else tier,
+                    "plan_code": plan_code,
+                    "order_created": order_created,
+                    "license_created": license_created,
+                    "license_emailed": True,
+                    "email_skipped": True,
+                    "email_reason": "EmailLog exists",
+                    "customer_db_id": customer_db_id,
+                    "plan_db_id": plan_db_id,
+                    "subscription_db_id": subscription_db_id,
+                    "entitlement_db_id": entitlement_db_id,
+                },
+            }
+        )
+
+    # Create EmailLog row first (winner sends)
     EmailLog = _model("postpress_ai", "EmailLog")
     elog = EmailLog()  # type: ignore
 
@@ -493,26 +499,26 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
         pass
 
     _set_if_field(elog, "to_email", customer_email)
-    _set_if_field(elog, "subject", "Welcome to PostPress AI — here’s your key")  # audit-only; emailing.py owns the actual subject
+    _set_if_field(elog, "subject", "Welcome to PostPress AI — here’s your key")  # audit-only; emailing.py owns actual subject
     _set_if_field(elog, "email_type", getattr(EmailLog, "TYPE_LICENSE_KEY", "license_key"))
     _set_if_field(elog, "status", getattr(EmailLog, "STATUS_QUEUED", "queued"))
     _set_if_field(elog, "provider", "sendgrid")
     _set_if_field(elog, "created_at", timezone.now())
 
     # Safe meta (do NOT store full license keys)
-    meta: Dict[str, Any] = {}
-    meta["stripe_event_id"] = event_id
-    meta["stripe_session_id"] = session_id
-    meta["plan_code"] = plan_code
-    meta["tier"] = tier
-    meta["payment_status"] = payment_status
+    meta: Dict[str, Any] = {
+        "stripe_event_id": event_id,
+        "stripe_session_id": session_id,
+        "plan_code": plan_code,
+        "tier": tier,
+        "payment_status": payment_status,
+    }
 
     # Store masked key info for admin visibility
     license_key = ""
     max_sites = 3 if plan_code == "tyler" else 1
-    try:
-        if "license_obj" in locals() and license_obj is not None:
-            # Common field names: key, license_key
+    if license_obj is not None:
+        try:
             if hasattr(license_obj, "key"):
                 license_key = str(getattr(license_obj, "key") or "")
             elif hasattr(license_obj, "license_key"):
@@ -522,27 +528,22 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                     max_sites = int(getattr(license_obj, "max_sites") or max_sites)
                 except Exception:
                     pass
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     meta["license_key_masked"] = _mask_key(license_key)
     meta["max_sites"] = max_sites
 
     _set_if_field(elog, "meta", meta)
 
-    # Also set the new column if it exists (post-migration), without assuming it exists.  # CHANGED:
-    try:  # CHANGED:
-        _set_if_field(elog, "stripe_event_id", event_id)  # CHANGED:
-    except Exception:  # CHANGED:
-        pass  # CHANGED:
+    # Set the new column if it exists (post-migration), without assuming it exists.  # CHANGED:
+    _set_if_field(elog, "stripe_event_id", event_id)  # CHANGED:
 
     try:
-        # DB-level idempotency save (unique constraint may exist)  # CHANGED:
         elog.save()  # CHANGED:
     except IntegrityError:  # CHANGED:
-        # Concurrent delivery already created it. Skip sending.  # CHANGED:
         logger.info("PPA:email_log idempotent hit (IntegrityError) to=%s event=%s", customer_email, event_id)  # CHANGED:
-        return JsonResponse(  # CHANGED:
+        return JsonResponse(
             {
                 "ok": True,
                 "ver": WEBHOOK_VER,
@@ -566,7 +567,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             }
         )
 
-    # 3) Send email
+    # Send email
     provider_msg_id = ""
     try:
         provider_msg_id = _send_license_key_email_best_effort(
@@ -576,7 +577,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             tier=tier,
             max_sites=max_sites,
         )
-        # Mark sent (if helper exists)
         try:
             if hasattr(elog, "mark_sent"):
                 elog.mark_sent(provider_message_id=provider_msg_id or "")
@@ -587,7 +587,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 elog.save(update_fields=["status", "provider_message_id", "sent_at"])
         except Exception:
             pass
-
         license_emailed = True
     except Exception as e:
         logger.exception("PPA:send_email_failed to=%s session=%s", customer_email, session_id)
@@ -602,7 +601,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             pass
         license_emailed = False
 
-    # Stable response (your ops checks depend on this shape)
     return JsonResponse(
         {
             "ok": True,
