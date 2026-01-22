@@ -240,7 +240,9 @@ def _incoming_xhr_header(request) -> str:  # CHANGED:
 # -----------------------------------------------------------------------------
 def _looks_like_html(s: str) -> bool:                                                 # CHANGED:
     s = s or ""                                                                       # CHANGED:
-    return ("<" in s and ">" in s) or s.strip().lower().startswith(("<!doctype", "<html", "<p", "<h", "<ul", "<ol", "<div", "<section"))  # CHANGED:
+    return ("<" in s and ">" in s) or s.strip().lower().startswith(
+        ("<!doctype", "<html", "<p", "<h", "<ul", "<ol", "<div", "<section")
+    )  # CHANGED:
 
 
 def _text_to_html(txt: str) -> str:                                                   # CHANGED:
@@ -630,6 +632,7 @@ def generate(request, *args, **kwargs):  # CHANGED:
 try:
     from .store import store  # type: ignore
 except Exception:  # pragma: no cover
+
     @csrf_exempt  # CHANGED:
     @_rate_limited("store")  # CHANGED:
     def store(request, *args, **kwargs):  # type: ignore
