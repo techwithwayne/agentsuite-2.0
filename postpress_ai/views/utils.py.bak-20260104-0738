@@ -1,0 +1,293 @@
+"""
+Shared utilities for PostPress AI views.
+Extracted to avoid circular imports.
+"""
+
+from __future__ import annotations
+
+# ========= CHANGE LOG =========
+# 2026-01-04: OPTION A: _ppa_key_ok now supports license_key + site_url auth for protected endpoints
+#            (customers should NOT set shared key per site). Shared key remains optional/internal.
+#            No endpoint/payload/CORS changes.
+
+import json
+import logging
+import os
+import sys
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
+
+from django.conf import settings
+from django.http import HttpRequest, HttpResponse, JsonResponse
+
+# Constants
+VERSION = "postpress-ai.v2.1-2025-08-14"
+log = logging.getLogger("webdoctor")
+
+
+def _normalize_header_value(v: Optional[str]) -> str:
+    """Trim common wrapper quotes and CR/LF. Do NOT log actual values."""
+    if not v:
+        return ""
+    return v.strip().strip("'").strip('"').replace("\r", "").replace("\n", "")
+
+
+def _is_test_env(request: HttpRequest) -> bool:
+    """Detect Django test client / pytest context."""
+    if any(
+        [
+            any("test" in (arg or "").lower() for arg in sys.argv),
+            "PYTEST_CURRENT_TEST" in os.environ,
+            os.environ.get("DJANGO_TESTING") == "1",
+            os.environ.get("UNITTEST_RUNNING") == "1",
+        ]
+    ):
+        return True
+    host = (request.META.get("HTTP_HOST") or "").lower()
+    srv = (request.META.get("SERVER_NAME") or "").lower()
+    return host == "testserver" or srv == "testserver"
+
+
+def _read_shared_key_env_or_settings() -> str:
+    """
+    Shared key source (internal/proxy path).
+
+    Preferred: os.environ["PPA_SHARED_KEY"] (consistent with licensing endpoints).
+    Fallback: settings.PPA_SHARED_KEY (backwards compatibility for older deployments).
+
+    NEVER log the secret itself; lengths only.
+    """
+    env_val = _normalize_header_value(os.environ.get("PPA_SHARED_KEY", ""))  # CHANGED:
+    if env_val:
+        return env_val  # CHANGED:
+    return _normalize_header_value(getattr(settings, "PPA_SHARED_KEY", ""))  # CHANGED:
+
+
+def _normalize_site_url_strict(raw: str) -> str:
+    """
+    Strict-ish normalizer to match Activation.normalize_site_url when available:
+    - require http(s)
+    - lower-case host
+    - drop path/query/fragment
+    - drop trailing slash
+    - keep port if present
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    try:
+        # Prefer the model normalizer if present (keeps canonical behavior).
+        from postpress_ai.models.activation import Activation  # local import avoids cycles  # CHANGED:
+
+        model_norm = getattr(Activation, "normalize_site_url", None)
+        if callable(model_norm):
+            out = model_norm(raw)
+            return (out or "").strip().rstrip("/")
+    except Exception:
+        # Fall back below.
+        pass
+
+    try:
+        u = urlparse(raw)
+        if u.scheme not in ("http", "https"):
+            return ""
+        if not u.hostname:
+            return ""
+        host = u.hostname.lower()
+        port = f":{u.port}" if u.port else ""
+        return f"{u.scheme}://{host}{port}".rstrip("/")
+    except Exception:
+        return ""
+
+
+def _extract_license_key_and_site(request: HttpRequest) -> Dict[str, str]:
+    """
+    OPTION A: pull license_key + site_url from either JSON body or headers.
+
+    Body keys we support:
+      - license_key
+      - site_url
+
+    Header keys we support (non-breaking helpers):
+      - X-PPA-License, X-PPA-License-Key
+      - X-PPA-Site, X-PPA-Site-Url
+      - Authorization: Bearer <key>  OR  License <key>
+
+    This function never logs secrets.
+    """
+    payload = _parse_json_body(request)  # best-effort ({} on error)
+    lic = (payload.get("license_key") or "").strip()
+    site = (payload.get("site_url") or "").strip()
+
+    # If not in body, try headers (helps WP/PHP proxy variants).
+    if not lic:
+        lic = _normalize_header_value(request.META.get("HTTP_X_PPA_LICENSE", ""))  # CHANGED:
+    if not lic:
+        lic = _normalize_header_value(request.META.get("HTTP_X_PPA_LICENSE_KEY", ""))  # CHANGED:
+
+    if not site:
+        site = _normalize_header_value(request.META.get("HTTP_X_PPA_SITE", ""))  # CHANGED:
+    if not site:
+        site = _normalize_header_value(request.META.get("HTTP_X_PPA_SITE_URL", ""))  # CHANGED:
+
+    # Authorization header support (optional)
+    if not lic:
+        auth = _normalize_header_value(request.META.get("HTTP_AUTHORIZATION", ""))  # CHANGED:
+        if auth.lower().startswith("bearer "):
+            lic = auth.split(" ", 1)[1].strip()
+        elif auth.lower().startswith("license "):
+            lic = auth.split(" ", 1)[1].strip()
+
+    # Hard-trim / safety caps (do not over-validate here; DB lookup stays authoritative).
+    if len(lic) > 200:
+        lic = lic[:200]
+    if len(site) > 400:
+        site = site[:400]
+
+    return {"license_key": lic, "site_url": site}
+
+
+def _license_activation_ok(request: HttpRequest) -> bool:
+    """
+    OPTION A customer auth:
+    Return True if:
+      - license_key exists
+      - license is active
+      - activation exists for normalized site_url
+
+    This enables protected endpoints (generate/store/preview) without X-PPA-Key.
+    """
+    try:
+        data = _extract_license_key_and_site(request)  # CHANGED:
+        license_key = (data.get("license_key") or "").strip()
+        site_url_raw = (data.get("site_url") or "").strip()
+
+        if not license_key or not site_url_raw:
+            return False
+
+        site_url = _normalize_site_url_strict(site_url_raw)
+        if not site_url:
+            return False
+
+        # Local imports to avoid circular imports.
+        from postpress_ai.models.license import License  # CHANGED:
+        from postpress_ai.models.activation import Activation  # CHANGED:
+
+        lic = License.objects.filter(key=license_key).first()
+        if not lic:
+            return False
+
+        # Prefer model method is_active() if present.
+        is_active = getattr(lic, "is_active", None)
+        if callable(is_active):
+            if not is_active():
+                return False
+        else:
+            if str(getattr(lic, "status", "")) != "active":
+                return False
+
+        act = Activation.objects.filter(license=lic, site_url=site_url).first()
+        if not act:
+            return False
+
+        return True
+
+    except Exception:
+        # Fail-closed for auth checks.
+        return False
+
+
+def _ppa_key_ok(request: HttpRequest) -> bool:
+    """
+    Validate request authorization for protected endpoints.
+
+    INTERNAL / PROXY PATH (existing):
+      - X-PPA-Key must match server shared key
+
+    OPTION A CUSTOMER PATH (new):
+      - If shared-key check fails, allow access if license_key + site_url verify
+        against License + Activation records (active + activated).
+    """
+    provided = _normalize_header_value(request.META.get("HTTP_X_PPA_KEY", ""))
+
+    # Shared key: env preferred, settings fallback.
+    expected = _read_shared_key_env_or_settings()  # CHANGED:
+
+    if _is_test_env(request):
+        log.info(
+            "[PPA][auth] test-bypass=True expected_len=%s provided_len=%s",
+            len(expected),
+            len(provided),
+        )
+        return True
+
+    shared_ok = bool(expected) and (provided == expected)
+
+    # Option A fallback (only if shared key did not match)
+    lic_ok = False  # CHANGED:
+    if not shared_ok:
+        lic_ok = _license_activation_ok(request)  # CHANGED:
+
+    ok = bool(shared_ok or lic_ok)  # CHANGED:
+
+    log.info(
+        "[PPA][auth] expected_len=%s provided_len=%s shared_match=%s license_fallback=%s ok=%s origin=%s",
+        len(expected),
+        len(provided),
+        bool(shared_ok),
+        bool(lic_ok),
+        bool(ok),
+        _normalize_header_value(request.META.get("HTTP_ORIGIN")),
+    )
+    return ok
+
+
+def _allowed_origin(origin: Optional[str]) -> Optional[str]:
+    """Reflect CORS only for explicitly allowed origins."""
+    if not origin:
+        return None
+    origin = origin.strip()
+    allowed = set(getattr(settings, "CORS_ALLOWED_ORIGINS", []))
+    allowed.update(getattr(settings, "PPA_ALLOWED_ORIGINS", []))
+    return origin if origin in allowed else None
+
+
+def _with_cors(resp: HttpResponse, request: HttpRequest) -> HttpResponse:
+    """Apply CORS headers when the Origin is explicitly allowed."""
+    origin = _allowed_origin(request.META.get("HTTP_ORIGIN"))
+    if origin:
+        resp["Access-Control-Allow-Origin"] = origin
+        resp["Vary"] = "Origin"
+        resp["Access-Control-Allow-Headers"] = "Content-Type, X-PPA-Key, X-PPA-Install, X-PPA-Version"
+        resp["Access-Control-Allow-Methods"] = "POST, OPTIONS, GET"
+        resp["Access-Control-Allow-Credentials"] = "true"
+    return resp
+
+
+def _json_response(payload: Dict[str, Any], status: int = 200, request: Optional[HttpRequest] = None) -> JsonResponse:
+    """Attach `ver` automatically and reflect CORS if we have a request context."""
+    if "ver" not in payload:
+        payload["ver"] = VERSION
+    resp = JsonResponse(payload, status=status)
+    if request is not None:
+        resp = _with_cors(resp, request)
+    return resp
+
+
+def _parse_json_body(request: HttpRequest) -> Dict[str, Any]:
+    """Best-effort JSON body parse. Returns {} on any error."""
+    try:
+        return json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        return {}
+
+
+def _is_url(val: Optional[str]) -> bool:
+    """Light URL check used by the store normalizer."""
+    try:
+        if not val:
+            return False
+        u = urlparse(val)
+        return bool(u.scheme) and bool(u.netloc)
+    except Exception:
+        return False

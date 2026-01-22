@@ -1,9 +1,12 @@
-# /home/techwithwayne/agentsuite/agentsuite/settings.py
 """
 Agentsuite Django settings
 
 CHANGE LOG
 ----------
+2025-12-26 • PPA EMAIL: Remove hardcoded email constants and wire env-driven provider config.         # CHANGED:
+           • Uses postpress_ai.email_config.get_email_settings() (Mailgun via Anymail).              # CHANGED:
+           • Keeps existing behavior for non-PPA apps; no CORS/auth/Stripe changes.                  # CHANGED:
+
 2025-10-24 • Guard INSTALLED_APPS against missing optional monorepo apps on PA  # CHANGED:
 - Dynamically skip absent modules (e.g., 'apps.*') to prevent ModuleNotFoundError. # CHANGED:
 - Emits [settings_pm] warning listing any skipped apps.                             # CHANGED:
@@ -320,39 +323,24 @@ SESSION_COOKIE_AGE = 3600  # 1 hour
 SESSION_SAVE_EVERY_REQUEST = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 
-# ========= Email (Mailgun via Anymail preferred) =========
-# Default to Mailgun API backend via Anymail (works on PythonAnywhere Free)
-EMAIL_BACKEND = os.getenv(
-    "DJANGO_EMAIL_BACKEND",
-    "anymail.backends.mailgun.EmailBackend"
-)
+# ========= Email (PPA env-driven; Mailgun via Anymail) =========
+# CHANGED: Remove hardcoded email constants from settings; rely on .env + postpress_ai.email_config.
+# This keeps provider selection/config in one place and prevents drift.
+try:  # CHANGED:
+    from postpress_ai.email_config import get_email_settings  # CHANGED:
 
-# Anymail / Mailgun API configuration
-ANYMAIL = {
-    "MAILGUN_API_KEY": os.getenv("MAILGUN_API_KEY", ""),
-    "MAILGUN_SENDER_DOMAIN": os.getenv("MAILGUN_DOMAIN", ""),  # e.g. mg.yourdomain.com
-    # If using EU region, set ANYMAIL_MAILGUN_API_URL=https://api.eu.mailgun.net/v3
-    "MAILGUN_API_URL": os.getenv("ANYMAIL_MAILGUN_API_URL", "https://api.mailgun.net/v3"),
-}
+    _PPA_EMAIL_SETTINGS = get_email_settings()  # CHANGED:
+    globals().update(_PPA_EMAIL_SETTINGS)  # CHANGED:
 
-# SMTP variables — ONLY used if you explicitly set EMAIL_BACKEND to SMTP
-EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.mailgun.org")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
-EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() == "true"
-EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "false").strip().lower() == "true"  # CHANGED: strict true only
-EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "10"))
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")       # e.g. postmaster@mg.yourdomain.com
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")  # your Mailgun SMTP password
-
-# From address (use your Mailgun domain for best deliverability)
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Personal Mentor <no-reply@mg.yourdomain.com>")
-
-# Helpful visibility on startup
-print(f"[settings_pm] EMAIL_BACKEND = {EMAIL_BACKEND}")
-print(f"[settings_pm] DEFAULT_FROM_EMAIL = {DEFAULT_FROM_EMAIL}")
-
-if EMAIL_BACKEND.endswith("smtp.EmailBackend") and not all([EMAIL_HOST, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD]):
-    print("⚠️  EMAIL configuration incomplete - set EMAIL_HOST / EMAIL_HOST_USER / EMAIL_HOST_PASSWORD")
+    # Helpful visibility on startup (no secrets printed).  # CHANGED:
+    print(f"[settings_pm] EMAIL_BACKEND = {globals().get('EMAIL_BACKEND')}")  # CHANGED:
+    print(f"[settings_pm] DEFAULT_FROM_EMAIL = {globals().get('DEFAULT_FROM_EMAIL')}")  # CHANGED:
+except Exception as _ppa_email_exc:  # CHANGED:
+    # Safe fallback so non-email parts of the app still boot.  # CHANGED:
+    print(f"[settings_pm] PPA email config not applied: {_ppa_email_exc}")  # CHANGED:
+    # Minimal fallback defaults (still overridable by env elsewhere).  # CHANGED:
+    EMAIL_BACKEND = os.getenv("DJANGO_EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")  # CHANGED:
+    DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@localhost")  # CHANGED:
 
 # ========= OpenAI =========
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -383,10 +371,10 @@ LOGGING = {
             'level': 'INFO',
             'class': 'logging.handlers.RotatingFileHandler',
             'filename': LOG_DIR / 'webdoctor.log',
-            'maxBytes': 1024*1024*15,  # 15MB
+            'maxBytes': 1024*1024*15,
             'backupCount': 10,
             'formatter': 'verbose',
-            'encoding': 'utf-8',  # CHANGED: ensure UTF-8 writes/rotation
+            'encoding': 'utf-8',
         },
         'console': {
             'level': 'INFO',
@@ -410,19 +398,29 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
+
+        # ============================================================
+        # 2025-11-13 • Add PostPress AI view logger → INFO to webdoctor.log  # CHANGED:
+        # ============================================================
+        'postpress_ai.views': {                                                 # CHANGED:
+            'handlers': ['file', 'console'],                                    # CHANGED:
+            'level': 'INFO',                                                    # CHANGED:
+            'propagate': False,                                                 # CHANGED:
+        },                                                                       # CHANGED:
     },
 }
 
-# Defensive: ensure ANY RotatingFileHandler gets UTF-8 if not set explicitly                   # CHANGED:
-try:  # CHANGED:
-    if isinstance(LOGGING, dict):  # CHANGED:
-        handlers = LOGGING.setdefault("handlers", {})  # CHANGED:
-        for _name, _h in list(handlers.items()):  # CHANGED:
-            cls = str(_h.get("class", "")).rsplit(".", 1)[-1]  # CHANGED:
-            if cls == "RotatingFileHandler" and not _h.get("encoding"):  # CHANGED:
-                _h["encoding"] = "utf-8"  # CHANGED:
-except Exception:  # CHANGED:
-    pass  # CHANGED:
+# Defensive: ensure ANY RotatingFileHandler gets UTF-8 if not set explicitly
+try:
+    if isinstance(LOGGING, dict):
+        handlers = LOGGING.setdefault("handlers", {})
+        for _name, _h in list(handlers.items()):
+            cls = str(_h.get("class", "")).rsplit(".", 1)[-1]
+            if cls == "RotatingFileHandler" and not _h.get("encoding"):
+                _h["encoding"] = "utf-8"
+except Exception:
+    pass
+
 
 # ========= Stripe =========
 DEPLOY_BASE_URL = os.getenv("DEPLOY_BASE_URL", "https://apps.techwithwayne.com").rstrip("/")
@@ -439,4 +437,3 @@ STRIPE_CANCEL_URL = os.getenv(
     f"{DEPLOY_BASE_URL}/barista-assistant/"
 )
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
-# (full file content pasted above)
