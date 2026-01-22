@@ -1,8 +1,13 @@
+# /home/techwithwayne/agentsuite/postpress_ai/views/__init__.py
+
 """
 PostPress AI — views package
 
 CHANGE LOG
 ----------
+2026-01-14 • FIX: Prevent package-surface callable shadowing by avoiding imports of a submodule named 'preview'.      # CHANGED:
+2026-01-14 • FIX: OPTIONS must return 204 for health/version/preview/preview_debug_model to satisfy preflight tests.  # CHANGED:
+
 2026-01-05 • FIX: pa.v1 auth guard now delegates to views.utils._ppa_key_ok() so content endpoints accept Option A (license_key+site_url) without shared key.  # CHANGED:
 2026-01-05 • HARDEN: Cache auth result on request to avoid double DB checks (rate-limit + view).                                                       # CHANGED:
 
@@ -323,15 +328,24 @@ def _rate_limited(view_label: str):
     return decorator
 
 
+def _options_204(view_name: str) -> HttpResponse:  # CHANGED:
+    """Return 204 for OPTIONS requests (tests expect 204)."""  # CHANGED:
+    return _with_headers(HttpResponse(status=204), view=view_name)  # CHANGED:
+
+
 # ---------- Public endpoints (no auth) ----------
 
 def health(request, *args, **kwargs):
     """Lightweight readiness probe."""
+    if request.method == "OPTIONS":  # CHANGED:
+        return _options_204("health")  # CHANGED:
     return _json_response({"ok": True, "v": VER, "p": "django"}, view="health")
 
 
 def version(request, *args, **kwargs):
     """Simple version endpoint."""
+    if request.method == "OPTIONS":  # CHANGED:
+        return _options_204("version")  # CHANGED:
     payload = {
         "ok": True,
         "v": VER,
@@ -343,6 +357,8 @@ def version(request, *args, **kwargs):
 
 def preview_debug_model(request, *args, **kwargs):
     """Describe the expected JSON schema for preview/store (GET only)."""
+    if request.method == "OPTIONS":  # CHANGED:
+        return _options_204("preview-debug-model")  # CHANGED:
     if request.method != "GET":
         return _with_headers(HttpResponseNotAllowed(["GET"]), view="preview-debug-model")
     model = {
@@ -361,6 +377,8 @@ def preview_debug_model(request, *args, **kwargs):
 def debug_headers(request, *args, **kwargs):  # CHANGED:
     """Inspect safe request headers + auth state for debugging WP → Django parity."""  # CHANGED:
     view_name = "debug-headers"  # CHANGED:
+    if request.method == "OPTIONS":  # CHANGED:
+        return _options_204(view_name)  # CHANGED:
     if request.method != "GET":  # CHANGED:
         return _with_headers(HttpResponseNotAllowed(["GET"]), view=view_name)  # CHANGED:
 
@@ -411,6 +429,8 @@ def _safe_int(val: Any) -> int:  # CHANGED:
 @_rate_limited("preview")  # applies only to authed requests now           # CHANGED:
 def preview(request, *args, **kwargs):
     """Normalize-only preview endpoint. POST only. CSRF-exempt. Auth-first."""
+    if request.method == "OPTIONS":  # CHANGED:
+        return _options_204("preview")  # CHANGED:
     t0 = time.perf_counter()
     status_code = 200
     view_name = "preview"
@@ -450,7 +470,6 @@ def preview(request, *args, **kwargs):
     finally:
         dur_ms = int((time.perf_counter() - t0) * 1000)
         try:
-            # CHANGED: structured, safe logging parity with store()
             base_line = {  # CHANGED:
                 "method": request.method,  # CHANGED:
                 "path": getattr(request, "path", "-"),  # CHANGED:
@@ -459,7 +478,6 @@ def preview(request, *args, **kwargs):
                 "dur_ms": dur_ms,  # CHANGED:
             }  # CHANGED:
             try:  # CHANGED:
-                # Safely access locals if early exit occurred                  # CHANGED:
                 _payload = locals().get("payload") if isinstance(locals().get("payload"), dict) else {}  # CHANGED:
                 _norm = locals().get("normalized") if isinstance(locals().get("normalized"), dict) else {}  # CHANGED:
                 install = (_payload.get("install") or _payload.get("site") or "-")  # CHANGED:
@@ -488,6 +506,8 @@ def generate(request, *args, **kwargs):  # CHANGED:
     This wraps the Assistant-backed generator (run_postpress_generate)      # CHANGED:
     and passes its JSON payload through to WordPress.                       # CHANGED:
     """                                                                     # CHANGED:
+    if request.method == "OPTIONS":  # CHANGED:
+        return _options_204("generate")  # CHANGED:
     t0 = time.perf_counter()  # CHANGED:
     status_code = 200  # CHANGED:
     view_name = "generate"  # CHANGED:
@@ -516,7 +536,25 @@ def generate(request, *args, **kwargs):  # CHANGED:
                 status=status_code,  # CHANGED:
             )  # CHANGED:
 
-        # Import the Assistant runner lazily to avoid any circular import surprises.  # CHANGED:
+        # PPA_AUDIENCE_SUBJECT_REQUIRED_VALIDATION__v1  # CHANGED:
+        # Enforce required fields here (backend truth), so WP always gets a clean 400.  # CHANGED:
+        subject = str(payload.get("subject", "") or "").strip()  # CHANGED:
+        audience = str(payload.get("audience", "") or "").strip()  # CHANGED:
+        if not subject:  # CHANGED:
+            status_code = 400  # CHANGED:
+            return _json_response(  # CHANGED:
+                _error_payload("missing_subject", "Subject is required.", {"field": "subject"}),  # CHANGED:
+                view=view_name,  # CHANGED:
+                status=status_code,  # CHANGED:
+            )  # CHANGED:
+        if not audience:  # CHANGED:
+            status_code = 400  # CHANGED:
+            return _json_response(  # CHANGED:
+                _error_payload("missing_audience", "Target audience is required.", {"field": "audience"}),  # CHANGED:
+                view=view_name,  # CHANGED:
+                status=status_code,  # CHANGED:
+            )  # CHANGED:
+
         try:  # CHANGED:
             from postpress_ai.assistant_runner import run_postpress_generate  # type: ignore  # CHANGED:
         except Exception as exc:  # CHANGED:
@@ -551,13 +589,11 @@ def generate(request, *args, **kwargs):  # CHANGED:
                 status=status_code,  # CHANGED:
             )  # CHANGED:
 
-        # Normalize minimal contract fields without disturbing the backend shape.     # CHANGED:
         if "ver" not in result_obj:  # CHANGED:
             result_obj["ver"] = VER  # CHANGED:
         if "provider" not in result_obj:  # CHANGED:
             result_obj["provider"] = "django"  # CHANGED:
         if "ok" not in result_obj:  # CHANGED:
-            # If there's an explicit error, default ok=False; otherwise assume success.  # CHANGED:
             result_obj["ok"] = False if "error" in result_obj else True  # CHANGED:
 
         status_code = 200  # CHANGED:
@@ -597,6 +633,8 @@ except Exception:  # pragma: no cover
     @csrf_exempt  # CHANGED:
     @_rate_limited("store")  # CHANGED:
     def store(request, *args, **kwargs):  # type: ignore
+        if request.method == "OPTIONS":  # CHANGED:
+            return _options_204("store")  # CHANGED:
         """Structured placeholder if store view unavailable."""  # CHANGED:
         data = _error_payload("unavailable", "store view unavailable")
         resp = JsonResponse(data, status=503)
@@ -611,7 +649,6 @@ store_view = store
 # Public surface for imports
 __all__ = [
     "VER",
-    # views
     "health",
     "version",
     "preview_debug_model",
@@ -620,8 +657,7 @@ __all__ = [
     "preview_view",
     "store",
     "store_view",
-    "generate",  # CHANGED:
-    # helpers
+    "generate",
     "_with_headers",
     "_json_response",
     "_normalize",
@@ -634,6 +670,5 @@ __all__ = [
     "_derive_html_from_payload",
     "_incoming_view_header",
     "_incoming_xhr_header",
-    # rate limit
     "_rate_limited",
 ]
