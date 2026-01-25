@@ -48,6 +48,7 @@ from __future__ import annotations
 # 2026-01-25: ADD: sites.remaining + tokens.remaining_total exported at top-level snapshots (WP never has to compute).
 # 2026-01-25: HARDEN: activate/deactivate errors now include deterministic contract payload when possible (better WP UX).
 # 2026-01-25: HARDEN: verify error responses also emit Cache-Control for deterministic caching behavior.
+# 2026-01-25: HARDEN: Account links now support per-plan env overrides and strict URL validation (fail-closed). # CHANGED:
 
 import hmac
 import json
@@ -633,31 +634,99 @@ def _opt_str(value: Any) -> Optional[str]:  # CHANGED:
     return value or None
 
 
-def _account_links(lic: License) -> Dict[str, Optional[str]]:  # CHANGED:
+def _safe_account_url(value: Optional[str]) -> Optional[str]:  # CHANGED:
+    """
+    Fail-closed URL validation for anything we send to WP as a clickable link.
+
+    Rules:
+    - Must be absolute http(s) URL with a hostname.
+    - Production-safe default: require https unless it's clearly local/dev.
+    - Reject whitespace, overly long values, and malformed URLs.
+    """
+    s = _opt_str(value)
+    if not s:
+        return None
+    if any(ch.isspace() for ch in s):
+        return None
+    if len(s) > 2048:
+        return None
+    try:
+        p = urlparse(s)
+    except Exception:
+        return None
+    if p.scheme not in ("http", "https"):
+        return None
+    if not p.hostname:
+        return None
+
+    host = (p.hostname or "").lower()
+    if p.scheme == "http":
+        # Allow http ONLY for local/dev style hosts. Fail closed otherwise.  # CHANGED:
+        if host not in ("localhost", "127.0.0.1") and (not host.endswith(".local")):
+            return None
+
+    return s
+
+
+def _env_plan_url(base_key: str, plan_slug: str) -> Optional[str]:  # CHANGED:
+    """
+    Plan-aware env lookup:
+      - PPA_UPGRADE_URL_TYLER
+      - PPA_BUY_TOKENS_URL_CREATOR
+      - PPA_BILLING_PORTAL_URL_AGENCY
+    Fallback to the base key:
+      - PPA_UPGRADE_URL
+      - PPA_BUY_TOKENS_URL
+      - PPA_BILLING_PORTAL_URL
+    """
+    slug = _clean_plan_slug(plan_slug).upper()
+    slug = re.sub(r"[^A-Z0-9_]", "_", slug)  # belt + suspenders; should already be safe
+    v = _opt_str(os.environ.get(f"{base_key}_{slug}"))
+    if v:
+        return v
+    return _opt_str(os.environ.get(base_key))
+
+
+def _account_links(lic: License, ent: Dict[str, Any], tokens: Dict[str, Any]) -> Dict[str, Optional[str]]:  # CHANGED:
     """
     Account / upgrade links for WP UI.
 
-    IMPORTANT:
+    LOCKED:
     - WP must never talk to Stripe.
-    - We do NOT generate billing portal URLs here.
-    - If you later add a Django endpoint that mints a portal URL server-side,
-      WP should call THAT endpoint and redirect; this field can then be populated
-      by License fields or environment.
+    - Django may emit links to your own marketing/upgrade pages (which may later lead to Stripe),
+      but WP only displays links returned by Django.
+
+    Behavior (bulletproof defaults):
+    - Prefer explicit License fields if present (authoritative).
+    - Else, allow env configuration (optionally plan-specific).
+    - Validate URLs strictly; invalid -> None (fail closed).
+    - BYO plans: buy_tokens defaults to None unless explicitly set on the License.  # CHANGED:
     """
+    plan_slug = ent.get("plan_slug") or "unknown"  # CHANGED:
+
     # Prefer explicit License fields if present (authoritative).
     upgrade = _opt_str(getattr(lic, "upgrade_url", None))
     buy_tokens = _opt_str(getattr(lic, "buy_tokens_url", None))
     billing_portal = _opt_str(getattr(lic, "billing_portal_url", None))
 
-    # Optional env fallbacks (safe, no secrets)
-    upgrade = upgrade or _opt_str(os.environ.get("PPA_UPGRADE_URL"))
-    buy_tokens = buy_tokens or _opt_str(os.environ.get("PPA_BUY_TOKENS_URL"))
-    billing_portal = billing_portal or _opt_str(os.environ.get("PPA_BILLING_PORTAL_URL"))
+    # If not present on License, fall back to env (optionally per-plan).  # CHANGED:
+    if not upgrade:
+        upgrade = _env_plan_url("PPA_UPGRADE_URL", str(plan_slug))  # CHANGED:
+    if not buy_tokens:
+        buy_tokens = _env_plan_url("PPA_BUY_TOKENS_URL", str(plan_slug))  # CHANGED:
+    if not billing_portal:
+        billing_portal = _env_plan_url("PPA_BILLING_PORTAL_URL", str(plan_slug))  # CHANGED:
 
+    # Default gating: BYO required => no token purchase link unless explicitly set on License.  # CHANGED:
+    byo_required = bool(ent.get("features", {}).get("byo_key_required"))  # CHANGED:
+    if byo_required and (not _opt_str(getattr(lic, "buy_tokens_url", None))):  # CHANGED:
+        buy_tokens = None  # CHANGED:
+
+    # Validate URLs strictly (fail closed).  # CHANGED:
     return {
-        "upgrade": upgrade,
-        "buy_tokens": buy_tokens,
-        "billing_portal": billing_portal,
+        "upgrade": _safe_account_url(upgrade),  # CHANGED:
+        "buy_tokens": _safe_account_url(buy_tokens),  # CHANGED:
+        "billing_portal": _safe_account_url(billing_portal),  # CHANGED:
     }
 
 
@@ -676,7 +745,7 @@ def _license_contract_snapshot(license_key: str, lic: License) -> Dict[str, Any]
     plan = _plan_meta(ent.get("plan_slug"))  # CHANGED:
     sites_used = _activation_count_for_license(lic)
     tokens = _token_snapshot(lic)
-    links = _account_links(lic)  # CHANGED:
+    links = _account_links(lic, ent, tokens)  # CHANGED:
 
     max_sites = int(ent["sites"]["max"])
     unlimited_sites = bool(ent["sites"]["unlimited"])
@@ -816,8 +885,6 @@ def license_activate(request: HttpRequest) -> JsonResponse:
 
     except APIError as e:
         return _json_err(e, data=base_data) if isinstance(base_data, dict) else _json_err(e)
-
-
 
 
 @csrf_exempt
