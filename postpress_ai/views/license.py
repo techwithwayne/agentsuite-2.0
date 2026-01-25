@@ -39,6 +39,15 @@ from __future__ import annotations
 # 2026-01-24: HARDEN: Throttle last_verified_at writes on verify to improve cacheability and reduce DB churn. # CHANGED:
 # 2026-01-24: FIX: AI-included plans must not return monthly_limit=0 (treat 0 as "unset" and fall back).    # CHANGED:
 # 2026-01-24: FIX: Add 'tyler' to PLAN_DEFAULTS so early bird licenses get sane defaults.                    # CHANGED:
+# 2026-01-25: HARDEN: On verify errors (inactive/not_activated), still return deterministic contract in data
+#            so WP can display Plan/Sites/Tokens without guessing.                                         # CHANGED:
+# 2026-01-25: HARDEN: Activate/Deactivate now also return the same deterministic contract snapshot.         # CHANGED:
+# 2026-01-25: ADD: tokens.mode ("included"|"byo"|"none") to make plan behavior explicit for WP.             # CHANGED:
+# 2026-01-25: HARDEN: Unknown plan slugs now default to conservative entitlements (BYO required, no included tokens).
+# 2026-01-25: ADD: plan.name + plan.label + links{} added to the deterministic license contract snapshot for upcoming Account UI.
+# 2026-01-25: ADD: sites.remaining + tokens.remaining_total exported at top-level snapshots (WP never has to compute).
+# 2026-01-25: HARDEN: activate/deactivate errors now include deterministic contract payload when possible (better WP UX).
+# 2026-01-25: HARDEN: verify error responses also emit Cache-Control for deterministic caching behavior.
 
 import hmac
 import json
@@ -86,6 +95,47 @@ PLAN_DEFAULTS = {  # CHANGED:
     "agency_byo": (0, True, 0, False, True),  # Unlimited sites, BYO key, no included tokens
 }
 
+# ------------------------------
+# Plan metadata (display-only)
+# ------------------------------
+# CHANGED:
+# - PLAN_DEFAULTS is strictly a fallback.
+# - Unknown plan slugs MUST fail closed (conservative) unless explicit License fields exist.
+# - WP UI can display plan names without guessing.
+PLAN_META = {  # CHANGED:
+    "tyler": {"name": "Tyler Early Bird", "label": "Early Bird"},
+    "solo": {"name": "Solo", "label": "Solo"},
+    "creator": {"name": "Creator", "label": "Creator"},
+    "studio": {"name": "Studio", "label": "Studio"},
+    "agency": {"name": "Agency", "label": "Agency"},
+    "agency_byo": {"name": "Agency (BYO Key)", "label": "Agency BYO"},
+}
+
+# slug: (max_sites, unlimited, monthly_tokens, ai_included, byo_required)
+UNKNOWN_PLAN_FALLBACK = (0, False, 0, False, True)  # CHANGED: fail closed (BYO required, no included tokens)
+
+
+def _clean_plan_slug(value: Any) -> str:  # CHANGED:
+    """Normalize plan slug for map lookups without changing DB values."""
+    if value is None:
+        return "unknown"
+    try:
+        s = str(value).strip().lower()
+    except Exception:
+        return "unknown"
+    # common separators to underscore
+    s = s.replace("-", "_")
+    return s or "unknown"
+
+
+def _plan_meta(slug: str) -> Dict[str, str]:  # CHANGED:
+    s = _clean_plan_slug(slug)
+    meta = PLAN_META.get(s)
+    if meta:
+        return {"slug": s, "name": meta.get("name") or s, "label": meta.get("label") or meta.get("name") or s}
+    # Unknown plan: safe display values (does not imply entitlements)
+    return {"slug": s, "name": s, "label": s}
+
 
 @dataclass(frozen=True)
 class APIError(Exception):
@@ -104,19 +154,27 @@ def _json_ok(data: Dict[str, Any], status: int = 200) -> JsonResponse:
     return JsonResponse({"ok": True, "data": data, "ver": API_VER}, status=status)
 
 
-def _json_err(e: APIError) -> JsonResponse:
-    return JsonResponse(
-        {
-            "ok": False,
-            "error": {
-                "type": e.err_type,
-                "code": e.code,
-                "message": e.message,
-            },
-            "ver": API_VER,
+def _json_err(e: APIError, data: Optional[Dict[str, Any]] = None) -> JsonResponse:  # CHANGED:
+    """
+    Error response helper.
+
+    CHANGED:
+    - Optionally include a deterministic `data` payload even on errors.
+      This is critical for WP admin UX: Plan/Sites/Tokens can still render when
+      a license is inactive or a site is not activated.
+    """
+    payload: Dict[str, Any] = {
+        "ok": False,
+        "error": {
+            "type": e.err_type,
+            "code": e.code,
+            "message": e.message,
         },
-        status=e.http_status,
-    )
+        "ver": API_VER,
+    }
+    if isinstance(data, dict):
+        payload["data"] = data
+    return JsonResponse(payload, status=e.http_status)
 
 
 def _get_client_ip(request: HttpRequest) -> str:
@@ -444,8 +502,9 @@ def _effective_entitlements(lic: License) -> Dict[str, Any]:  # CHANGED:
     - For AI-included plans, monthly token limit must never be 0 (0 == "unset" in early stages). # CHANGED:
     - For non-unlimited plans, max_sites must never be 0 (0 == "unset").                         # CHANGED:
     """
-    slug = getattr(lic, "plan_slug", None) or "unknown"
-    fallback = PLAN_DEFAULTS.get(str(slug), (0, False, 0, True, False))
+    slug_raw = getattr(lic, "plan_slug", None)  # CHANGED:
+    slug = _clean_plan_slug(slug_raw)  # CHANGED:
+    fallback = PLAN_DEFAULTS.get(str(slug), UNKNOWN_PLAN_FALLBACK)  # CHANGED:
 
     used_default_sites = False  # CHANGED:
     used_default_tokens = False  # CHANGED:
@@ -542,13 +601,131 @@ def _token_snapshot(lic: License) -> Dict[str, Any]:  # CHANGED:
     monthly_remaining = max(0, monthly_limit - int(monthly_used))
     remaining_total = monthly_remaining + max(0, int(purchased_balance))
 
+    # CHANGED: Make the plan behavior explicit for WP (no guessing later).
+    if bool(ent["features"]["byo_key_required"]):
+        mode = "byo"
+    elif bool(ent["features"]["ai_included"]):
+        mode = "included"
+    else:
+        mode = "none"
+
     return {
+        "mode": mode,  # CHANGED:
         "period": {"start": period_start, "end": period_end},
         "monthly_limit": monthly_limit,
         "monthly_used": int(monthly_used),
         "monthly_remaining": int(monthly_remaining),
         "purchased_balance": int(purchased_balance),
         "remaining_total": int(remaining_total),
+    }
+
+
+def _opt_str(value: Any) -> Optional[str]:  # CHANGED:
+    """Return a safe stripped string or None."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        try:
+            value = str(value)
+        except Exception:
+            return None
+    value = value.strip()
+    return value or None
+
+
+def _account_links(lic: License) -> Dict[str, Optional[str]]:  # CHANGED:
+    """
+    Account / upgrade links for WP UI.
+
+    IMPORTANT:
+    - WP must never talk to Stripe.
+    - We do NOT generate billing portal URLs here.
+    - If you later add a Django endpoint that mints a portal URL server-side,
+      WP should call THAT endpoint and redirect; this field can then be populated
+      by License fields or environment.
+    """
+    # Prefer explicit License fields if present (authoritative).
+    upgrade = _opt_str(getattr(lic, "upgrade_url", None))
+    buy_tokens = _opt_str(getattr(lic, "buy_tokens_url", None))
+    billing_portal = _opt_str(getattr(lic, "billing_portal_url", None))
+
+    # Optional env fallbacks (safe, no secrets)
+    upgrade = upgrade or _opt_str(os.environ.get("PPA_UPGRADE_URL"))
+    buy_tokens = buy_tokens or _opt_str(os.environ.get("PPA_BUY_TOKENS_URL"))
+    billing_portal = billing_portal or _opt_str(os.environ.get("PPA_BILLING_PORTAL_URL"))
+
+    return {
+        "upgrade": upgrade,
+        "buy_tokens": buy_tokens,
+        "billing_portal": billing_portal,
+    }
+
+
+def _license_contract_snapshot(license_key: str, lic: License) -> Dict[str, Any]:  # CHANGED:
+    """
+    Build a deterministic license contract snapshot for WP UI.
+
+    Used by verify/activate/deactivate to keep responses consistent across actions.
+
+    CHANGED:
+    - Adds plan.name + plan.label for UI.
+    - Adds sites.remaining and tokens.remaining_total (WP doesn't compute).
+    - Adds links{} for upcoming Account screen (safe, non-Stripe).
+    """
+    ent = _effective_entitlements(lic)
+    plan = _plan_meta(ent.get("plan_slug"))  # CHANGED:
+    sites_used = _activation_count_for_license(lic)
+    tokens = _token_snapshot(lic)
+    links = _account_links(lic)  # CHANGED:
+
+    max_sites = int(ent["sites"]["max"])
+    unlimited_sites = bool(ent["sites"]["unlimited"])
+    sites_remaining = None if unlimited_sites else max(0, max_sites - int(sites_used))  # CHANGED:
+
+    # Export a couple of computed token fields at top-level for WP convenience.  # CHANGED:
+    tokens_monthly_remaining = int(tokens.get("monthly_remaining") or 0)
+    tokens_remaining_total = int(tokens.get("remaining_total") or 0)
+
+    return {
+        # Identity (masked)
+        "key_masked": _mask_key(license_key),
+
+        # Plan (display)
+        "plan_slug": plan.get("slug"),  # CHANGED: normalized slug for stable UI keys
+        "plan": plan,  # CHANGED: {slug,name,label}
+
+        # Status
+        "status": getattr(lic, "status", None),
+        "expires_at": getattr(lic, "expires_at", None),
+
+        # Backward-safe top-level fields (deterministic)
+        "max_sites": max_sites,
+        "unlimited_sites": unlimited_sites,
+        "sites_used": int(sites_used),  # CHANGED:
+        "sites_remaining": sites_remaining,  # CHANGED:
+
+        "byo_key_required": bool(ent["features"]["byo_key_required"]),
+        "ai_included": bool(ent["features"]["ai_included"]),
+
+        # Deterministic snapshots (WP Settings + Account can parse these)
+        "sites": {
+            "used": int(sites_used),
+            "max": max_sites,
+            "unlimited": unlimited_sites,
+            "remaining": sites_remaining,  # CHANGED:
+        },
+        "features": {
+            "ai_included": bool(ent["features"]["ai_included"]),
+            "byo_key_required": bool(ent["features"]["byo_key_required"]),
+        },
+        "tokens": tokens,
+        "tokens_monthly_remaining": tokens_monthly_remaining,  # CHANGED:
+        "tokens_remaining_total": tokens_remaining_total,  # CHANGED:
+
+        # UI links (optional)
+        "links": links,  # CHANGED:
+
+        "entitlements_source": ent.get("source"),
     }
 
 
@@ -570,7 +747,12 @@ def license_activate(request: HttpRequest) -> JsonResponse:
 
     Output:
       ok + activation state (display-only; Django remains the source of truth)
+
+    CHANGED:
+      On error states (inactive/limit), include deterministic contract snapshot in `data`
+      when possible so WP admin can still render Plan/Sites/Tokens.
     """
+    base_data: Optional[Dict[str, Any]] = None  # CHANGED:
     try:
         payload = _parse_json_body(request)
         license_key = _clean_license_key(payload.get("license_key"))
@@ -582,32 +764,28 @@ def license_activate(request: HttpRequest) -> JsonResponse:
         _rate_limit_or_raise(scope="activate", ip=ip, license_key=license_key)
 
         lic = _get_license_or_raise(license_key)
+
+        # Build deterministic payload early so errors can still return usable UI data.  # CHANGED:
+        base_data = {
+            "license": _license_contract_snapshot(license_key, lic),
+            "activation": {"site_url": site_url, "activated": False},
+        }
+
         _ensure_license_active(lic)
 
         act = Activation.objects.filter(license=lic, site_url=site_url).first()
         if act:
             _touch_activation(act, force=True)  # explicit action -> write
-            return _json_ok(
+            base_data["license"] = _license_contract_snapshot(license_key, lic)  # CHANGED:
+            base_data["activation"].update(
                 {
-                    "license": {
-                        "key_masked": _mask_key(license_key),
-                        "plan_slug": getattr(lic, "plan_slug", None),
-                        "status": getattr(lic, "status", None),
-                        "max_sites": getattr(lic, "max_sites", None),
-                        "unlimited_sites": bool(getattr(lic, "unlimited_sites", False)),
-                        "byo_key_required": bool(getattr(lic, "byo_key_required", False)),
-                        "ai_included": bool(getattr(lic, "ai_included", False)),
-                        "expires_at": getattr(lic, "expires_at", None),
-                    },
-                    "activation": {
-                        "site_url": site_url,
-                        "activated": True,
-                        "activated_at": getattr(act, "activated_at", None),
-                        "last_verified_at": getattr(act, "last_verified_at", None),
-                        "already_active": True,
-                    },
+                    "activated": True,
+                    "activated_at": getattr(act, "activated_at", None),
+                    "last_verified_at": getattr(act, "last_verified_at", None),
+                    "already_active": True,
                 }
             )
+            return _json_ok(base_data)
 
         if not _license_limit_allows_site(lic):
             raise APIError(
@@ -625,30 +803,21 @@ def license_activate(request: HttpRequest) -> JsonResponse:
             last_verified_at=now,
         )
 
-        return _json_ok(
+        base_data["license"] = _license_contract_snapshot(license_key, lic)  # CHANGED: activation count changed
+        base_data["activation"].update(
             {
-                "license": {
-                    "key_masked": _mask_key(license_key),
-                    "plan_slug": getattr(lic, "plan_slug", None),
-                    "status": getattr(lic, "status", None),
-                    "max_sites": getattr(lic, "max_sites", None),
-                    "unlimited_sites": bool(getattr(lic, "unlimited_sites", False)),
-                    "byo_key_required": bool(getattr(lic, "byo_key_required", False)),
-                    "ai_included": bool(getattr(lic, "ai_included", False)),
-                    "expires_at": getattr(lic, "expires_at", None),
-                },
-                "activation": {
-                    "site_url": site_url,
-                    "activated": True,
-                    "activated_at": getattr(act, "activated_at", None),
-                    "last_verified_at": getattr(act, "last_verified_at", None),
-                    "already_active": False,
-                },
+                "activated": True,
+                "activated_at": getattr(act, "activated_at", None),
+                "last_verified_at": getattr(act, "last_verified_at", None),
+                "already_active": False,
             }
         )
+        return _json_ok(base_data)
 
     except APIError as e:
-        return _json_err(e)
+        return _json_err(e, data=base_data) if isinstance(base_data, dict) else _json_err(e)
+
+
 
 
 @csrf_exempt
@@ -667,6 +836,10 @@ def license_verify(request: HttpRequest) -> JsonResponse:
     Output:
       ok true if license active AND activation exists.
       Includes deterministic license status (sites + tokens + features) for WP Settings display.
+
+    CHANGED:
+      On error states (inactive/not_activated), we still include `data` with the deterministic
+      plan/sites/tokens snapshot so WP can render Plan & Usage without guessing.
     """
     try:
         payload = _parse_json_body(request)
@@ -679,10 +852,23 @@ def license_verify(request: HttpRequest) -> JsonResponse:
         _rate_limit_or_raise(scope="verify", ip=ip, license_key=license_key)
 
         lic = _get_license_or_raise(license_key)
-        _ensure_license_active(lic)
 
+        # Build deterministic contract snapshot first (even if we error later).  # CHANGED:
+        lic_snapshot = _license_contract_snapshot(license_key, lic)  # CHANGED:
+        base_data: Dict[str, Any] = {  # CHANGED:
+            "cache_ttl_seconds": VERIFY_CACHE_TTL_SECONDS,
+            "server_time": timezone.now(),
+            "license": lic_snapshot,
+            "activation": {
+                "site_url": site_url,
+                "activated": False,  # default; may be set True below
+            },
+        }
+
+        # Activation lookup
         act = Activation.objects.filter(license=lic, site_url=site_url).first()
         if not act:
+            # Site not activated: return error BUT keep deterministic data payload.  # CHANGED:
             raise APIError(
                 code="not_activated",
                 message="This site is not activated for this license.",
@@ -690,52 +876,37 @@ def license_verify(request: HttpRequest) -> JsonResponse:
                 err_type="activation",
             )
 
-        _touch_activation(act, force=False)  # throttled writes for cacheability
-
-        ent = _effective_entitlements(lic)
-        sites_used = _activation_count_for_license(lic)
-        tokens = _token_snapshot(lic)
-
-        data = {
-            "cache_ttl_seconds": VERIFY_CACHE_TTL_SECONDS,
-            "server_time": timezone.now(),
-            "license": {
-                # Backward-safe fields (existing keys kept)
-                "key_masked": _mask_key(license_key),
-                "plan_slug": getattr(lic, "plan_slug", None),
-                "status": getattr(lic, "status", None),
-                "max_sites": getattr(lic, "max_sites", None),
-                "unlimited_sites": bool(getattr(lic, "unlimited_sites", False)),
-                "byo_key_required": bool(getattr(lic, "byo_key_required", False)),
-                "ai_included": bool(getattr(lic, "ai_included", False)),
-                "expires_at": getattr(lic, "expires_at", None),
-                # Deterministic snapshots
-                "sites": {
-                    "used": int(sites_used),
-                    "max": int(ent["sites"]["max"]),
-                    "unlimited": bool(ent["sites"]["unlimited"]),
-                },
-                "features": {
-                    "ai_included": bool(ent["features"]["ai_included"]),
-                    "byo_key_required": bool(ent["features"]["byo_key_required"]),
-                },
-                "tokens": tokens,
-                "entitlements_source": ent.get("source"),
-            },
-            "activation": {
-                "site_url": site_url,
+        # We found an activation row; expose it in the deterministic payload.  # CHANGED:
+        base_data["activation"].update(
+            {
                 "activated": True,
                 "activated_at": getattr(act, "activated_at", None),
                 "last_verified_at": getattr(act, "last_verified_at", None),
-            },
-        }
+            }
+        )
 
-        resp = _json_ok(data)
+        # Now enforce license active status (strict), but still allow deterministic payload on failure.  # CHANGED:
+        _ensure_license_active(lic)
+
+        _touch_activation(act, force=False)  # throttled writes for cacheability
+
+        resp = _json_ok(base_data)
         resp["Cache-Control"] = f"private, max-age={VERIFY_CACHE_TTL_SECONDS}"
         return resp
 
     except APIError as e:
-        return _json_err(e)
+        # CHANGED: include deterministic data when possible (license/site parsed and license existed)
+        # We only include base_data if it was built; otherwise fall back to standard error envelope.
+        try:
+            has_data = "base_data" in locals() and isinstance(locals()["base_data"], dict)  # CHANGED:
+            if has_data:
+                resp = _json_err(e, data=locals()["base_data"])  # CHANGED:
+                resp["Cache-Control"] = f"private, max-age={VERIFY_CACHE_TTL_SECONDS}"  # CHANGED:
+            else:
+                resp = _json_err(e)
+        except Exception:
+            resp = _json_err(e)
+        return resp
 
 
 @csrf_exempt
@@ -753,7 +924,11 @@ def license_deactivate(request: HttpRequest) -> JsonResponse:
 
     Output:
       ok true (idempotent)
+
+    CHANGED:
+      On error states, include deterministic contract snapshot in `data` when possible.
     """
+    base_data: Optional[Dict[str, Any]] = None  # CHANGED:
     try:
         payload = _parse_json_body(request)
         license_key = _clean_license_key(payload.get("license_key"))
@@ -765,23 +940,24 @@ def license_deactivate(request: HttpRequest) -> JsonResponse:
         _rate_limit_or_raise(scope="deactivate", ip=ip, license_key=license_key)
 
         lic = _get_license_or_raise(license_key)
+
+        # Build deterministic payload early so errors can still return usable UI data.  # CHANGED:
+        base_data = {
+            "license": _license_contract_snapshot(license_key, lic),
+            "activation": {"site_url": site_url, "deactivated": False},
+        }
+
         # Deactivate is cleanup-safe; we do NOT require active status.
         deleted, _ = Activation.objects.filter(license=lic, site_url=site_url).delete()
 
-        return _json_ok(
+        base_data["license"] = _license_contract_snapshot(license_key, lic)  # CHANGED: activation count may change
+        base_data["activation"].update(
             {
-                "license": {
-                    "key_masked": _mask_key(license_key),
-                    "plan_slug": getattr(lic, "plan_slug", None),
-                    "status": getattr(lic, "status", None),
-                },
-                "activation": {
-                    "site_url": site_url,
-                    "deactivated": True,
-                    "deleted": int(deleted),
-                },
+                "deactivated": True,
+                "deleted": int(deleted),
             }
         )
+        return _json_ok(base_data)
 
     except APIError as e:
-        return _json_err(e)
+        return _json_err(e, data=base_data) if isinstance(base_data, dict) else _json_err(e)
