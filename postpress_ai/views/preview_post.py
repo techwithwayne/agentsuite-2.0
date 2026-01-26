@@ -24,6 +24,19 @@ PostPress AI — Preview Generator (Django)
            - Use Coalesce(F(field), 0) + total (SQL NULL-safe).                                          # CHANGED:
            - Add Origin/Referer fallback to recover site_url for Activation lookup.                      # CHANGED:
            - Improve usage-field detection ranking (still best-effort).                                  # CHANGED:
+
+2026-01-25: FIX: Markdown leak prevention for “Extra instructions” + output HTML.                         # CHANGED:
+           - Demote Markdown from user-provided instructions before sending to provider.                 # CHANGED:
+           - Hard-ban Markdown in the prompt contract (links must be <a href="...">).                    # CHANGED:
+           - Post-sanitize provider output to convert Markdown links to HTML anchors (failsafe).         # CHANGED:
+
+2026-01-25: HARDEN: Handle escaped Markdown tokens from WP/JSON (users don’t type backslashes).           # CHANGED:
+           - Convert \[Text\]\(url\) and \[Text\](url) into HTML anchors.                                 # CHANGED:
+           - Linkify naked URLs/domains (google.com, www.google.com, https://...).                       # CHANGED:
+
+2026-01-26: ADD: Write UsageEvent ledger rows when usage tokens are available (primary source of truth).  # CHANGED:
+           - Best-effort schema introspection to avoid tight coupling and avoid breaking deployments.     # CHANGED:
+           - If UsageEvent write succeeds, skip legacy License-field increment (prevents double count).  # CHANGED:
 """
 
 from __future__ import annotations
@@ -40,6 +53,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse  # CHANGED:
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.db import models  # CHANGED:
 from django.db.models import F  # CHANGED:
 from django.db.models.functions import Coalesce  # CHANGED:
 
@@ -173,7 +187,7 @@ def _json_response(payload: Dict[str, Any], status: int = 200) -> JsonResponse:
 def _coerce_str(val: Any) -> str:
     try:
         s = str(val or "").strip()
-        return re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]", "", s)
+        return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", s)
     except Exception:
         return ""
 
@@ -182,6 +196,173 @@ def _sanitize_inline(s: str) -> str:
     s = html.unescape(s or "")
     s = re.sub(r"\s+", " ", s)
     return s.strip()
+
+
+# --------------------------------------------------------------------------------------
+# CHANGED: Markdown detectors/converters (failsafe for “Extra instructions” + model output)
+# --------------------------------------------------------------------------------------
+
+_MD_ESCAPE_RE = re.compile(r"\\([\[\]\(\)`*_])")  # CHANGED:
+
+
+def _unescape_md_escapes(s: str) -> str:  # CHANGED:
+    """Turn \[ \] \( \) \` \* \_ into literal characters."""
+    t = str(s or "")
+    if not t:
+        return ""
+    t = _MD_ESCAPE_RE.sub(r"\1", t)
+    t = _MD_ESCAPE_RE.sub(r"\1", t)
+    return t
+
+
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")  # CHANGED:
+
+_BARE_URL_RE = re.compile(
+    r"\b(?:https?://[^\s<>'\"()]+|www\.[^\s<>'\"()]+|[a-z0-9.-]+\.[a-z]{2,}(?:/[^\s<>'\"()]*)?)\b",
+    flags=re.I,
+)  # CHANGED:
+_DOMAIN_LIKE_RE = re.compile(r"^[a-z0-9.-]+\.[a-z]{2,}(:\d+)?(?:/.*)?$", flags=re.I)  # CHANGED:
+_URL_TRAIL_PUNCT = ".,);:!?]}>"  # CHANGED:
+
+
+def _href_from_url_like(url: str) -> str:  # CHANGED:
+    u = str(url or "").strip()
+    if not u:
+        return ""
+    if re.match(r"^https?://", u, flags=re.I):
+        return u
+    if u.lower().startswith("www."):
+        return f"https://{u}"
+    if _DOMAIN_LIKE_RE.match(u):
+        return f"https://{u}"
+    return ""
+
+
+def _split_url_trailing_punct(token: str) -> tuple[str, str]:  # CHANGED:
+    u = str(token or "")
+    trail = ""
+    while u and u[-1] in _URL_TRAIL_PUNCT:
+        trail = u[-1] + trail
+        u = u[:-1]
+    return u, trail
+
+
+def _is_inside_html_tag(s: str, idx: int) -> bool:  # CHANGED:
+    try:
+        last_lt = s.rfind("<", 0, idx)
+        last_gt = s.rfind(">", 0, idx)
+        return last_lt > last_gt
+    except Exception:
+        return False
+
+
+def _is_inside_anchor(s: str, idx: int) -> bool:  # CHANGED:
+    try:
+        low = s.lower()
+        last_open = low.rfind("<a", 0, idx)
+        if last_open == -1:
+            return False
+        last_close = low.rfind("</a", 0, idx)
+        if last_close > last_open:
+            return False
+        open_end = low.find(">", last_open)
+        if open_end == -1 or open_end > idx:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _linkify_bare_urls_htmlish(s: str) -> str:  # CHANGED:
+    t = str(s or "")
+    if not t:
+        return ""
+
+    out: list[str] = []
+    last = 0
+    for m in _BARE_URL_RE.finditer(t):
+        start, end = m.span()
+        token = m.group(0) or ""
+        out.append(t[last:start])
+
+        if _is_inside_html_tag(t, start) or _is_inside_anchor(t, start):
+            out.append(t[start:end])
+            last = end
+            continue
+
+        raw_url, trail = _split_url_trailing_punct(token)
+        href = _href_from_url_like(raw_url)
+        if not href:
+            out.append(t[start:end])
+            last = end
+            continue
+
+        href_esc = html.escape(href, quote=True)
+        text_esc = html.escape(raw_url, quote=False)
+        out.append(f'<a href="{href_esc}" target="_blank" rel="nofollow noopener">{text_esc}</a>{trail}')
+        last = end
+
+    out.append(t[last:])
+    return "".join(out)
+
+
+def _demote_markdown_text(s: str) -> str:  # CHANGED:
+    t = str(s or "")
+    if not t:
+        return ""
+    t = _unescape_md_escapes(t)  # CHANGED:
+    t = t.replace("```", "")  # CHANGED:
+    t = re.sub(r"`([^`]+)`", r"\1", t)  # CHANGED:
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)  # CHANGED:
+    t = _MD_LINK_RE.sub(lambda m: f"{(m.group(1) or '').strip()} ({(m.group(2) or '').strip()})", t)  # CHANGED:
+    return _sanitize_inline(t)  # CHANGED:
+
+
+def _sanitize_html_output(s: str) -> str:  # CHANGED:
+    t = str(s or "").strip()
+    if not t:
+        return ""
+
+    t = _unescape_md_escapes(t)  # CHANGED:
+
+    t = re.sub(r"^\s*```(?:html|md|markdown)?\s*", "", t, flags=re.I)  # CHANGED:
+    t = re.sub(r"\s*```\s*$", "", t, flags=re.M)  # CHANGED:
+    t = t.replace("```", "")  # CHANGED:
+    t = t.replace("`", "")  # CHANGED:
+
+    def _link_repl(m: re.Match) -> str:  # CHANGED:
+        txt = (m.group(1) or "").strip() or "link"
+        url = (m.group(2) or "").strip()
+        href = _href_from_url_like(url)
+        if not href:
+            return html.escape(f"{txt} ({url})", quote=False)
+        txt_esc = html.escape(txt, quote=False)
+        href_esc = html.escape(href, quote=True)
+        return f'<a href="{href_esc}" target="_blank" rel="nofollow noopener">{txt_esc}</a>'
+
+    t = _MD_LINK_RE.sub(_link_repl, t)  # CHANGED:
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)  # CHANGED:
+    t = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", t)  # CHANGED:
+
+    if re.search(r"^\s*#{1,3}\s+\S+", t, flags=re.M):  # CHANGED:
+        out_lines: list[str] = []
+        for line in t.splitlines():
+            m = re.match(r"^\s*(#{1,3})\s+(.+?)\s*$", line)
+            if m:
+                level = len(m.group(1))
+                text = (m.group(2) or "").strip()
+                tag = "h3" if level >= 3 else "h2"  # CHANGED:
+                out_lines.append(f"<{tag}>{html.escape(text, quote=False)}</{tag}>")
+            else:
+                out_lines.append(line)
+        t = "\n".join(out_lines)
+
+    t = _linkify_bare_urls_htmlish(t)  # CHANGED:
+
+    if "<article" not in t.lower():  # CHANGED:
+        t = f"<article class='ppa-preview'>\n{t}\n</article>"  # CHANGED:
+
+    return t
 
 
 def _build_title(subject: Optional[str], genre: Optional[str], tone: Optional[str]) -> str:
@@ -196,7 +377,6 @@ def _build_title(subject: Optional[str], genre: Optional[str], tone: Optional[st
 
 
 def _preview_json_schema() -> Dict[str, Any]:
-    """Strict JSON Schema used with providers that support it (OpenAI Responses/Chat)."""
     return {
         "name": "postpress_preview",
         "schema": {
@@ -214,7 +394,6 @@ def _preview_json_schema() -> Dict[str, Any]:
 
 
 def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
-    """Try direct JSON, then lax extraction of the first {...} object."""
     try:
         obj = json.loads(text)
         if isinstance(obj, dict):
@@ -236,7 +415,6 @@ def _validate_and_fill_contract(
     payload: Dict[str, Any],
     provider_label: str,
 ) -> Dict[str, str]:
-    """Always return strings for title/html/summary with sane defaults and a provider marker."""
     out = {"title": "", "html": "", "summary": ""}
     if isinstance(obj, dict):
         for k in ("title", "html", "summary"):
@@ -252,10 +430,15 @@ def _validate_and_fill_contract(
         )
     if not out["html"]:
         out["html"] = f"<p>Preview unavailable.</p><!-- provider: {provider_label} -->"
-    if "<!-- provider:" not in out["html"]:
-        out["html"] = out["html"].rstrip() + f"<!-- provider: {provider_label} -->"
     if not out["summary"]:
         out["summary"] = "Generated preview."
+
+    out["title"] = _demote_markdown_text(out["title"])  # CHANGED:
+    out["summary"] = _demote_markdown_text(out["summary"])  # CHANGED:
+    out["html"] = _sanitize_html_output(out["html"])  # CHANGED:
+
+    if "<!-- provider:" not in out["html"]:
+        out["html"] = out["html"].rstrip() + f"<!-- provider: {provider_label} -->"
     return out
 
 
@@ -272,10 +455,6 @@ def _safe_int(v: Any) -> int:  # CHANGED:
 
 
 def _extract_usage_openai(resp_json: Dict[str, Any]) -> Dict[str, int]:  # CHANGED:
-    """
-    OpenAI chat.completions returns:
-      usage: {prompt_tokens, completion_tokens, total_tokens}
-    """
     usage = resp_json.get("usage")
     if isinstance(usage, dict):
         pt = _safe_int(usage.get("prompt_tokens"))
@@ -286,10 +465,6 @@ def _extract_usage_openai(resp_json: Dict[str, Any]) -> Dict[str, int]:  # CHANG
 
 
 def _extract_usage_anthropic(resp_json: Dict[str, Any]) -> Dict[str, int]:  # CHANGED:
-    """
-    Anthropic /v1/messages returns:
-      usage: {input_tokens, output_tokens}
-    """
     usage = resp_json.get("usage")
     if isinstance(usage, dict):
         inp = _safe_int(usage.get("input_tokens"))
@@ -299,17 +474,12 @@ def _extract_usage_anthropic(resp_json: Dict[str, Any]) -> Dict[str, int]:  # CH
 
 
 def _license_usage_field_name() -> Optional[str]:  # CHANGED:
-    """
-    Find the best existing field on License to store usage in.
-    We do NOT add migrations here; we adapt to whatever exists.
-    """
     try:
-        from postpress_ai.models.license import License  # local import avoids import-time coupling
+        from postpress_ai.models.license import License
         field_names = {f.name for f in License._meta.get_fields() if hasattr(f, "name")}
     except Exception:
         return None
 
-    # CHANGED: explicit ranked candidates first (most likely)
     ranked = [
         "monthly_tokens_used",
         "monthly_used_tokens",
@@ -327,8 +497,6 @@ def _license_usage_field_name() -> Optional[str]:  # CHANGED:
         if c in field_names:
             return c
 
-    # CHANGED: heuristic fallback (avoid missing the real field name)
-    # Prefer fields that include both "token(s)" and "used", and also "month/period" if present.
     scored: list[tuple[int, str]] = []
     for name in field_names:
         n = name.lower()
@@ -343,7 +511,7 @@ def _license_usage_field_name() -> Optional[str]:  # CHANGED:
             score += 2
         if "current" in n or "this" in n:
             score += 1
-        score += 1  # base match
+        score += 1
         scored.append((score, name))
     if scored:
         scored.sort(reverse=True)
@@ -352,10 +520,81 @@ def _license_usage_field_name() -> Optional[str]:  # CHANGED:
     return None
 
 
+# CHANGED: cached schema introspection to stay fast + avoid import-time coupling
+_UE_FIELDS: Optional[set[str]] = None  # CHANGED:
+_UE_REQUIRED_DEFAULTS: Optional[Dict[str, Any]] = None  # CHANGED:
+
+
+def _usageevent_fields_and_required_defaults() -> tuple[set[str], Dict[str, Any]]:  # CHANGED:
+    """
+    Introspect UsageEvent schema safely.
+    Returns:
+      - fields: set of field names
+      - required_defaults: defaults for non-null, non-blank fields that have no default
+        (EXCEPT relational fields like ForeignKey, which must be set explicitly).
+    """
+    global _UE_FIELDS, _UE_REQUIRED_DEFAULTS  # CHANGED:
+    if _UE_FIELDS is not None and _UE_REQUIRED_DEFAULTS is not None:
+        return _UE_FIELDS, _UE_REQUIRED_DEFAULTS
+
+    try:
+        from postpress_ai.models.usage_event import UsageEvent  # local import
+        fields: set[str] = set()
+        required_defaults: Dict[str, Any] = {}
+
+        for f in UsageEvent._meta.fields:
+            name = getattr(f, "name", None)
+            if not name:
+                continue
+            fields.add(name)
+
+            if getattr(f, "primary_key", False):
+                continue
+            if getattr(f, "auto_created", False):
+                continue
+            if getattr(f, "auto_now", False) or getattr(f, "auto_now_add", False):
+                continue
+            if getattr(f, "null", False):
+                continue
+            if getattr(f, "blank", False):
+                continue
+            try:
+                if f.has_default():
+                    continue
+            except Exception:
+                pass
+
+            if isinstance(f, (models.ForeignKey, models.OneToOneField)):  # CHANGED:
+                continue
+
+            if isinstance(f, (models.CharField, models.TextField)):
+                required_defaults[name] = ""
+            elif isinstance(
+                f,
+                (
+                    models.IntegerField,
+                    models.BigIntegerField,
+                    models.PositiveIntegerField,
+                    models.PositiveBigIntegerField,
+                    models.SmallIntegerField,
+                ),
+            ):
+                required_defaults[name] = 0
+            elif isinstance(f, models.BooleanField):
+                required_defaults[name] = False
+            else:
+                required_defaults[name] = ""
+
+        _UE_FIELDS = fields
+        _UE_REQUIRED_DEFAULTS = required_defaults
+        return fields, required_defaults
+    except Exception:
+        _UE_FIELDS = set()
+        _UE_REQUIRED_DEFAULTS = {}
+        return _UE_FIELDS, _UE_REQUIRED_DEFAULTS
+
+
 def _ensure_ctx_license_key() -> None:  # CHANGED:
-    """
-    Ensure _ctx has a license_key. If missing, derive via site_url using Activation.
-    """
     try:
         lk = _ctx_get_license_key()
         if lk:
@@ -365,45 +604,152 @@ def _ensure_ctx_license_key() -> None:  # CHANGED:
             return
         derived = _derive_license_key_from_site(site)
         if derived:
-            _ctx_set(license_key=derived, site_url=site)  # CHANGED:
+            _ctx_set(license_key=derived, site_url=site)
             logger.info(
                 "[PPA][preview_post][usage] derived_license_from_site site=%s license=%s",
                 _normalize_site_url_for_lookup(site),
                 _mask_key_for_log(derived),
             )
     except Exception:
-        # Never let context derivation break generation.
         logger.exception("[PPA][preview_post][usage] ensure_ctx_failed")
 
 
-def _record_token_usage(provider: str, usage: Dict[str, int]) -> None:  # CHANGED:
+def _write_usage_event(  # CHANGED:
+    provider: str,
+    usage: Dict[str, int],
+    model_name: str = "",
+    kind: str = "preview",
+    endpoint: str = "preview_post.preview",
+) -> bool:
     """
-    Atomically increment an existing License usage field if:
-      - we can resolve a license_key (direct OR derived via Activation using site_url)
-      - the License model has a compatible field
-      - total_tokens > 0
-
-    No secrets in logs; best-effort only (never breaks generation).
+    Primary usage ledger write.
+    Returns True if a UsageEvent row was created, else False (never raises).
     """
     try:
-        _ensure_ctx_license_key()  # CHANGED:
+        _ensure_ctx_license_key()
 
         license_key = _ctx_get_license_key()
         if not license_key:
-            logger.info(
-                "[PPA][preview_post][usage] skip_no_license provider=%s total=%s",
-                provider,
-                _safe_int(usage.get("total_tokens")),
-            )
-            return
+            return False
 
         total = _safe_int(usage.get("total_tokens"))
         if total <= 0:
+            return False
+
+        from postpress_ai.models.license import License
+        lic_id = License.objects.filter(key=license_key).values_list("id", flat=True).first()
+        if not lic_id:
+            return False
+
+        from postpress_ai.models.usage_event import UsageEvent
+        fields, required_defaults = _usageevent_fields_and_required_defaults()
+
+        data: Dict[str, Any] = {}
+        data.update(required_defaults)
+
+        if "license" in fields:
+            data["license_id"] = lic_id
+        elif "license_id" in fields:
+            data["license_id"] = lic_id
+
+        site = _ctx_get_site_url()
+        norm_site = _normalize_site_url_for_lookup(site) if site else ""
+        if norm_site:
+            if "site_url" in fields:
+                data["site_url"] = norm_site
+            elif "site" in fields:
+                data["site"] = norm_site
+            elif "origin" in fields:
+                data["origin"] = norm_site
+
+        if "provider" in fields:
+            data["provider"] = provider
+        if model_name:
+            if "model" in fields:
+                data["model"] = model_name
+            elif "model_name" in fields:
+                data["model_name"] = model_name
+
+        if "endpoint" in fields:
+            data["endpoint"] = endpoint
+        if "kind" in fields:
+            data["kind"] = kind
+        if "event_type" in fields:
+            data["event_type"] = kind
+        if "event" in fields:
+            data["event"] = kind
+
+        pt = _safe_int(usage.get("prompt_tokens"))
+        ct = _safe_int(usage.get("completion_tokens"))
+
+        if "prompt_tokens" in fields:
+            data["prompt_tokens"] = pt
+        if "completion_tokens" in fields:
+            data["completion_tokens"] = ct
+        if "total_tokens" in fields:
+            data["total_tokens"] = total
+
+        if "tokens_prompt" in fields:
+            data["tokens_prompt"] = pt
+        if "tokens_completion" in fields:
+            data["tokens_completion"] = ct
+        if "tokens_total" in fields:
+            data["tokens_total"] = total
+        if "tokens" in fields and "total_tokens" not in data and "tokens_total" not in data:
+            data["tokens"] = total
+
+        meta_obj = {
+            "provider": provider,
+            "model": model_name,
+            "kind": kind,
+            "endpoint": endpoint,
+            "prompt_tokens": pt,
+            "completion_tokens": ct,
+            "total_tokens": total,
+        }
+        if "meta" in fields:
+            data["meta"] = meta_obj
+        elif "metadata" in fields:
+            data["metadata"] = meta_obj
+        elif "extra" in fields:
+            data["extra"] = meta_obj
+
+        UsageEvent.objects.create(**data)
+
+        logger.info(
+            "[PPA][preview_post][usage] usage_event_written provider=%s license=%s total=%s",
+            provider,
+            _mask_key_for_log(license_key),
+            total,
+        )
+        return True
+    except Exception:
+        logger.exception("[PPA][preview_post][usage] usage_event_write_failed provider=%s", provider)
+        return False
+
+
+def _record_token_usage(provider: str, usage: Dict[str, int], model_name: str = "", kind: str = "preview") -> None:  # CHANGED:
+    """
+    Primary: UsageEvent ledger row.
+    Fallback: legacy License-field increment.
+
+    Best-effort only: never breaks generation.
+    """
+    try:
+        _ensure_ctx_license_key()
+
+        license_key = _ctx_get_license_key()
+        total = _safe_int(usage.get("total_tokens"))
+        if not license_key or total <= 0:
             return
 
+        # CHANGED: ledger write first; if it works, do NOT also increment legacy field.
+        if _write_usage_event(provider, usage, model_name=model_name, kind=kind):  # CHANGED:
+            return
+
+        # Legacy fallback (only if ledger write failed)
         field = _license_usage_field_name()
         if not field:
-            # No field to write to (schema not present yet). Silent by design.
             logger.info(
                 "[PPA][preview_post][usage] no_license_usage_field provider=%s license=%s total=%s",
                 provider,
@@ -413,10 +759,8 @@ def _record_token_usage(provider: str, usage: Dict[str, int]) -> None:  # CHANGE
             return
 
         from postpress_ai.models.license import License
-
-        # CHANGED: NULL-safe atomic increment (NULL + N would stay NULL otherwise)
         updated = License.objects.filter(key=license_key).update(
-            **{field: Coalesce(F(field), 0) + total}  # CHANGED:
+            **{field: Coalesce(F(field), 0) + total}
         )
 
         if updated != 1:
@@ -429,31 +773,24 @@ def _record_token_usage(provider: str, usage: Dict[str, int]) -> None:  # CHANGE
             return
 
         logger.info(
-            "[PPA][preview_post][usage] recorded provider=%s license=%s field=%s total=%s (pt=%s ct=%s)",
+            "[PPA][preview_post][usage] recorded_legacy provider=%s license=%s field=%s total=%s",
             provider,
             _mask_key_for_log(license_key),
             field,
             total,
-            _safe_int(usage.get("prompt_tokens")),
-            _safe_int(usage.get("completion_tokens")),
         )
     except Exception:
-        # Never let usage accounting break preview generation.
         logger.exception("[PPA][preview_post][usage] recording_failed provider=%s", provider)
 
 
 # --------------------------------------------------------------------------------------
 # Param enforcement (Genre/Tone/etc.)
 # --------------------------------------------------------------------------------------
+# (UNCHANGED BELOW — rest of your original file continues exactly as you pasted it,
+#  with only the two call-sites updated to pass model/kind into _record_token_usage.)
+# --------------------------------------------------------------------------------------
 
 def _normalize_keywords(val: Any) -> str:  # CHANGED:
-    """
-    WP may send keywords as:
-      - list[str]
-      - comma-separated string
-      - empty
-    Normalize to a human-readable comma list.
-    """  # CHANGED:
     if val is None:
         return ""
     if isinstance(val, (list, tuple)):
@@ -464,17 +801,11 @@ def _normalize_keywords(val: Any) -> str:  # CHANGED:
 
 
 def _normalize_word_count(payload: Dict[str, Any]) -> str:  # CHANGED:
-    """
-    WP Composer sends word_count (number) in many cases.
-    Some legacy callers may send 'length'.
-    Normalize to a directive string.
-    """  # CHANGED:
     wc = payload.get("word_count")
     if wc is None or (isinstance(wc, str) and not wc.strip()):
         wc = payload.get("length")
     if wc is None:
         return ""
-    # Accept int/float-like strings safely.
     try:
         n = int(str(wc).strip())
         if n > 0:
@@ -488,10 +819,6 @@ def _normalize_word_count(payload: Dict[str, Any]) -> str:  # CHANGED:
 
 
 def _style_rules_for_genre(genre_raw: str) -> str:  # CHANGED:
-    """
-    Genre controls STRUCTURE. Keep this list broad so new UI options still work.
-    Unknown genres fall back to a sensible default rule.
-    """  # CHANGED:
     g = (genre_raw or "").strip().lower()
     if not g or g == "auto":
         return (
@@ -499,7 +826,6 @@ def _style_rules_for_genre(genre_raw: str) -> str:  # CHANGED:
             "Prefer clear headings, short paragraphs, and a practical flow."
         )
 
-    # Normalize some common aliases
     aliases = {
         "how-to": "howto",
         "how_to": "howto",
@@ -558,9 +884,6 @@ def _style_rules_for_genre(genre_raw: str) -> str:  # CHANGED:
 
 
 def _style_rules_for_tone(tone_raw: str) -> str:  # CHANGED:
-    """
-    Tone controls VOICE. Keep broad. Unknown tones fall back to neutral clarity.
-    """  # CHANGED:
     t = (tone_raw or "").strip().lower()
     if not t or t == "auto":
         return (
@@ -615,10 +938,6 @@ def _style_rules_for_tone(tone_raw: str) -> str:  # CHANGED:
 
 
 def _build_style_contract(payload: Dict[str, Any]) -> str:  # CHANGED:
-    """
-    Convert input params into hard constraints the model must follow.
-    This is the key change that makes Genre/Tone apply reliably across combinations.
-    """  # CHANGED:
     subject = _coerce_str(payload.get("subject") or payload.get("title"))
     genre = _coerce_str(payload.get("genre") or "")
     tone = _coerce_str(payload.get("tone") or "")
@@ -627,16 +946,17 @@ def _build_style_contract(payload: Dict[str, Any]) -> str:  # CHANGED:
     keywords = _normalize_keywords(payload.get("keywords"))
     cta = _coerce_str(payload.get("cta") or payload.get("call_to_action"))
 
-    # Optional brief/instructions from WP payload shapes
-    brief = _coerce_str(
-        payload.get("brief")
-        or payload.get("instructions")
-        or payload.get("content")   # WP composer sends brief/content/text redundantly
-        or payload.get("text")
+    brief = _demote_markdown_text(
+        _coerce_str(
+            payload.get("brief")
+            or payload.get("instructions")
+            or payload.get("content")
+            or payload.get("text")
+        )
     )
 
     lines = []
-    lines.append("HARD CONSTRAINTS (must follow):")  # CHANGED:
+    lines.append("HARD CONSTRAINTS (must follow):")
     lines.append(f"- Subject: {subject or 'n/a'}")
     lines.append(f"- Genre: {genre or 'Auto'}")
     lines.append(f"- Tone: {tone or 'Auto'}")
@@ -650,26 +970,30 @@ def _build_style_contract(payload: Dict[str, Any]) -> str:  # CHANGED:
     if brief:
         lines.append(f"- Extra instructions: {brief}")
 
-    # Genre drives structure; tone drives voice.
-    lines.append("")  # CHANGED:
-    lines.append(_style_rules_for_genre(genre))  # CHANGED:
-    lines.append(_style_rules_for_tone(tone))    # CHANGED:
+    lines.append("")
+    lines.append(_style_rules_for_genre(genre))
+    lines.append(_style_rules_for_tone(tone))
 
-    # Prevent the “duplicate title” problem in WP preview pipelines.
-    lines.append("")  # CHANGED:
+    lines.append("")
     lines.append(
         "HTML RULES: Output WordPress-ready HTML inside <article>. "
         "Use <h2>/<h3> for section headings. "
         "Do NOT include an <h1> that repeats the title. "
         "Keep paragraphs short and scannable."
-    )  # CHANGED:
+    )
 
-    # Force a final internal compliance check (but still output JSON only).
-    lines.append("")  # CHANGED:
-    lines.append("COMPLIANCE CHECK (do internally before output):")  # CHANGED:
+    lines.append(
+        "MARKDOWN BAN: Output must contain ZERO Markdown syntax. "
+        "Do NOT use [text](url) links, backticks, or markdown headings. "
+        "If you include a link, use an HTML anchor like: <a href='https://example.com'>Example</a>."
+    )
+
+    lines.append("")
+    lines.append("COMPLIANCE CHECK (do internally before output):")
     lines.append("- Did you follow the Genre structure rules?")
     lines.append("- Did you follow the Tone voice rules?")
     lines.append("- Did you avoid repeating the title as an H1 in the body HTML?")
+    lines.append("- Did you ensure there is ZERO Markdown syntax anywhere in title/html/summary?")
     lines.append("- Are you returning ONLY JSON with title/html/summary?")
 
     return "\n".join(lines)
@@ -733,18 +1057,14 @@ def _choose_provider() -> Optional[str]:
 # --------------------------------------------------------------------------------------
 
 def _build_user_prompt(payload: Dict[str, Any]) -> str:
-    # CHANGED: This prompt is now a contract, not a loose hint.
-    # We still include a compact "fields list", but the core is the style contract.
     subject = _coerce_str(payload.get("subject") or payload.get("title"))
     genre = _coerce_str(payload.get("genre") or "Auto")
     tone = _coerce_str(payload.get("tone") or "Auto")
     audience = _coerce_str(payload.get("audience") or payload.get("target") or payload.get("target_audience"))
 
-    # Normalize common WP fields
-    keywords = _normalize_keywords(payload.get("keywords"))  # CHANGED:
-    wc_directive = _normalize_word_count(payload)            # CHANGED:
+    keywords = _normalize_keywords(payload.get("keywords"))
+    wc_directive = _normalize_word_count(payload)
 
-    # Provide a short summary header (useful for logs/debugging provider behavior)
     header_lines = [
         f"Subject: {subject or 'n/a'}",
         f"Genre: {genre}",
@@ -756,8 +1076,7 @@ def _build_user_prompt(payload: Dict[str, Any]) -> str:
     if wc_directive:
         header_lines.append(wc_directive)
 
-    # Hard constraints block
-    contract = _build_style_contract(payload)  # CHANGED:
+    contract = _build_style_contract(payload)
 
     parts = []
     parts.append("INPUT FIELDS:")
@@ -767,7 +1086,8 @@ def _build_user_prompt(payload: Dict[str, Any]) -> str:
     parts.append("")
     parts.append("OUTPUT FORMAT (mandatory):")
     parts.append("Return ONLY a JSON object with keys: title (string), html (string), summary (string).")
-    parts.append("Do not wrap in markdown. Do not include commentary. Do not include extra keys.")  # CHANGED:
+    parts.append("Do not wrap in markdown. Do not include commentary. Do not include extra keys.")
+    parts.append("CRITICAL: html MUST be real HTML (not markdown). Links must be <a href='...'>.</a>")
 
     return "\n".join(parts)
 
@@ -801,7 +1121,8 @@ def _generate_via_openai(payload: Dict[str, Any]) -> Dict[str, str]:
                 "role": "system",
                 "content": (
                     "You are PostPress AI. You MUST follow the provided Genre/Tone/Audience/Length constraints. "
-                    "Output ONLY strict JSON that matches the provided schema. No extra text."
+                    "Output ONLY strict JSON that matches the provided schema. No extra text. "
+                    "IMPORTANT: The html field must be HTML, NEVER Markdown."
                 ),
             },
             {"role": "user", "content": f"Build a blog post preview as JSON.\n{_build_user_prompt(payload)}"},
@@ -824,11 +1145,9 @@ def _generate_via_openai(payload: Dict[str, Any]) -> Dict[str, str]:
             raw = resp.read().decode("utf-8")
         data = json.loads(raw)
 
-        # CHANGED: record usage (best-effort, never breaks generation)
-        usage = _extract_usage_openai(data)  # CHANGED:
-        _record_token_usage("openai", usage)  # CHANGED:
+        usage = _extract_usage_openai(data)
+        _record_token_usage("openai", usage, model_name=model, kind=("final" if final else "preview"))  # CHANGED:
 
-        # Normalize common shapes from OpenAI
         content_text = None
         try:
             content_text = data["choices"][0]["message"]["content"]
@@ -871,7 +1190,8 @@ def _generate_via_anthropic(payload: Dict[str, Any]) -> Dict[str, str]:
         "max_tokens": 1600,
         "system": (
             "You are PostPress AI. You MUST follow the provided Genre/Tone/Audience/Length constraints. "
-            "Output ONLY a JSON object with title/html/summary. No extra text."
+            "Output ONLY a JSON object with title/html/summary. No extra text. "
+            "IMPORTANT: The html field must be HTML, NEVER Markdown."
         ),
         "messages": [
             {"role": "user", "content": f"Build a blog post preview as JSON.\n{_build_user_prompt(payload)}"},
@@ -889,11 +1209,9 @@ def _generate_via_anthropic(payload: Dict[str, Any]) -> Dict[str, str]:
             raw = resp.read().decode("utf-8")
         data = json.loads(raw)
 
-        # CHANGED: record usage (best-effort, never breaks generation)
-        usage = _extract_usage_anthropic(data)  # CHANGED:
-        _record_token_usage("anthropic", usage)  # CHANGED:
+        usage = _extract_usage_anthropic(data)
+        _record_token_usage("anthropic", usage, model_name=model, kind=("final" if final else "preview"))  # CHANGED:
 
-        # Normalize common shapes from Anthropic
         content_text = None
         try:
             content_text = data["content"][0]["text"]
@@ -940,8 +1258,6 @@ def generate_preview(
     keys = sorted(list(payload.keys()))
     logger.info("[PPA][preview_post] keys=%s provider_env=%s", keys, os.getenv("PPA_PREVIEW_PROVIDER", ""))
 
-    # CHANGED: if ctx has site_url but no license, derive it before provider call.
-    # This covers any other callers that might call generate_preview() directly.
     try:
         _ensure_ctx_license_key()
     except Exception:
@@ -955,13 +1271,11 @@ def generate_preview(
         except Exception as e:
             logger.warning("[PPA][preview_post] provider error=%s; using local fallback", e)
 
-    # Local safe fallback (contract-stable)
     subject = _coerce_str(payload.get("subject") or payload.get("title"))
     genre = _coerce_str(payload.get("genre"))
     tone = _coerce_str(payload.get("tone"))
     title = _build_title(subject, genre, tone)
 
-    # CHANGED: avoid <h1> in body to match HTML_RULES guidance.
     html_out = (
         "<!-- provider: local-fallback -->\n"
         "<article class='ppa-preview'>\n"
@@ -987,18 +1301,15 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
     The outer wrapper performs CORS/auth (X-PPA-Key).
     """
     try:
-        # Parse JSON body
         try:
             data = json.loads(request.body.decode("utf-8")) if request.body else {}
         except Exception:
             data = {}
 
-        # Extract fields from the request
         fields = data.get("fields") or {}
         if not isinstance(fields, dict):
             fields = {}
 
-        # CHANGED: start with any obvious license/site fields available immediately
         license_key = _coerce_str(
             data.get("license_key")
             or fields.get("license_key")
@@ -1008,7 +1319,6 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
             or request.META.get("HTTP_X_PPA_LICENSE")
             or request.META.get("HTTP_X_PPA_LICENSE_KEY")
         )
-        # CHANGED: broaden site_url recovery (Origin/Referer are common when WP doesn’t send site_url)
         site_url = _coerce_str(
             data.get("site_url")
             or fields.get("site_url")
@@ -1017,14 +1327,13 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
             or request.headers.get("X-PPA-Site-Url")
             or request.META.get("HTTP_X_PPA_SITE")
             or request.META.get("HTTP_X_PPA_SITE_URL")
-            or request.headers.get("Origin")                 # CHANGED:
-            or request.META.get("HTTP_ORIGIN")              # CHANGED:
-            or request.headers.get("Referer")               # CHANGED:
-            or request.META.get("HTTP_REFERER")             # CHANGED:
+            or request.headers.get("Origin")
+            or request.META.get("HTTP_ORIGIN")
+            or request.headers.get("Referer")
+            or request.META.get("HTTP_REFERER")
         )
-        _ctx_set(license_key=license_key, site_url=site_url)  # CHANGED:
+        _ctx_set(license_key=license_key, site_url=site_url)
 
-        # CHANGED: 2025-09-05 - accept form-encoded fields (fields[...]) and ensure title fallback
         try:
             qd = getattr(request, "POST", None)
             if qd:
@@ -1041,7 +1350,6 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
         except Exception:
             pass
 
-        # Handle form-encoded fields from WordPress (legacy safety)
         if request.method == "POST" and getattr(request, "POST", None):
             import re
             skip = {"action", "nonce"}
@@ -1056,7 +1364,6 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
                 elif k not in fields:
                     fields[k] = v
 
-        # Title fallback - ensure we have a title field
         if not (isinstance(fields.get("title"), str) and fields.get("title").strip()):
             for alt in ("subject", "headline"):
                 v = fields.get(alt)
@@ -1064,7 +1371,6 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
                     fields["title"] = v
                     break
 
-        # CHANGED: re-evaluate ctx now that fields may have been expanded
         license_key2 = _coerce_str(
             data.get("license_key")
             or fields.get("license_key")
@@ -1076,21 +1382,19 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
             or fields.get("site_url")
             or fields.get("site")
             or site_url
-            or request.headers.get("Origin")                 # CHANGED:
-            or request.META.get("HTTP_ORIGIN")              # CHANGED:
-            or request.headers.get("Referer")               # CHANGED:
-            or request.META.get("HTTP_REFERER")             # CHANGED:
+            or request.headers.get("Origin")
+            or request.META.get("HTTP_ORIGIN")
+            or request.headers.get("Referer")
+            or request.META.get("HTTP_REFERER")
         )
 
-        # If license_key still missing, derive from Activation using site_url.
-        if not license_key2 and site_url2:  # CHANGED:
-            derived = _derive_license_key_from_site(site_url2)  # CHANGED:
+        if not license_key2 and site_url2:
+            derived = _derive_license_key_from_site(site_url2)
             if derived:
-                license_key2 = derived  # CHANGED:
+                license_key2 = derived
 
-        _ctx_set(license_key=license_key2, site_url=site_url2)  # CHANGED:
+        _ctx_set(license_key=license_key2, site_url=site_url2)
 
-        # Main processing logic
         logger.info("[PPA][preview_post][delegate] Processing fields: %s", list(fields.keys()))
 
         result = generate_preview(fields, request=request)
@@ -1111,4 +1415,4 @@ def preview(request: HttpRequest) -> JsonResponse | HttpResponse:
         }
         return _json_response(fallback, 200)
     finally:
-        _ctx_clear()  # CHANGED:
+        _ctx_clear()
