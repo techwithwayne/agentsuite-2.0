@@ -1,3 +1,4 @@
+# /home/techwithwayne/agentsuite/postpress_ai/views/license.py
 """
 postpress_ai.views.license
 
@@ -49,6 +50,10 @@ from __future__ import annotations
 # 2026-01-25: HARDEN: activate/deactivate errors now include deterministic contract payload when possible (better WP UX).
 # 2026-01-25: HARDEN: verify error responses also emit Cache-Control for deterministic caching behavior.
 # 2026-01-25: HARDEN: Account links now support per-plan env overrides and strict URL validation (fail-closed). # CHANGED:
+# 2026-01-26: FIX: Token usage in license.v1 now prefers SUM(UsageEvent.total_tokens) for the current period. # CHANGED:
+#            - Solves “0 used” in WP when License legacy counters are unset/stale.                           # CHANGED:
+#            - Field/relationship detection is introspective + fail-safe (never breaks licensing).          # CHANGED:
+#            - Transitional safety: monthly_used = max(legacy_field_used, usage_event_sum).                 # CHANGED:
 
 import hmac
 import json
@@ -59,6 +64,8 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from django.core.cache import cache
+from django.db.models import Sum  # CHANGED:
+from django.db.models.functions import Coalesce  # CHANGED:
 from django.http import HttpRequest, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -560,6 +567,94 @@ def _effective_entitlements(lic: License) -> Dict[str, Any]:  # CHANGED:
     }
 
 
+def _usageevent_sum_tokens_for_period(lic: License, period_start, period_end) -> Optional[int]:  # CHANGED:
+    """
+    Best-effort SUM(UsageEvent.total_tokens) for this license within [period_start, period_end).
+
+    Bulletproof constraints:
+    - No assumptions about field names: we introspect UsageEvent model fields.
+    - Works whether UsageEvent has FK to License OR a license_key string.
+    - If anything is missing/misconfigured, returns None (never breaks licensing).
+    """  # CHANGED:
+    try:
+        from postpress_ai.models.usage_event import UsageEvent  # local import prevents import-time coupling
+    except Exception:
+        return None
+
+    try:
+        fields = [f for f in UsageEvent._meta.get_fields() if hasattr(f, "name")]
+        field_names = {f.name for f in fields}
+    except Exception:
+        return None
+
+    # 1) License relationship (preferred)
+    license_fk_field: Optional[str] = None
+    try:
+        for f in fields:
+            # many_to_one covers ForeignKey; one_to_one is acceptable too.
+            if getattr(f, "is_relation", False) and getattr(f, "related_model", None) is License:
+                if bool(getattr(f, "many_to_one", False) or getattr(f, "one_to_one", False)):
+                    license_fk_field = f.name
+                    break
+    except Exception:
+        license_fk_field = None
+
+    # 2) License key string fallback
+    license_key_field: Optional[str] = None
+    if not license_fk_field:
+        for cand in ("license_key", "lic_key", "licensekey", "key"):
+            if cand in field_names:
+                license_key_field = cand
+                break
+
+    # 3) Timestamp field candidates
+    ts_field: Optional[str] = None
+    for cand in (
+        "created_at",
+        "occurred_at",
+        "event_at",
+        "timestamp",
+        "ts",
+        "created",
+        "at",
+        "time",
+    ):
+        if cand in field_names:
+            ts_field = cand
+            break
+
+    # 4) Total token field candidates
+    total_field: Optional[str] = None
+    for cand in ("total_tokens", "tokens_total", "token_total", "tokens", "total"):
+        if cand in field_names:
+            total_field = cand
+            break
+
+    if not ts_field or not total_field:
+        return None
+
+    qs = UsageEvent.objects.all()
+
+    if license_fk_field:
+        qs = qs.filter(**{license_fk_field: lic})
+    elif license_key_field:
+        lk = getattr(lic, "key", None)
+        if not lk:
+            return None
+        qs = qs.filter(**{license_key_field: str(lk)})
+    else:
+        return None
+
+    qs = qs.filter(**{f"{ts_field}__gte": period_start, f"{ts_field}__lt": period_end})
+
+    try:
+        agg = qs.aggregate(total=Coalesce(Sum(total_field), 0))
+        val = agg.get("total")
+        return int(val or 0)
+    except Exception:
+        return None
+
+
 def _token_snapshot(lic: License) -> Dict[str, Any]:  # CHANGED:
     """
     Token accounting snapshot.
@@ -578,15 +673,22 @@ def _token_snapshot(lic: License) -> Dict[str, Any]:  # CHANGED:
     ent = _effective_entitlements(lic)
     monthly_limit = int(ent["tokens"]["monthly_limit"] or 0)
 
-    monthly_used = _getattr_int(
+    legacy_monthly_used = _getattr_int(  # CHANGED:
         lic,
         "monthly_tokens_used",
         "tokens_used_this_period",
         "tokens_used_current_period",
         "tokens_used_month",
     )
-    if monthly_used is None:
-        monthly_used = 0
+    if legacy_monthly_used is None:
+        legacy_monthly_used = 0
+
+    # CHANGED: Prefer UsageEvent sum for truth (but never let usage go backwards).
+    usage_event_used = _usageevent_sum_tokens_for_period(lic, period_start, period_end)  # CHANGED:
+    if usage_event_used is None:  # CHANGED:
+        monthly_used = int(legacy_monthly_used)  # CHANGED:
+    else:
+        monthly_used = max(int(legacy_monthly_used), int(usage_event_used))  # CHANGED:
 
     purchased_balance = _getattr_int(
         lic,
