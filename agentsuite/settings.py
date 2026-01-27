@@ -3,6 +3,10 @@ Agentsuite Django settings
 
 CHANGE LOG
 ----------
+2026-01-23 • PPA CACHE: Add shared FileBasedCache to fix translate polling job_not_found across workers. # CHANGED:
+           • Uses BASE_DIR/ppa_cache (or env PPA_CACHE_DIR) and auto-creates dir safely.               # CHANGED:
+           • Falls back to LocMemCache if dir isn't writable (never crashes startup).                 # CHANGED:
+
 2025-12-26 • PPA EMAIL: Remove hardcoded email constants and wire env-driven provider config.         # CHANGED:
            • Uses postpress_ai.email_config.get_email_settings() (Mailgun via Anymail).              # CHANGED:
            • Keeps existing behavior for non-PPA apps; no CORS/auth/Stripe changes.                  # CHANGED:
@@ -224,6 +228,45 @@ DATABASES = {
         "OPTIONS": {"timeout": 30},
     }
 }
+
+# ========= Cache (shared across workers) =========
+# CHANGED: Fix translate polling across multiple workers by using a shared cache.
+# - LocMemCache is per-process → job state disappears when poll hits a different worker.
+# - FileBasedCache works on PythonAnywhere because workers share the filesystem.
+PPA_CACHE_DIR = os.getenv("PPA_CACHE_DIR", str(BASE_DIR / "ppa_cache"))  # CHANGED:
+
+# Create dir safely. If it fails (permissions), we fall back to LocMem and DO NOT crash.
+_can_write_cache_dir = False  # CHANGED:
+try:  # CHANGED:
+    os.makedirs(PPA_CACHE_DIR, exist_ok=True)  # CHANGED:
+    _can_write_cache_dir = os.access(PPA_CACHE_DIR, os.W_OK)  # CHANGED:
+except Exception as _cache_exc:  # CHANGED:
+    print(f"[settings_pm] PPA cache dir create failed ({PPA_CACHE_DIR}): {_cache_exc}")  # CHANGED:
+    _can_write_cache_dir = False  # CHANGED:
+
+if _can_write_cache_dir:  # CHANGED:
+    CACHES = {  # CHANGED:
+        "default": {  # CHANGED:
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",  # CHANGED:
+            "LOCATION": PPA_CACHE_DIR,  # CHANGED:
+            # Default timeout can remain None; per-call TTLs still apply.
+            "TIMEOUT": None,  # CHANGED:
+            "OPTIONS": {  # CHANGED:
+                "MAX_ENTRIES": 5000,  # CHANGED:
+                "CULL_FREQUENCY": 3,  # CHANGED:
+            },  # CHANGED:
+        }  # CHANGED:
+    }  # CHANGED:
+    print(f"[settings_pm] CACHES=FileBasedCache ({PPA_CACHE_DIR})")  # CHANGED:
+else:  # CHANGED:
+    # Fallback ensures app boots even if FS permissions are weird.
+    CACHES = {  # CHANGED:
+        "default": {  # CHANGED:
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",  # CHANGED:
+            "LOCATION": "ppa-fallback-locmem",  # CHANGED:
+        }  # CHANGED:
+    }  # CHANGED:
+    print("[settings_pm] CACHES=LocMemCache fallback (PPA cache dir not writable)")  # CHANGED:
 
 # ========= Password validation =========
 AUTH_PASSWORD_VALIDATORS = [

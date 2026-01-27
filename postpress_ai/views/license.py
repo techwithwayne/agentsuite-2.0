@@ -54,6 +54,9 @@ from __future__ import annotations
 #            - Solves “0 used” in WP when License legacy counters are unset/stale.                           # CHANGED:
 #            - Field/relationship detection is introspective + fail-safe (never breaks licensing).          # CHANGED:
 #            - Transitional safety: monthly_used = max(legacy_field_used, usage_event_sum).                 # CHANGED:
+# 2026-01-26: FIX: _effective_entitlements now respects PLAN_DEFAULTS for boolean flags unless explicit overrides exist. # CHANGED:
+#            - Prevents agency_byo showing max=0 + unlimited=False when DB booleans default False/True.               # CHANGED:
+#            - Keeps license.v1 response shape unchanged; only corrects computed entitlements.                         # CHANGED:
 
 import hmac
 import json
@@ -427,13 +430,93 @@ def _activation_count_for_license(lic: License) -> int:
     return Activation.objects.filter(license=lic).count()
 
 
-def _license_limit_allows_site(lic: License) -> bool:
-    if bool(getattr(lic, "unlimited_sites", False)):
+def _license_limit_allows_site(lic, site_url: str = "") -> bool:
+    """
+    PostPress AI — Site activation limit check
+
+    ========= CHANGE LOG =========
+    2026-01-26: FIX: Enforce site limits using _effective_entitlements(lic) (PLAN_DEFAULTS fallback)
+               instead of raw License.max_sites/unlimited_sites.  # CHANGED:
+    """
+
+    # --- Normalize site URL (idempotency + stable comparisons) ---
+    def _norm(u: str) -> str:
+        u = (u or "").strip().lower()
+        while u.endswith("/"):
+            u = u[:-1]
+        return u
+
+    site_url_n = _norm(site_url)
+
+    # --- Pull effective entitlements (this is the critical fix) ---
+    ent = _effective_entitlements(lic) or {}
+
+    # Support both possible shapes:
+    # A) {"sites": {"max": X, "unlimited": bool, ...}, ...}
+    # B) {"max_sites": X, "unlimited_sites": bool, ...}
+    sites_ent = ent.get("sites") if isinstance(ent.get("sites"), dict) else {}
+
+    unlimited = bool(
+        ent.get("unlimited_sites")
+        or sites_ent.get("unlimited")
+    )
+
+    if unlimited:
         return True
-    max_sites = int(getattr(lic, "max_sites", 0) or 0)
-    if max_sites <= 0:
+
+    max_sites = (
+        sites_ent.get("max")
+        if sites_ent.get("max") is not None
+        else ent.get("max_sites")
+    )
+
+    try:
+        max_sites_int = int(max_sites or 0)
+    except Exception:
+        max_sites_int = 0
+
+    # Defensive: if entitlements say "0", treat as no capacity.
+    if max_sites_int <= 0:
         return False
-    return _activation_count_for_license(lic) < max_sites
+
+    # --- Activation counting (tries to be compatible with your model field names) ---
+    # If the same site is already active, allow (idempotent activate).
+    try:
+        from postpress_ai.models import Activation  # adjust if your import path differs
+
+        qs = Activation.objects.filter(license=lic)
+
+        # "active" filter variants
+        field_names = {f.name for f in Activation._meta.get_fields() if hasattr(f, "name")}
+
+        if "is_active" in field_names:
+            qs_active = qs.filter(is_active=True)
+        elif "active" in field_names:
+            qs_active = qs.filter(active=True)
+        elif "status" in field_names:
+            qs_active = qs.filter(status__in=["active", "activated"])
+        elif "deactivated_at" in field_names:
+            qs_active = qs.filter(deactivated_at__isnull=True)
+        else:
+            qs_active = qs  # fallback: count all rows
+
+        # Idempotent check: if this site already exists as active, allow
+        if site_url_n:
+            if "site_url" in field_names:
+                if qs_active.filter(site_url__iexact=site_url_n).exists():
+                    return True
+            elif "site" in field_names:
+                # rare alt naming
+                if qs_active.filter(site__iexact=site_url_n).exists():
+                    return True
+
+        used = qs_active.count()
+
+    except Exception:
+        # If we cannot evaluate activations for any reason, fail closed (server-side strict)
+        return False
+
+    return used < max_sites_int
 
 
 def _mask_key(key: str) -> str:
@@ -503,12 +586,16 @@ def _month_bounds(now_dt) -> Tuple[Any, Any]:  # CHANGED:
 def _effective_entitlements(lic: License) -> Dict[str, Any]:  # CHANGED:
     """
     Determine effective entitlements using:
-    1) explicit License fields if they exist
+    1) explicit License fields (when truly set/overridden)
     2) fallback PLAN_DEFAULTS by plan_slug
 
-    HARDEN RULE:
-    - For AI-included plans, monthly token limit must never be 0 (0 == "unset" in early stages). # CHANGED:
-    - For non-unlimited plans, max_sites must never be 0 (0 == "unset").                         # CHANGED:
+    HARDEN RULES:
+    - For AI-included plans, monthly token limit must never be 0 (0 == "unset" early on). # CHANGED:
+    - For non-unlimited plans, max_sites must never be 0 (0 == "unset").                   # CHANGED:
+    - Boolean flags (unlimited_sites / ai_included / byo_key_required) default to model values
+      that may not represent the plan. We therefore treat booleans as "override-only" unless
+      there is a corresponding explicit override signal (e.g., max_sites set, monthly_token_limit set). # CHANGED:
+      This fixes BYO plans showing 0 sites + not unlimited when DB boolean defaults are False.           # CHANGED:
     """
     slug_raw = getattr(lic, "plan_slug", None)  # CHANGED:
     slug = _clean_plan_slug(slug_raw)  # CHANGED:
@@ -517,23 +604,31 @@ def _effective_entitlements(lic: License) -> Dict[str, Any]:  # CHANGED:
     used_default_sites = False  # CHANGED:
     used_default_tokens = False  # CHANGED:
 
-    # Feature flags first (needed to interpret "0 means unset")
-    ai_included = bool(getattr(lic, "ai_included", fallback[3]))  # CHANGED:
-    byo_required = bool(getattr(lic, "byo_key_required", fallback[4]))  # CHANGED:
+    # --- Sites overrides ---
+    # If max_sites is NULL/None in DB, we treat it as "no override" and rely on plan defaults.  # CHANGED:
+    max_sites = _getattr_int(lic, "max_sites")  # CHANGED:
+    has_sites_override = max_sites is not None  # CHANGED:
 
-    # Sites
-    unlimited_sites = bool(getattr(lic, "unlimited_sites", fallback[1]))
-    max_sites = _getattr_int(lic, "max_sites")
-    if max_sites is None:
-        max_sites = int(fallback[0])
+    # Unlimited sites: treat True as an explicit override; treat False as "no override" unless max_sites is set.  # CHANGED:
+    lic_unlimited_raw = getattr(lic, "unlimited_sites", None)  # CHANGED:
+    if bool(lic_unlimited_raw):  # CHANGED:
+        unlimited_sites = True  # CHANGED:
+        has_sites_override = True  # CHANGED:
+    elif has_sites_override:  # CHANGED:
+        unlimited_sites = False  # CHANGED:
+    else:  # CHANGED:
+        unlimited_sites = bool(fallback[1])  # CHANGED:
+
+    if max_sites is None:  # CHANGED:
+        max_sites = int(fallback[0])  # CHANGED:
         used_default_sites = True  # CHANGED:
-    # If not unlimited, treat 0/neg as unset and fall back.
-    if (not unlimited_sites) and (max_sites <= 0):  # CHANGED:
+    # If not unlimited, treat 0/neg as unset and fall back.  # CHANGED:
+    if (not unlimited_sites) and (int(max_sites) <= 0):  # CHANGED:
         max_sites = int(fallback[0])  # CHANGED:
         used_default_sites = True  # CHANGED:
 
-    # Tokens (monthly included)
-    monthly_limit = _getattr_int(
+    # --- Token overrides ---
+    monthly_limit = _getattr_int(  # CHANGED:
         lic,
         "monthly_token_limit",
         "monthly_tokens",
@@ -541,16 +636,26 @@ def _effective_entitlements(lic: License) -> Dict[str, Any]:  # CHANGED:
         "token_limit_monthly",
         "included_tokens_monthly",
     )
-    if monthly_limit is None:
-        monthly_limit = int(fallback[2])
+    has_tokens_override = monthly_limit is not None  # CHANGED:
+    if monthly_limit is None:  # CHANGED:
+        monthly_limit = int(fallback[2])  # CHANGED:
         used_default_tokens = True  # CHANGED:
 
-    # CRITICAL: AI-included plans must not return 0 tokens unless you explicitly set them later.  # CHANGED:
+    # Feature flags:
+    # Only treat ai_included/byo_key_required as explicit overrides when tokens are explicitly overridden. # CHANGED:
+    if has_tokens_override:  # CHANGED:
+        ai_included = bool(getattr(lic, "ai_included", fallback[3]))  # CHANGED:
+        byo_required = bool(getattr(lic, "byo_key_required", fallback[4]))  # CHANGED:
+    else:  # CHANGED:
+        ai_included = bool(fallback[3])  # CHANGED:
+        byo_required = bool(fallback[4])  # CHANGED:
+
+    # CRITICAL: AI-included plans must not return 0 tokens unless explicitly set later.  # CHANGED:
     if ai_included and (not byo_required) and (int(monthly_limit) <= 0):  # CHANGED:
         monthly_limit = int(fallback[2])  # CHANGED:
         used_default_tokens = True  # CHANGED:
 
-    # Source label (honest + useful for debugging without leaking secrets)
+    # Source label (honest + useful for debugging without leaking secrets)  # CHANGED:
     if used_default_sites and used_default_tokens:  # CHANGED:
         source = "plan_defaults"  # CHANGED:
     elif used_default_sites or used_default_tokens:  # CHANGED:

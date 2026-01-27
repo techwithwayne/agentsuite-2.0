@@ -11,6 +11,7 @@ PostPress AI — Django Admin Registrations
            • Forward-compatible: Activation admin auto-registers when model exists.         # CHANGED:
 2026-01-10 • Register Customer Command Center models + Plan model so they show in admin.   # CHANGED:
 2026-01-10 • Add EmailLog admin + inline under Customer for license-email visibility.      # CHANGED:
+2026-01-26 • ADMIN UX: Show Effective Max/Unlimited + Tokens in License list (computed from PLAN_DEFAULTS). # CHANGED:
 """
 
 from django.contrib import admin  # CHANGED:
@@ -82,8 +83,18 @@ if License is not None:  # CHANGED:
             "masked_key",  # CHANGED:
             "plan_slug",  # CHANGED:
             "status",  # CHANGED:
+
+            # Raw DB overrides (often blank by design).  # CHANGED:
             "max_sites",  # CHANGED:
             "unlimited_sites",  # CHANGED:
+
+            # Effective computed entitlements (PLAN_DEFAULTS fallback).  # CHANGED:
+            "eff_max_sites",  # CHANGED:
+            "eff_unlimited_sites",  # CHANGED:
+            "eff_tokens_mode",  # CHANGED:
+            "eff_tokens_monthly_limit",  # CHANGED:
+            "eff_entitlements_source",  # CHANGED:
+
             "byo_key_required",  # CHANGED:
             "ai_included",  # CHANGED:
             "expires_at",  # CHANGED:
@@ -100,6 +111,85 @@ if License is not None:  # CHANGED:
             if len(k) <= 8:  # CHANGED:
                 return "****"  # CHANGED:
             return f"{k[:4]}…{k[-4:]}"  # CHANGED:
+
+        # ---- Effective entitlement helpers (read-only; display only; no behavior changes) ----  # CHANGED:
+        def _effective_entitlements_safe(self, obj):  # CHANGED:
+            """
+            Returns entitlements derived from PLAN_DEFAULTS (or overrides) via licensing view helper.
+
+            IMPORTANT: Import is inside the method to avoid circular import risk during admin load.  # CHANGED:
+            """
+            try:  # CHANGED:
+                from postpress_ai.views.license import _effective_entitlements  # CHANGED:
+            except Exception:  # CHANGED:
+                return {}  # CHANGED:
+
+            try:  # CHANGED:
+                ent = _effective_entitlements(obj) or {}  # CHANGED:
+            except Exception:  # CHANGED:
+                ent = {}  # CHANGED:
+            return ent  # CHANGED:
+
+        def _effective_sites_tuple(self, obj):  # CHANGED:
+            ent = self._effective_entitlements_safe(obj)  # CHANGED:
+            sites = ent.get("sites") if isinstance(ent.get("sites"), dict) else {}  # CHANGED:
+
+            max_sites = sites.get("max")  # CHANGED:
+            if max_sites is None:  # CHANGED:
+                max_sites = ent.get("max_sites")  # CHANGED:
+
+            unlimited = sites.get("unlimited")  # CHANGED:
+            if unlimited is None:  # CHANGED:
+                unlimited = ent.get("unlimited_sites")  # CHANGED:
+
+            return (max_sites, bool(unlimited), ent)  # CHANGED:
+
+        @admin.display(description="Eff Max Sites")  # CHANGED:
+        def eff_max_sites(self, obj):  # CHANGED:
+            max_sites, _unlimited, _ent = self._effective_sites_tuple(obj)  # CHANGED:
+            if max_sites is None:  # CHANGED:
+                return "-"  # CHANGED:
+            try:  # CHANGED:
+                return int(max_sites)  # CHANGED:
+            except Exception:  # CHANGED:
+                return str(max_sites)  # CHANGED:
+
+        @admin.display(description="Eff Unlimited", boolean=True)  # CHANGED:
+        def eff_unlimited_sites(self, obj):  # CHANGED:
+            _max_sites, unlimited, _ent = self._effective_sites_tuple(obj)  # CHANGED:
+            return bool(unlimited)  # CHANGED:
+
+        @admin.display(description="Eff Tokens Mode")  # CHANGED:
+        def eff_tokens_mode(self, obj):  # CHANGED:
+            ent = self._effective_entitlements_safe(obj)  # CHANGED:
+            tokens = ent.get("tokens") if isinstance(ent.get("tokens"), dict) else {}  # CHANGED:
+            mode = tokens.get("mode")  # CHANGED:
+            return mode or "-"  # CHANGED:
+
+        @admin.display(description="Eff Monthly Tokens")  # CHANGED:
+        def eff_tokens_monthly_limit(self, obj):  # CHANGED:
+            ent = self._effective_entitlements_safe(obj)  # CHANGED:
+            tokens = ent.get("tokens") if isinstance(ent.get("tokens"), dict) else {}  # CHANGED:
+            monthly = tokens.get("monthly_limit")  # CHANGED:
+            if monthly is None:  # CHANGED:
+                return "-"  # CHANGED:
+            try:  # CHANGED:
+                return f"{int(monthly):,}"  # CHANGED:
+            except Exception:  # CHANGED:
+                return str(monthly)  # CHANGED:
+
+        @admin.display(description="Ent Src")  # CHANGED:
+        def eff_entitlements_source(self, obj):  # CHANGED:
+            """
+            Simple, admin-only hint:
+            - If raw override fields are set, show override.
+            - Otherwise, it's plan_defaults (your intended standard).  # CHANGED:
+            """
+            raw_max = getattr(obj, "max_sites", None)  # CHANGED:
+            raw_unl = bool(getattr(obj, "unlimited_sites", False))  # CHANGED:
+            if raw_unl or (raw_max is not None and str(raw_max).strip() != ""):  # CHANGED:
+                return "license_override"  # CHANGED:
+            return "plan_defaults"  # CHANGED:
 
 
 # --------------------------------------------------------------------------------------
