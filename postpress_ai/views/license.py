@@ -1,5 +1,6 @@
-# /home/techwithwayne/agentsuite/postpress_ai/views/license.py
+
 """
+# /home/techwithwayne/agentsuite/postpress_ai/views/license.py
 postpress_ai.views.license
 
 Licensing endpoints (Django is authoritative):
@@ -67,6 +68,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from django.core.cache import cache
+from django.apps import apps  # CHANGED:
 from django.db.models import Sum  # CHANGED:
 from django.db.models.functions import Coalesce  # CHANGED:
 from django.http import HttpRequest, JsonResponse
@@ -849,6 +851,11 @@ def _safe_account_url(value: Optional[str]) -> Optional[str]:  # CHANGED:
     - Must be absolute http(s) URL with a hostname.
     - Production-safe default: require https unless it's clearly local/dev.
     - Reject whitespace, overly long values, and malformed URLs.
+
+    CHANGED:
+    - Never allow Stripe Billing Portal login URLs (email-login flow).
+      The ONLY Stripe URL WP should ever receive is a one-time /p/session/... URL,
+      minted on-demand during /license/verify/?intent=billing_portal&portal_session=1.
     """
     s = _opt_str(value)
     if not s:
@@ -867,11 +874,37 @@ def _safe_account_url(value: Optional[str]) -> Optional[str]:  # CHANGED:
         return None
 
     host = (p.hostname or "").lower()
+
+    # CHANGED: block Stripe Billing Portal login URLs entirely here.
+    if host == "billing.stripe.com":
+        return None
+
     if p.scheme == "http":
         # Allow http ONLY for local/dev style hosts. Fail closed otherwise.  # CHANGED:
         if host not in ("localhost", "127.0.0.1") and (not host.endswith(".local")):
             return None
 
+    return s
+
+
+def _safe_stripe_billing_portal_session_url(value: Optional[str]) -> Optional[str]:  # CHANGED:
+    """
+    Strict validator for Stripe one-time Billing Portal session URLs.
+
+    REQUIREMENTS (LOCKED):
+    - Must be: https://billing.stripe.com/p/session/...
+    - Must NOT be: /p/login (email-login flow)
+    - Must be HTTPS and contain no whitespace
+    """
+    s = _opt_str(value)
+    if not s:
+        return None
+    if any(ch.isspace() for ch in s):
+        return None
+    if len(s) > 2048:
+        return None
+    if not s.startswith("https://billing.stripe.com/p/session/"):
+        return None
     return s
 
 
@@ -1006,6 +1039,320 @@ def _license_contract_snapshot(license_key: str, lic: License) -> Dict[str, Any]
 
 
 # ------------------------------
+
+# ------------------------------
+# Stripe Billing Portal (one-time session URLs)
+# ------------------------------
+# CHANGED:
+# - WP must open a one-time Stripe Billing Portal session URL inside the popup.
+# - We ONLY mint these URLs on demand during /license/verify/?intent=billing_portal&portal_session=1.
+# - We NEVER cache these session URLs (HTTP no-store + no server-side persistence).
+
+_STRIPE_CUSTOMER_CACHE_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days (safe to cache customer id only)  # CHANGED:
+
+
+def _resolve_stripe_secret_key() -> str:  # CHANGED:
+    """
+    Resolve the Stripe secret key in a bulletproof way.
+
+    Spec (LOCKED):
+    - If PPA_STRIPE_MODE=live -> use STRIPE_LIVE_SECRET_KEY
+    - Else (test) -> use STRIPE_TEST_SECRET_KEY
+    - Fallback to STRIPE_SECRET_KEY / STRIPE_API_KEY / PPA_STRIPE_SECRET_KEY if present
+
+    Safety:
+    - Never prints secrets
+    """
+    mode = (_opt_str(os.environ.get("PPA_STRIPE_MODE")) or "").lower()
+
+    candidates = []
+    if mode == "live":
+        candidates.append(_opt_str(os.environ.get("STRIPE_LIVE_SECRET_KEY")))
+    else:
+        candidates.append(_opt_str(os.environ.get("STRIPE_TEST_SECRET_KEY")))
+
+    # Fallbacks (legacy names or alternate deployments).
+    candidates.extend(
+        [
+            _opt_str(os.environ.get("STRIPE_SECRET_KEY")),
+            _opt_str(os.environ.get("STRIPE_API_KEY")),
+            _opt_str(os.environ.get("PPA_STRIPE_SECRET_KEY")),
+            _opt_str(os.environ.get("STRIPE_LIVE_SECRET_KEY")),
+            _opt_str(os.environ.get("STRIPE_TEST_SECRET_KEY")),
+        ]
+    )
+
+    for c in candidates:
+        if c:
+            return c
+
+    raise APIError(
+        code="stripe_misconfig",
+        message="Stripe is not configured.",
+        http_status=503,
+        err_type="server_error",
+    )
+
+
+def _looks_like_stripe_customer_id(value: Optional[str]) -> bool:  # CHANGED:
+    s = _opt_str(value) or ""
+    return s.startswith("cus_") and len(s) >= 8
+
+
+def _stripe_customer_cache_key(license_key: str) -> str:  # CHANGED:
+    # Cache is safe here: it stores ONLY the customer id, never a session URL.
+    return f"ppa:stripe_customer:{license_key}"
+
+
+def _find_stripe_customer_id_in_models(lic: License, license_key: str) -> Optional[str]:  # CHANGED:
+    """
+    Best-effort DB lookup for an existing Stripe customer id.
+
+    We do NOT assume a specific schema, because your License model does not include Stripe fields.
+    We introspect installed models to find a plausible stripe_customer_id tied to this license.
+
+    Returns cus_... or None.
+    """
+    try:
+        for model in apps.get_models():
+            # Skip unmanaged/proxy models safely.
+            try:
+                fields = [f for f in model._meta.get_fields() if hasattr(f, "name")]
+                field_names = {f.name for f in fields}
+            except Exception:
+                continue
+
+            if "stripe_customer_id" not in field_names:
+                continue
+
+            # Prefer FK to License if present.
+            license_fk_field = None
+            try:
+                for f in fields:
+                    if getattr(f, "is_relation", False) and getattr(f, "related_model", None) is License:
+                        if bool(getattr(f, "many_to_one", False) or getattr(f, "one_to_one", False)):
+                            license_fk_field = f.name
+                            break
+            except Exception:
+                license_fk_field = None
+
+            license_key_field = "license_key" if "license_key" in field_names else None
+
+            qs = model.objects.all()
+            if license_fk_field:
+                qs = qs.filter(**{license_fk_field: lic})
+            elif license_key_field:
+                qs = qs.filter(**{license_key_field: license_key})
+            else:
+                continue
+
+            try:
+                obj = qs.exclude(stripe_customer_id__isnull=True).exclude(stripe_customer_id="").first()
+            except Exception:
+                continue
+
+            if not obj:
+                continue
+
+            val = _opt_str(getattr(obj, "stripe_customer_id", None))
+            if _looks_like_stripe_customer_id(val):
+                return val
+    except Exception:
+        return None
+
+    return None
+
+
+def _get_or_create_stripe_customer_id(*, lic: License, license_key: str, site_url: str) -> str:  # CHANGED:
+    """
+    Return a Stripe customer id (cus_...).
+
+    Strategy (bulletproof):
+    1) Cache lookup
+    2) DB introspection lookup
+    3) Stripe search (metadata)
+    4) Create a new Stripe customer with metadata (no email required)
+
+    NOTE:
+    - We cache ONLY the customer id (safe).
+    - We do NOT store the one-time portal session URL anywhere.
+    """
+    cache_key = _stripe_customer_cache_key(license_key)
+    try:
+        cached = _opt_str(cache.get(cache_key))
+        if _looks_like_stripe_customer_id(cached):
+            return cached
+    except Exception:
+        pass
+
+    existing = _find_stripe_customer_id_in_models(lic, license_key)
+    if _looks_like_stripe_customer_id(existing):
+        try:
+            cache.set(cache_key, existing, timeout=_STRIPE_CUSTOMER_CACHE_TTL_SECONDS)
+        except Exception:
+            pass
+        return existing
+
+
+    # Stripe-side lookup (best effort): try to find an existing customer by metadata.
+    # This avoids creating a fresh customer that wouldn't show the real subscription in the Portal.  # CHANGED:
+    try:
+        import stripe  # local import keeps licensing boot resilient
+
+        stripe.api_key = _resolve_stripe_secret_key()
+
+        # 1) Try Subscription search by common metadata keys.  # CHANGED:
+        for meta_key in ("ppa_license_key", "license_key", "ppa_license", "ppa_key"):
+            try:
+                res = stripe.Subscription.search(
+                    query=f"metadata['{meta_key}']:'{license_key}'",
+                    limit=1,
+                )
+                data = getattr(res, "data", None) or []
+                if data:
+                    sub = data[0]
+                    cust = sub.get("customer") if isinstance(sub, dict) else getattr(sub, "customer", None)
+                    cust = _opt_str(cust)
+                    if _looks_like_stripe_customer_id(cust):
+                        try:
+                            cache.set(cache_key, cust, timeout=_STRIPE_CUSTOMER_CACHE_TTL_SECONDS)
+                        except Exception:
+                            pass
+                        return cust
+            except Exception:
+                continue
+
+        # 2) Try Customer search by metadata keys.  # CHANGED:
+        for meta_key in ("ppa_license_key", "license_key", "ppa_license", "ppa_key"):
+            try:
+                res = stripe.Customer.search(
+                    query=f"metadata['{meta_key}']:'{license_key}'",
+                    limit=1,
+                )
+                data = getattr(res, "data", None) or []
+                if data:
+                    cust_obj = data[0]
+                    cust_id = cust_obj.get("id") if isinstance(cust_obj, dict) else getattr(cust_obj, "id", None)
+                    cust_id = _opt_str(cust_id)
+                    if _looks_like_stripe_customer_id(cust_id):
+                        try:
+                            cache.set(cache_key, cust_id, timeout=_STRIPE_CUSTOMER_CACHE_TTL_SECONDS)
+                        except Exception:
+                            pass
+                        return cust_id
+            except Exception:
+                continue
+
+    except Exception:
+        # Fail safe: if Stripe search isn't available in this account/version, fall through to create.  # CHANGED:
+        pass
+
+    # Create customer (best effort).
+    try:
+        import stripe  # local import keeps licensing boot resilient
+
+        stripe.api_key = _resolve_stripe_secret_key()
+
+        created = stripe.Customer.create(
+            description="PostPress AI",
+            metadata={
+                "ppa_license_key": license_key,
+                "ppa_site_url": site_url,
+            },
+        )
+        cust_id = _opt_str(getattr(created, "id", None))
+        if not _looks_like_stripe_customer_id(cust_id):
+            raise APIError(
+                code="stripe_customer_invalid",
+                message="Unable to create Stripe customer.",
+                http_status=503,
+                err_type="server_error",
+            )
+
+        try:
+            cache.set(cache_key, cust_id, timeout=_STRIPE_CUSTOMER_CACHE_TTL_SECONDS)
+        except Exception:
+            pass
+        return cust_id
+
+    except APIError:
+        raise
+    except Exception:
+        raise APIError(
+            code="stripe_customer_error",
+            message="Billing Portal temporarily unavailable.",
+            http_status=503,
+            err_type="server_error",
+        )
+
+
+def _mint_billing_portal_session_url(*, lic: License, license_key: str, site_url: str, return_url: str) -> str:  # CHANGED:
+    """
+    Mint a one-time Stripe Billing Portal session URL.
+
+    Requirements (LOCKED):
+    - Returns only https://billing.stripe.com/p/session/... URLs
+    - Must NOT fall back to /p/login
+    - Must NOT be cached
+    """
+    try:
+        import stripe  # local import keeps licensing boot resilient
+
+        stripe.api_key = _resolve_stripe_secret_key()
+
+        customer_id = _get_or_create_stripe_customer_id(lic=lic, license_key=license_key, site_url=site_url)
+
+        # Sanity: return_url must be a safe absolute URL. Prefer the validated site_url.  # CHANGED:
+        safe_return = _safe_account_url(return_url) or _safe_account_url(site_url) or site_url
+
+        sess = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=safe_return,
+        )
+        url = _opt_str(getattr(sess, "url", None))
+        url = _safe_stripe_billing_portal_session_url(url)
+        if not url:
+            raise APIError(
+                code="missing_or_invalid_session_url",
+                message="Billing Portal temporarily unavailable.",
+                http_status=503,
+                err_type="server_error",
+            )
+        return url
+
+    except APIError:
+        raise
+    except Exception:
+        raise APIError(
+            code="stripe_portal_error",
+            message="Billing Portal temporarily unavailable.",
+            http_status=503,
+            err_type="server_error",
+        )
+
+
+def _wants_billing_portal_session(request: HttpRequest, payload: Dict[str, Any]) -> bool:  # CHANGED:
+    """Determine whether the caller is requesting a one-time billing portal session."""
+    try:
+        intent = _opt_str(request.GET.get("intent")) or ""
+        intent = intent.strip().lower()
+    except Exception:
+        intent = ""
+
+    # Accept common truthy values.
+    try:
+        portal_session = _opt_str(request.GET.get("portal_session"))
+    except Exception:
+        portal_session = None
+
+    if portal_session is None:
+        # Back-compat: allow payload to request it too (some clients send it in JSON).
+        portal_session = _opt_str(payload.get("portal_session"))
+
+    portal_flag = (portal_session or "").strip().lower() in ("1", "true", "yes", "on")
+
+    return (intent == "billing_portal") or portal_flag
+
 # Endpoints
 # ------------------------------
 @csrf_exempt
@@ -1096,6 +1443,8 @@ def license_activate(request: HttpRequest) -> JsonResponse:
 
 @csrf_exempt
 @require_POST
+@csrf_exempt
+@require_POST
 def license_verify(request: HttpRequest) -> JsonResponse:
     """
     Verify a license + site activation.
@@ -1111,14 +1460,28 @@ def license_verify(request: HttpRequest) -> JsonResponse:
       ok true if license active AND activation exists.
       Includes deterministic license status (sites + tokens + features) for WP Settings display.
 
+    BILLING PORTAL (LOCKED REQUIREMENT):
+      When called with:
+        - ?intent=billing_portal&portal_session=1
+      this endpoint MUST return a one-time Stripe Billing Portal session URL at:
+        data.license.links.billing_portal = https://billing.stripe.com/p/session/...
+
+      And MUST:
+        - NOT return /p/login links
+        - NOT cache the response (no-store)
+
     CHANGED:
       On error states (inactive/not_activated), we still include `data` with the deterministic
       plan/sites/tokens snapshot so WP can render Plan & Usage without guessing.
     """
+    wants_portal_session = False  # CHANGED:
+    base_data: Optional[Dict[str, Any]] = None  # CHANGED:
     try:
         payload = _parse_json_body(request)
         license_key = _clean_license_key(payload.get("license_key"))
         site_url = _normalize_site_url(payload.get("site_url"))
+
+        wants_portal_session = _wants_billing_portal_session(request, payload)  # CHANGED:
 
         _shared_key_header_valid(request)  # optional path
 
@@ -1129,8 +1492,12 @@ def license_verify(request: HttpRequest) -> JsonResponse:
 
         # Build deterministic contract snapshot first (even if we error later).  # CHANGED:
         lic_snapshot = _license_contract_snapshot(license_key, lic)  # CHANGED:
-        base_data: Dict[str, Any] = {  # CHANGED:
-            "cache_ttl_seconds": VERIFY_CACHE_TTL_SECONDS,
+
+        # If we're minting a one-time portal session URL, the response MUST NOT be cached.  # CHANGED:
+        cache_ttl = 0 if wants_portal_session else VERIFY_CACHE_TTL_SECONDS  # CHANGED:
+
+        base_data = {  # CHANGED:
+            "cache_ttl_seconds": cache_ttl,
             "server_time": timezone.now(),
             "license": lic_snapshot,
             "activation": {
@@ -1164,27 +1531,54 @@ def license_verify(request: HttpRequest) -> JsonResponse:
 
         _touch_activation(act, force=False)  # throttled writes for cacheability
 
+        # CHANGED: Mint Billing Portal session URL only on demand.
+        if wants_portal_session:
+            session_url = _mint_billing_portal_session_url(
+                lic=lic,
+                license_key=license_key,
+                site_url=site_url,
+                return_url=site_url,
+            )
+
+            # Ensure links exists and override billing_portal with the one-time session URL.  # CHANGED:
+            lic_links = base_data.get("license", {}).get("links")
+            if not isinstance(lic_links, dict):
+                base_data.setdefault("license", {})["links"] = {}
+                lic_links = base_data["license"]["links"]
+
+            lic_links["billing_portal"] = session_url  # CHANGED:
+
         resp = _json_ok(base_data)
-        resp["Cache-Control"] = f"private, max-age={VERIFY_CACHE_TTL_SECONDS}"
+
+        if wants_portal_session:
+            # NEVER cache a one-time session URL.  # CHANGED:
+            resp["Cache-Control"] = "private, no-store, max-age=0"
+            resp["Pragma"] = "no-cache"
+            resp["Expires"] = "0"
+        else:
+            resp["Cache-Control"] = f"private, max-age={VERIFY_CACHE_TTL_SECONDS}"
+
         return resp
 
     except APIError as e:
         # CHANGED: include deterministic data when possible (license/site parsed and license existed)
-        # We only include base_data if it was built; otherwise fall back to standard error envelope.
         try:
-            has_data = "base_data" in locals() and isinstance(locals()["base_data"], dict)  # CHANGED:
-            if has_data:
-                resp = _json_err(e, data=locals()["base_data"])  # CHANGED:
-                resp["Cache-Control"] = f"private, max-age={VERIFY_CACHE_TTL_SECONDS}"  # CHANGED:
+            if isinstance(base_data, dict):
+                resp = _json_err(e, data=base_data)  # CHANGED:
             else:
                 resp = _json_err(e)
         except Exception:
             resp = _json_err(e)
+
+        # CHANGED: Never cache portal session responses (even errors) if the caller asked for a session.
+        if wants_portal_session:
+            resp["Cache-Control"] = "private, no-store, max-age=0"
+            resp["Pragma"] = "no-cache"
+            resp["Expires"] = "0"
+        else:
+            resp["Cache-Control"] = f"private, max-age={VERIFY_CACHE_TTL_SECONDS}"  # CHANGED:
+
         return resp
-
-
-@csrf_exempt
-@require_POST
 def license_deactivate(request: HttpRequest) -> JsonResponse:
     """
     Deactivate a site for a license.
