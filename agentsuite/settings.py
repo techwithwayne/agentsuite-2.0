@@ -3,6 +3,11 @@ Agentsuite Django settings
 
 CHANGE LOG
 ----------
+2026-02-21 • RENDER FIX: Stop forcing 'anymail' into INSTALLED_APPS (not used).                    # CHANGED:
+           • Allow app-guard to run so missing 'apps.*' are skipped instead of crashing.          # CHANGED:
+           • DB: Use DATABASE_URL when present (Render Postgres), else fallback to SQLite.        # CHANGED:
+           • MIDDLEWARE: Skip optional middleware if its module can't import (Render-safe).       # CHANGED:
+
 2026-01-23 • PPA CACHE: Add shared FileBasedCache to fix translate polling job_not_found across workers. # CHANGED:
            • Uses BASE_DIR/ppa_cache (or env PPA_CACHE_DIR) and auto-creates dir safely.               # CHANGED:
            • Falls back to LocMemCache if dir isn't writable (never crashes startup).                 # CHANGED:
@@ -29,15 +34,14 @@ CHANGE LOG
 
 from pathlib import Path
 import os
-import logging   # CHANGED: for PDF engine validation logging
+import logging  # CHANGED: for PDF engine validation logging
 from dotenv import load_dotenv
+import environ  # CHANGED: DATABASE_URL parsing (Render Postgres)
 
 # ========= Base / Env =========
-# Robust .env loader that works on PythonAnywhere and local machines
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ## PPA: load .env (minimal)
-# Populate os.environ from BASE_DIR/.env if present, without extra deps.
 try:
     from pathlib import Path as _PPAPath
     import os as _PPAOS
@@ -49,18 +53,16 @@ try:
                 continue
             _k, _v = _s.split("=", 1)
             _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
-            # do NOT override variables already set in the environment
             if _k and _k not in _PPAOS.environ:
                 _PPAOS.environ[_k] = _v
 except Exception:
     pass
 # ## /PPA
 
-
 ENV_CANDIDATES = [
-    Path(os.path.expanduser('~/agentsuite/.env')),  # PythonAnywhere: ~/agentsuite/.env
-    BASE_DIR / '.env',                               # Local: project root
-    BASE_DIR.parent / '.env',                        # Local: repo root (if settings/ nested)
+    Path(os.path.expanduser('~/agentsuite/.env')),
+    BASE_DIR / '.env',
+    BASE_DIR.parent / '.env',
 ]
 for _env in ENV_CANDIDATES:
     if _env.exists():
@@ -68,33 +70,35 @@ for _env in ENV_CANDIDATES:
         print(f"[settings_pm] Loaded env from: {_env}")
         break
 else:
-    load_dotenv()  # fallback (no-op if missing)
+    load_dotenv()
     print("[settings_pm] No .env found in common locations; relying on os.environ.")
 
 # ========= PDF Engine (TherapyLib) =========
-# CHANGED: Load PDF engine from env, validate, and fallback safely
 ALLOWED_PDF_ENGINES = {"weasyprint", "xhtml2pdf", "pdfkit"}  # CHANGED
-
 _pdf_engine = os.getenv("THERAPYLIB_PDF_ENGINE", "xhtml2pdf").lower()  # CHANGED
 if _pdf_engine not in ALLOWED_PDF_ENGINES:  # CHANGED
-    # logger = logging.getLogger(__name__)  # CHANGED
     print("[WARNING]"
         f"Invalid THERAPYLIB_PDF_ENGINE '{_pdf_engine}' detected. "
         "Falling back to 'xhtml2pdf'. Allowed values: weasyprint, xhtml2pdf, pdfkit."
     )
     _pdf_engine = "xhtml2pdf"  # CHANGED
-
-THERAPYLIB_PDF_ENGINE = _pdf_engine  # CHANGED: available across project
+THERAPYLIB_PDF_ENGINE = _pdf_engine  # CHANGED
 
 # ========= Secret Key =========
 DJANGO_SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 if not DJANGO_SECRET_KEY:
-    raise ValueError("DJANGO_SECRET_KEY must be set in .env file")
+    raise ValueError("DJANGO_SECRET_KEY must be set in environment")
 SECRET_KEY = DJANGO_SECRET_KEY
 
 DEBUG = os.getenv("DEBUG", "False") == "True"
 
-# ========= Hosts / CSRF / Security (PA-ready) =========
+# ========= Hosts / CSRF / Security =========
+def _split_csv_env(name: str) -> list[str]:  # CHANGED:
+    raw = os.getenv(name, "")  # CHANGED:
+    if not raw:  # CHANGED:
+        return []  # CHANGED:
+    return [x.strip() for x in raw.split(",") if x.strip()]  # CHANGED:
+
 ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
@@ -102,9 +106,8 @@ ALLOWED_HOSTS = [
     "techwithwayne.pythonanywhere.com",
     "testserver",
     "ppa-api.techwithwayne.com",
-] + (os.getenv("ADDITIONAL_HOSTS", "").split(",") if os.getenv("ADDITIONAL_HOSTS") else [])
+] + _split_csv_env("ADDITIONAL_HOSTS")  # CHANGED:
 
-# If behind HTTPS (recommended on PA)
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
@@ -145,23 +148,22 @@ INSTALLED_APPS = [
     "apps.api",
 ]
 
-# Keep your list intact, only add anymail (Mailgun API) and postpress_ai unconditionally
-# [PPA FIX] ensure both apps exist independently of each other
-for _app in ["anymail", "postpress_ai"]:
+# Keep your list intact, only add postpress_ai unconditionally (anymail NOT used).  # CHANGED:
+for _app in ["postpress_ai"]:  # CHANGED:
     if _app not in INSTALLED_APPS:
         INSTALLED_APPS += [_app]
 
-# [PPA SAFETY] Drop optional monorepo apps if missing to avoid ModuleNotFoundError on PA  # CHANGED:
-try:  # CHANGED:
-    from importlib import import_module  # CHANGED:
-    _final_apps = []  # CHANGED:
-    _missing_apps = []  # CHANGED:
-    for _app in INSTALLED_APPS:  # CHANGED:
-        try:  # CHANGED:
-            import_module(_app)  # CHANGED:
-            _final_apps.append(_app)  # CHANGED:
-        except ModuleNotFoundError as _e:  # CHANGED:
-            # Treat monorepo-local apps as optional; skip if not importable on this deployment  # CHANGED:
+# [PPA SAFETY] Drop optional monorepo apps if missing to avoid ModuleNotFoundError
+try:
+    from importlib import import_module
+    _final_apps = []
+    _missing_apps = []
+    for _app in INSTALLED_APPS:
+        try:
+            import_module(_app)
+            _final_apps.append(_app)
+        except ModuleNotFoundError:
+            # Treat monorepo-local apps as optional; skip if not importable on this deployment
             if _app.startswith("apps.") or _app in {
                 "website_analyzer",
                 "barista_assistant",
@@ -172,33 +174,46 @@ try:  # CHANGED:
                 "personal_mentor",
                 "promptopilot",
                 "therapylib",
-            }:  # CHANGED:
-                _missing_apps.append(_app)  # CHANGED:
-            else:  # CHANGED:
-                raise  # non-optional (e.g., django.*, rest_framework)                     # CHANGED:
-    if _missing_apps:  # CHANGED:
-        print(f"[settings_pm] Optional apps not present; skipping: {_missing_apps}")  # CHANGED:
-    INSTALLED_APPS = _final_apps  # CHANGED:
-except Exception as _guard_exc:  # CHANGED:
-    print(f"[settings_pm] App guard failed: {_guard_exc}")  # CHANGED:
+            }:
+                _missing_apps.append(_app)
+            else:
+                raise
+    if _missing_apps:
+        print(f"[settings_pm] Optional apps not present; skipping: {_missing_apps}")
+    INSTALLED_APPS = _final_apps
+except Exception as _guard_exc:
+    print(f"[settings_pm] App guard failed: {_guard_exc}")
 
 # ========= Middleware =========
-# [PPA FIX] Move CORS middleware to the very top (django-cors-headers best practice)
+# Build middleware list and skip optional ones if their module can't import (Render-safe).  # CHANGED:
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
-
-    "website_analyzer.middleware.FrameAncestorMiddleware",  # must import successfully
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
-    # Mentor access gate must run after sessions & CSRF:
-    "personal_mentor.middleware.MentorAccessMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
-    # "django.middleware.clickjacking.XFrameOptionsMiddleware",  # keep disabled
 ]
+
+# Optional middleware entries (only include if importable).  # CHANGED:
+_OPTIONAL_MW = [
+    "website_analyzer.middleware.FrameAncestorMiddleware",
+    "personal_mentor.middleware.MentorAccessMiddleware",
+]
+try:  # CHANGED:
+    from importlib import import_module as _mw_import  # CHANGED:
+    for _mw in _OPTIONAL_MW:  # CHANGED:
+        _mod = _mw.rsplit(".", 1)[0]  # CHANGED:
+        try:  # CHANGED:
+            _mw_import(_mod)  # CHANGED:
+            # Keep MentorAccessMiddleware after sessions/csrf (we append at end).  # CHANGED:
+            MIDDLEWARE.append(_mw)  # CHANGED:
+        except ModuleNotFoundError:  # CHANGED:
+            print(f"[settings_pm] Optional middleware not present; skipping: {_mw}")  # CHANGED:
+except Exception as _mw_exc:  # CHANGED:
+    print(f"[settings_pm] Optional middleware guard failed: {_mw_exc}")  # CHANGED:
 
 # ========= URL / Templates / WSGI =========
 ROOT_URLCONF = "agentsuite.urls"
@@ -221,52 +236,51 @@ TEMPLATES = [
 WSGI_APPLICATION = "agentsuite.wsgi.application"
 
 # ========= Database =========
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-        "OPTIONS": {"timeout": 30},
+# Render: DATABASE_URL is required for Postgres. Local/PA can still use SQLite fallback.  # CHANGED:
+_env = environ.Env()  # CHANGED:
+if os.getenv("DATABASE_URL"):  # CHANGED:
+    DATABASES = {"default": _env.db("DATABASE_URL")}  # CHANGED:
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+            "OPTIONS": {"timeout": 30},
+        }
     }
-}
 
 # ========= Cache (shared across workers) =========
-# CHANGED: Fix translate polling across multiple workers by using a shared cache.
-# - LocMemCache is per-process → job state disappears when poll hits a different worker.
-# - FileBasedCache works on PythonAnywhere because workers share the filesystem.
 PPA_CACHE_DIR = os.getenv("PPA_CACHE_DIR", str(BASE_DIR / "ppa_cache"))  # CHANGED:
 
-# Create dir safely. If it fails (permissions), we fall back to LocMem and DO NOT crash.
-_can_write_cache_dir = False  # CHANGED:
-try:  # CHANGED:
-    os.makedirs(PPA_CACHE_DIR, exist_ok=True)  # CHANGED:
-    _can_write_cache_dir = os.access(PPA_CACHE_DIR, os.W_OK)  # CHANGED:
-except Exception as _cache_exc:  # CHANGED:
-    print(f"[settings_pm] PPA cache dir create failed ({PPA_CACHE_DIR}): {_cache_exc}")  # CHANGED:
-    _can_write_cache_dir = False  # CHANGED:
+_can_write_cache_dir = False
+try:
+    os.makedirs(PPA_CACHE_DIR, exist_ok=True)
+    _can_write_cache_dir = os.access(PPA_CACHE_DIR, os.W_OK)
+except Exception as _cache_exc:
+    print(f"[settings_pm] PPA cache dir create failed ({PPA_CACHE_DIR}): {_cache_exc}")
+    _can_write_cache_dir = False
 
-if _can_write_cache_dir:  # CHANGED:
-    CACHES = {  # CHANGED:
-        "default": {  # CHANGED:
-            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",  # CHANGED:
-            "LOCATION": PPA_CACHE_DIR,  # CHANGED:
-            # Default timeout can remain None; per-call TTLs still apply.
-            "TIMEOUT": None,  # CHANGED:
-            "OPTIONS": {  # CHANGED:
-                "MAX_ENTRIES": 5000,  # CHANGED:
-                "CULL_FREQUENCY": 3,  # CHANGED:
-            },  # CHANGED:
-        }  # CHANGED:
-    }  # CHANGED:
-    print(f"[settings_pm] CACHES=FileBasedCache ({PPA_CACHE_DIR})")  # CHANGED:
-else:  # CHANGED:
-    # Fallback ensures app boots even if FS permissions are weird.
-    CACHES = {  # CHANGED:
-        "default": {  # CHANGED:
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",  # CHANGED:
-            "LOCATION": "ppa-fallback-locmem",  # CHANGED:
-        }  # CHANGED:
-    }  # CHANGED:
-    print("[settings_pm] CACHES=LocMemCache fallback (PPA cache dir not writable)")  # CHANGED:
+if _can_write_cache_dir:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+            "LOCATION": PPA_CACHE_DIR,
+            "TIMEOUT": None,
+            "OPTIONS": {
+                "MAX_ENTRIES": 5000,
+                "CULL_FREQUENCY": 3,
+            },
+        }
+    }
+    print(f"[settings_pm] CACHES=FileBasedCache ({PPA_CACHE_DIR})")
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "ppa-fallback-locmem",
+        }
+    }
+    print("[settings_pm] CACHES=LocMemCache fallback (PPA cache dir not writable)")
 
 # ========= Password validation =========
 AUTH_PASSWORD_VALIDATORS = [
@@ -295,8 +309,6 @@ if not DEBUG:
 # ========= Static / Media =========
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-
-# Use WhiteNoise for static file serving in production
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 def set_custom_headers(headers, path, url):
@@ -315,14 +327,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 PPA_WP_API_URL = os.getenv("PPA_WP_API_URL", "")
 PPA_WP_USER = os.getenv("PPA_WP_USER", "")
 PPA_WP_PASS = os.getenv("PPA_WP_PASS", "")
-# [PPA FIX] Centralize shared key and allowed origins used by views
-PPA_SHARED_KEY = os.getenv("PPA_SHARED_KEY", "")
-PPA_ALLOWED_ORIGINS = os.getenv(
-    "PPA_ALLOWED_ORIGINS",
-    "https://techwithwayne.com,https://techwithwayne.com"
-).split(",")
 
-# ========= CORS / CSRF (single source of truth) =========
+PPA_SHARED_KEY = os.getenv("PPA_SHARED_KEY", "")
+PPA_ALLOWED_ORIGINS = _split_csv_env("PPA_ALLOWED_ORIGINS") or [  # CHANGED:
+    "https://techwithwayne.com",
+]
+
+# ========= CORS / CSRF =========
 CORS_ALLOWED_ORIGINS = [
     "https://showcase.techwithwayne.com",
     "https://apps.techwithwayne.com",
@@ -332,21 +343,18 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
     "http://techwithwayne.com",
     "https://techwithwayne.com",
-]  # keep existing entries
-# [PPA FIX] Ensure PPA_ALLOWED_ORIGINS are included (de-duped)
+]
 for _o in PPA_ALLOWED_ORIGINS:
     if _o and _o not in CORS_ALLOWED_ORIGINS:
         CORS_ALLOWED_ORIGINS.append(_o)
 
-# Include PythonAnywhere/app domains for CSRF
 _CSRF_EXTRA = [
     "https://techwithwayne.pythonanywhere.com",
 ]
 CSRF_TRUSTED_ORIGINS = list({*CORS_ALLOWED_ORIGINS, *_CSRF_EXTRA})
 
-CORS_ALLOW_CREDENTIALS = True  # allow cookies/auth across domains
+CORS_ALLOW_CREDENTIALS = True
 
-# [PPA FIX] Explicitly allow our custom auth header for preflight success
 CORS_ALLOW_HEADERS = list({
     "accept",
     "accept-encoding",
@@ -356,41 +364,45 @@ CORS_ALLOW_HEADERS = list({
     "origin",
     "user-agent",
     "x-csrftoken",
-    "x-ppa-key",  # critical for Django + Cloudflare preflight
+    "x-ppa-key",
     "x-ppa-install",
     "x-ppa-version",
 })
 
 # ========= Session config =========
-SESSION_COOKIE_AGE = 3600  # 1 hour
+SESSION_COOKIE_AGE = 3600
 SESSION_SAVE_EVERY_REQUEST = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 
-# ========= Email (PPA env-driven; Mailgun via Anymail) =========
-# CHANGED: Remove hardcoded email constants from settings; rely on .env + postpress_ai.email_config.
-# This keeps provider selection/config in one place and prevents drift.
-try:  # CHANGED:
-    from postpress_ai.email_config import get_email_settings  # CHANGED:
+# ========= Email =========
+# If your email_config returns an anymail backend but anymail isn't installed, fall back safely.  # CHANGED:
+try:
+    from postpress_ai.email_config import get_email_settings
+    _PPA_EMAIL_SETTINGS = get_email_settings()
+    globals().update(_PPA_EMAIL_SETTINGS)
 
-    _PPA_EMAIL_SETTINGS = get_email_settings()  # CHANGED:
-    globals().update(_PPA_EMAIL_SETTINGS)  # CHANGED:
+    # If settings point at anymail but package isn't present, don't crash later.  # CHANGED:
+    _backend = str(globals().get("EMAIL_BACKEND", "")).strip()  # CHANGED:
+    if _backend.startswith("anymail.") or ".anymail." in _backend:  # CHANGED:
+        try:  # CHANGED:
+            import anymail  # noqa: F401  # CHANGED:
+        except ModuleNotFoundError:  # CHANGED:
+            EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"  # CHANGED:
+            print("[settings_pm] anymail not installed; EMAIL_BACKEND forced to console backend.")  # CHANGED:
 
-    # Helpful visibility on startup (no secrets printed).  # CHANGED:
-    print(f"[settings_pm] EMAIL_BACKEND = {globals().get('EMAIL_BACKEND')}")  # CHANGED:
-    print(f"[settings_pm] DEFAULT_FROM_EMAIL = {globals().get('DEFAULT_FROM_EMAIL')}")  # CHANGED:
-except Exception as _ppa_email_exc:  # CHANGED:
-    # Safe fallback so non-email parts of the app still boot.  # CHANGED:
-    print(f"[settings_pm] PPA email config not applied: {_ppa_email_exc}")  # CHANGED:
-    # Minimal fallback defaults (still overridable by env elsewhere).  # CHANGED:
-    EMAIL_BACKEND = os.getenv("DJANGO_EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")  # CHANGED:
-    DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@localhost")  # CHANGED:
+    print(f"[settings_pm] EMAIL_BACKEND = {globals().get('EMAIL_BACKEND')}")
+    print(f"[settings_pm] DEFAULT_FROM_EMAIL = {globals().get('DEFAULT_FROM_EMAIL')}")
+except Exception as _ppa_email_exc:
+    print(f"[settings_pm] PPA email config not applied: {_ppa_email_exc}")
+    EMAIL_BACKEND = os.getenv("DJANGO_EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+    DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@localhost")
 
 # ========= OpenAI =========
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_ASSISTANT_ID = os.getenv("OPENAI_ASSISTANT_ID")
 
 # ========= Extra Security (prod) =========
-SECURE_SSL_REDIRECT = not DEBUG  # redirect only if in prod (re-affirm)
+SECURE_SSL_REDIRECT = not DEBUG
 
 # ========= Logging =========
 LOG_DIR = BASE_DIR / 'logs'
@@ -441,19 +453,14 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
-
-        # ============================================================
-        # 2025-11-13 • Add PostPress AI view logger → INFO to webdoctor.log  # CHANGED:
-        # ============================================================
-        'postpress_ai.views': {                                                 # CHANGED:
-            'handlers': ['file', 'console'],                                    # CHANGED:
-            'level': 'INFO',                                                    # CHANGED:
-            'propagate': False,                                                 # CHANGED:
-        },                                                                       # CHANGED:
+        'postpress_ai.views': {
+            'handlers': ['file', 'console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
     },
 }
 
-# Defensive: ensure ANY RotatingFileHandler gets UTF-8 if not set explicitly
 try:
     if isinstance(LOGGING, dict):
         handlers = LOGGING.setdefault("handlers", {})
@@ -463,7 +470,6 @@ try:
                 _h["encoding"] = "utf-8"
 except Exception:
     pass
-
 
 # ========= Stripe =========
 DEPLOY_BASE_URL = os.getenv("DEPLOY_BASE_URL", "https://apps.techwithwayne.com").rstrip("/")
