@@ -1,8 +1,3 @@
-[settings_pm] Loaded env from: /home/techwithwayne/agentsuite/.env
-[settings_pm] Optional apps not present; skipping: ['apps.core', 'apps.accounts', 'apps.contacts', 'apps.leads', 'apps.sequences', 'apps.messaging', 'apps.api']
-[settings_pm] CACHES=FileBasedCache (/home/techwithwayne/agentsuite/ppa_cache)
-[settings_pm] EMAIL_BACKEND = anymail.backends.sendgrid.EmailBackend
-[settings_pm] DEFAULT_FROM_EMAIL = Wayne Hatter - PostPress AI <support@postpressai.com>
 [
 {
   "model": "postpress_ai.license",
