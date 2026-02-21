@@ -4,6 +4,8 @@ Assistant runner for PostPress AI (Chat Completions).
 
 CHANGE LOG
 ----------
+2026-02-20 • ADD: Record token usage for /generate/ (prompt+completion+total) as UsageEvent, best-effort, no breakage.  # CHANGED:
+
 2026-01-22 • HARDEN: Absolutely enforce Target audience as REQUIRED (no fallback defaults).                        # CHANGED:
 2026-01-22 • HARDEN: Sanitize + cap Optional Brief / Extra Instructions (anti-injection framing, control chars).  # CHANGED:
 2026-01-22 • PROMPT: Genre + Tone + Audience + Brief injected as HARD CONSTRAINTS (must follow).                  # CHANGED:
@@ -23,6 +25,7 @@ Notes:
 
 from __future__ import annotations
 
+import importlib  # CHANGED:
 import json
 import logging
 import os
@@ -42,6 +45,216 @@ logger = logging.getLogger(__name__)
 # Optional Brief / Extra Instructions cap (requested 4k–12k window).
 BRIEF_MAX_CHARS = 8000  # CHANGED: within requested 4k–12k cap window (safe + useful)
 
+
+# ======================================================================================
+# Token usage recording (best-effort)
+# ======================================================================================
+
+def _mask_license_key(key: Any) -> str:  # CHANGED:
+    """Never log full keys; keep prefix + last 4 if possible."""  # CHANGED:
+    try:
+        k = str(key or "").strip()
+    except Exception:
+        return "—"
+    if not k:
+        return "—"
+    if len(k) <= 8:
+        return k[:3] + "…"
+    return k[:4] + "…" + k[-4:]
+
+
+def _extract_openai_usage(resp: Any) -> Dict[str, int]:  # CHANGED:
+    """
+    Extract token usage from OpenAI SDK response across shapes.
+    Returns: {prompt_tokens, completion_tokens, total_tokens} (ints, default 0).
+    """  # CHANGED:
+    usage_obj = None
+    try:
+        usage_obj = getattr(resp, "usage", None)
+    except Exception:
+        usage_obj = None
+
+    if usage_obj is None and isinstance(resp, dict):
+        usage_obj = resp.get("usage")
+
+    def _get_int(obj: Any, name: str) -> int:
+        try:
+            if obj is None:
+                return 0
+            if isinstance(obj, dict):
+                v = obj.get(name)
+            else:
+                v = getattr(obj, name, None)
+            if v is None:
+                return 0
+            return int(v)
+        except Exception:
+            return 0
+
+    pt = max(0, _get_int(usage_obj, "prompt_tokens"))
+    ct = max(0, _get_int(usage_obj, "completion_tokens"))
+    tt = max(0, _get_int(usage_obj, "total_tokens"))
+    if tt <= 0:
+        tt = pt + ct
+
+    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+
+
+def _import_model(class_name: str, module_paths: List[str]):  # CHANGED:
+    """Try multiple module paths; return the first model found."""  # CHANGED:
+    for mod_path in module_paths:
+        try:
+            mod = importlib.import_module(mod_path)
+            cls = getattr(mod, class_name, None)
+            if cls is not None:
+                return cls
+        except Exception:
+            continue
+    raise ImportError(f"Could not import {class_name} from any known module path")
+
+
+def _record_usage_event(payload: Dict[str, Any], usage: Dict[str, int], *, model_name: str) -> None:  # CHANGED:
+    """
+    Best-effort UsageEvent write. Never breaks generate if it fails.
+    Goal: give /license/verify/ real numbers to aggregate.
+    """  # CHANGED:
+    total = int(usage.get("total_tokens") or 0)
+    if total <= 0:
+        return
+
+    license_key = (payload.get("license_key") or payload.get("key") or payload.get("license") or "")
+    site_url = (payload.get("site_url") or payload.get("site") or payload.get("domain") or "")
+    masked = _mask_license_key(license_key)
+
+    # If we can't associate to a license at all, skip (truth-first; no guessing).
+    if not license_key:
+        logger.info("[PPA] UsageEvent skipped (no license_key in payload)")
+        return
+
+    try:
+        License = _import_model(
+            "License",
+            [
+                "postpress_ai.models.license",
+                "postpress_ai.models.licensing.license",
+                "postpress_ai.models",
+            ],
+        )
+        UsageEvent = _import_model(
+            "UsageEvent",
+            [
+                "postpress_ai.models.usage_event",
+                "postpress_ai.models.licensing.usage_event",
+                "postpress_ai.models",
+            ],
+        )
+
+        # Resolve License instance by whatever key field exists.
+        lic_obj = None
+        try:
+            lic_fields = {f.name for f in License._meta.fields}
+        except Exception:
+            lic_fields = set()
+
+        lookup = None
+        key_str = str(license_key).strip()
+        if "key" in lic_fields:
+            lookup = {"key": key_str}
+        elif "license_key" in lic_fields:
+            lookup = {"license_key": key_str}
+        elif "activation_key" in lic_fields:
+            lookup = {"activation_key": key_str}
+
+        if lookup:
+            lic_obj = License.objects.filter(**lookup).first()
+
+        # Build kwargs using ONLY fields that exist on UsageEvent.
+        try:
+            ev_fields = {f.name for f in UsageEvent._meta.fields}
+        except Exception:
+            ev_fields = set()
+
+        ev: Dict[str, Any] = {}
+
+        # Associate license (preferred FK) or store key string if supported.
+        if "license" in ev_fields and lic_obj is not None:
+            ev["license"] = lic_obj
+        elif "license_key" in ev_fields:
+            ev["license_key"] = key_str
+        elif "key" in ev_fields:
+            ev["key"] = key_str
+
+        # Site URL (if supported)
+        if site_url:
+            s = str(site_url).strip()
+            if "site_url" in ev_fields:
+                ev["site_url"] = s
+            elif "site" in ev_fields:
+                ev["site"] = s
+            elif "domain" in ev_fields:
+                ev["domain"] = s
+
+        # Endpoint / action / kind
+        if "endpoint" in ev_fields:
+            ev["endpoint"] = "generate"
+        elif "action" in ev_fields:
+            ev["action"] = "generate"
+        elif "kind" in ev_fields:
+            ev["kind"] = "generate"
+
+        # Provider/model naming
+        if "provider" in ev_fields:
+            ev["provider"] = "openai"
+        if "model" in ev_fields:
+            ev["model"] = str(model_name)
+        elif "provider_model" in ev_fields:
+            ev["provider_model"] = str(model_name)
+
+        # Tokens
+        pt = int(usage.get("prompt_tokens") or 0)
+        ct = int(usage.get("completion_tokens") or 0)
+        tt = int(usage.get("total_tokens") or (pt + ct))
+
+        if "prompt_tokens" in ev_fields:
+            ev["prompt_tokens"] = pt
+        if "completion_tokens" in ev_fields:
+            ev["completion_tokens"] = ct
+        if "total_tokens" in ev_fields:
+            ev["total_tokens"] = tt
+        elif "tokens" in ev_fields:
+            ev["tokens"] = tt
+
+        # Optional JSON meta
+        usage_meta = {
+            "prompt_tokens": pt,
+            "completion_tokens": ct,
+            "total_tokens": tt,
+            "model": str(model_name),
+            "endpoint": "generate",
+        }
+        if "meta" in ev_fields:
+            ev["meta"] = usage_meta
+        elif "details" in ev_fields:
+            ev["details"] = usage_meta
+        elif "raw" in ev_fields:
+            ev["raw"] = usage_meta
+
+        # If still no license association field exists, skip safely.
+        if not ev:
+            logger.warning("[PPA] UsageEvent skipped (no compatible fields) key=%s", masked)
+            return
+
+        UsageEvent.objects.create(**ev)
+        logger.info("[PPA] UsageEvent recorded total=%s key=%s", tt, masked)
+
+    except Exception as exc:
+        # Never break generation because accounting failed.
+        logger.warning("[PPA] UsageEvent record failed: %s key=%s", exc, masked, exc_info=True)
+
+
+# ======================================================================================
+# Existing helpers
+# ======================================================================================
 
 def strip_code_fences(raw: str) -> str:
     """
@@ -393,7 +606,7 @@ def _genre_rules(genre: str) -> str:  # CHANGED:
     return (
         "STRUCTURE (Auto — MUST FOLLOW):\n"
         "- Use clear ## / ### sections.\n"
-        "- Give a prioritized plan with quick wins first.\n"
+        "- Give a prioritized plan with quick wins first, then deeper moves.\n"
         "- End with a practical checklist.\n"
     )
 
@@ -635,6 +848,13 @@ class AssistantRunner:
         except Exception as exc:
             logger.error("[PPA] Chat completion error: %s", exc, exc_info=True)
             raise
+
+        # Record usage immediately (best-effort; never breaks generation).  # CHANGED:
+        try:  # CHANGED:
+            usage = _extract_openai_usage(response)  # CHANGED:
+            _record_usage_event(payload, usage, model_name=self.model)  # CHANGED:
+        except Exception:  # pragma: no cover  # CHANGED:
+            pass  # CHANGED:
 
         content_text: Optional[str] = None
         try:
