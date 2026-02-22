@@ -1,8 +1,7 @@
-
-"""
 # /home/techwithwayne/agentsuite/postpress_ai/views/license.py
 postpress_ai.views.license
 
+"""
 Licensing endpoints (Django is authoritative):
 - /license/activate/
 - /license/verify/
@@ -58,6 +57,7 @@ from __future__ import annotations
 # 2026-01-26: FIX: _effective_entitlements now respects PLAN_DEFAULTS for boolean flags unless explicit overrides exist. # CHANGED:
 #            - Prevents agency_byo showing max=0 + unlimited=False when DB booleans default False/True.               # CHANGED:
 #            - Keeps license.v1 response shape unchanged; only corrects computed entitlements.                         # CHANGED:
+# 2026-02-22: FIX: Include full activated sites list in license.v1 at license.sites.list (WP Account needs it). # CHANGED:
 
 import hmac
 import json
@@ -430,6 +430,58 @@ def _ensure_license_active(lic: License) -> None:
 
 def _activation_count_for_license(lic: License) -> int:
     return Activation.objects.filter(license=lic).count()
+
+
+def _sites_list_for_license(lic: License, *, limit: int = 50) -> list:  # CHANGED:
+    """
+    Return a list of activated sites for this license.
+
+    This is intentionally display-focused (WP Account screen).
+    - Uses Activation rows for this license
+    - Orders by recent activity
+    - De-dupes exact URLs only (http vs https remain distinct if present in DB)
+    - Caps output for payload safety
+    - Never breaks licensing: returns [] on any exception
+    """
+    try:
+        qs = (
+            Activation.objects.filter(license=lic)
+            .order_by("-last_verified_at", "-activated_at", "-id")
+        )
+
+        rows = []
+        seen = set()
+
+        # small overscan lets us dedupe without accidentally returning < limit
+        overscan = max(limit * 2, limit)
+
+        for act in qs[:overscan]:
+            url = getattr(act, "site_url", None)
+            url = str(url).strip() if url is not None else ""
+            if not url:
+                continue
+
+            # Deduplicate exact URL string (case-insensitive, trailing-slash-insensitive).
+            key = url.lower().rstrip("/")
+            if key in seen:
+                continue
+            seen.add(key)
+
+            rows.append(
+                {
+                    "url": url,
+                    "status": "activated",
+                    "activated_at": getattr(act, "activated_at", None),
+                    "last_verified_at": getattr(act, "last_verified_at", None),
+                }
+            )
+
+            if len(rows) >= limit:
+                break
+
+        return rows
+    except Exception:
+        return []
 
 
 def _license_limit_allows_site(lic, site_url: str = "") -> bool:
@@ -980,10 +1032,12 @@ def _license_contract_snapshot(license_key: str, lic: License) -> Dict[str, Any]
     - Adds plan.name + plan.label for UI.
     - Adds sites.remaining and tokens.remaining_total (WP doesn't compute).
     - Adds links{} for upcoming Account screen (safe, non-Stripe).
+    - Adds sites.list (activated sites list) for WP Account Sites card.  # CHANGED:
     """
     ent = _effective_entitlements(lic)
     plan = _plan_meta(ent.get("plan_slug"))  # CHANGED:
     sites_used = _activation_count_for_license(lic)
+    sites_list = _sites_list_for_license(lic, limit=50)  # CHANGED:
     tokens = _token_snapshot(lic)
     links = _account_links(lic, ent, tokens)  # CHANGED:
 
@@ -1022,6 +1076,7 @@ def _license_contract_snapshot(license_key: str, lic: License) -> Dict[str, Any]
             "max": max_sites,
             "unlimited": unlimited_sites,
             "remaining": sites_remaining,  # CHANGED:
+            "list": sites_list,  # CHANGED:
         },
         "features": {
             "ai_included": bool(ent["features"]["ai_included"]),
@@ -1193,7 +1248,6 @@ def _get_or_create_stripe_customer_id(*, lic: License, license_key: str, site_ur
             pass
         return existing
 
-
     # Stripe-side lookup (best effort): try to find an existing customer by metadata.
     # This avoids creating a fresh customer that wouldn't show the real subscription in the Portal.  # CHANGED:
     try:
@@ -1352,6 +1406,7 @@ def _wants_billing_portal_session(request: HttpRequest, payload: Dict[str, Any])
     portal_flag = (portal_session or "").strip().lower() in ("1", "true", "yes", "on")
 
     return (intent == "billing_portal") or portal_flag
+
 
 # Endpoints
 # ------------------------------
@@ -1579,6 +1634,8 @@ def license_verify(request: HttpRequest) -> JsonResponse:
             resp["Cache-Control"] = f"private, max-age={VERIFY_CACHE_TTL_SECONDS}"  # CHANGED:
 
         return resp
+
+
 def license_deactivate(request: HttpRequest) -> JsonResponse:
     """
     Deactivate a site for a license.
