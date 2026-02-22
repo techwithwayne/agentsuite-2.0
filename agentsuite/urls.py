@@ -29,6 +29,11 @@ CHANGE LOG
 2025-10-24
 - FIX: Map PostPress AI via include("postpress_ai.urls", namespace="postpress_ai") to avoid missing-module errors.
 - FIX: Guard optional include("apps.api.urls") so environments without 'apps' do not 500.
+
+2026-02-22
+- FIX: Eliminate 301 redirects for missing trailing slash on critical PostPress endpoints.    # CHANGED:
+       WordPress POSTs can lose body/headers across 301. Add no-slash alias routes that      # CHANGED:
+       internally dispatch to the canonical trailing-slash endpoint without redirecting.     # CHANGED:
 """
 
 # /home/techwithwayne/agentsuite/agentsuite/urls.py
@@ -42,7 +47,7 @@ CHANGE LOG
 
 from django.contrib import admin
 from django.http import JsonResponse
-from django.urls import path, include
+from django.urls import path, include, re_path, resolve  # CHANGED:
 
 from postpress_ai import views as ppa_views
 from postpress_ai.views.store import store_view
@@ -71,7 +76,74 @@ def ppa_version_view(request):
     return JsonResponse({"version": "postpress-ai.v2.1-2025-10-30"})
 
 
+def _alias_to(canonical_path: str):
+    """
+    Internal no-slash alias dispatcher (NO redirects).                                  # CHANGED:
+    Why: WP HTTP clients can drop POST body/headers when a 301 appends '/'.             # CHANGED:
+    This view rewrites request.path/path_info in-memory and dispatches to the canonical # CHANGED:
+    trailing-slash endpoint via django.urls.resolve().                                  # CHANGED:
+    """
+    def _view(request, *args, **kwargs):  # noqa: ARG001
+        orig_path = getattr(request, "path", "")
+        orig_path_info = getattr(request, "path_info", "")
+        orig_meta_path_info = request.META.get("PATH_INFO")
+        orig_meta_request_uri = request.META.get("REQUEST_URI")
+
+        try:
+            # Pretend the request arrived at the canonical URL so downstream logic
+            # (headers/logging/build_absolute_uri/etc.) behaves consistently.           # CHANGED:
+            request.path = canonical_path
+            request.path_info = canonical_path
+            request.META["PATH_INFO"] = canonical_path
+            # Keep querystring if present.
+            if request.META.get("QUERY_STRING"):
+                request.META["REQUEST_URI"] = canonical_path + "?" + request.META["QUERY_STRING"]
+            else:
+                request.META["REQUEST_URI"] = canonical_path
+
+            match = resolve(canonical_path)
+            return match.func(request, *match.args, **match.kwargs)
+        finally:
+            # Restore request to original values to avoid confusing later middleware.  # CHANGED:
+            request.path = orig_path
+            request.path_info = orig_path_info
+            if orig_meta_path_info is None:
+                request.META.pop("PATH_INFO", None)
+            else:
+                request.META["PATH_INFO"] = orig_meta_path_info
+            if orig_meta_request_uri is None:
+                request.META.pop("REQUEST_URI", None)
+            else:
+                request.META["REQUEST_URI"] = orig_meta_request_uri
+
+    return _view
+
+
 urlpatterns = [
+    # -------------------------------------------------------------------------
+    # NO-SLASH ALIASES (stop 301 redirects; preserve POST body/headers)         # CHANGED:
+    # -------------------------------------------------------------------------
+    re_path(r"^preview$", _alias_to("/preview/")),  # CHANGED:
+    re_path(r"^store$", _alias_to("/store/")),      # CHANGED:
+
+    re_path(r"^postpress-ai/health$", _alias_to("/postpress-ai/health/")),  # CHANGED:
+    re_path(r"^postpress-ai/version$", _alias_to("/postpress-ai/version/")),  # CHANGED:
+
+    re_path(r"^postpress-ai/preview$", _alias_to("/postpress-ai/preview/")),  # CHANGED:
+    re_path(r"^postpress-ai/generate$", _alias_to("/postpress-ai/generate/")),  # CHANGED:
+    re_path(r"^postpress-ai/store$", _alias_to("/postpress-ai/store/")),  # CHANGED:
+
+    re_path(r"^postpress-ai/license/activate$", _alias_to("/postpress-ai/license/activate/")),  # CHANGED:
+    re_path(r"^postpress-ai/license/verify$", _alias_to("/postpress-ai/license/verify/")),  # CHANGED:
+    re_path(r"^postpress-ai/license/deactivate$", _alias_to("/postpress-ai/license/deactivate/")),  # CHANGED:
+    re_path(r"^postpress-ai/license/debug-auth$", _alias_to("/postpress-ai/license/debug-auth/")),  # CHANGED:
+
+    re_path(r"^postpress-ai/stripe/webhook$", _alias_to("/postpress-ai/stripe/webhook/")),  # CHANGED:
+    re_path(r"^postpress-ai/stripe/checkout/create$", _alias_to("/postpress-ai/stripe/checkout/create/")),  # CHANGED:
+
+    # -------------------------------------------------------------------------
+    # CANONICAL ROUTES (trailing slash versions)                               # CHANGED:
+    # -------------------------------------------------------------------------
     path("preview/", ppa_views.preview, name="ppa-preview-root"),
     path("store/", ppa_views.store, name="ppa-store-root"),
 
