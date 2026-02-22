@@ -4,6 +4,8 @@ Assistant runner for PostPress AI (Chat Completions).
 
 CHANGE LOG
 ----------
+2026-02-22 • HARDEN: Sanitize OPENAI_API_KEY (strip whitespace/newlines/quotes) before constructing OpenAI client.  # CHANGED:
+            • HARDEN: Prevent logging a leaked Authorization header on illegal header errors.                       # CHANGED:
 2026-02-20 • ADD: Record token usage for /generate/ (prompt+completion+total) as UsageEvent, best-effort, no breakage.  # CHANGED:
 
 2026-01-22 • HARDEN: Absolutely enforce Target audience as REQUIRED (no fallback defaults).                        # CHANGED:
@@ -706,10 +708,28 @@ class AssistantRunner:
     def __init__(self) -> None:
         if OpenAI is None:
             raise RuntimeError("openai package not available")
-        api_key = os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", None)
+
+        raw_key = os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", None) or ""  # CHANGED:
+        try:
+            api_key = str(raw_key)
+        except Exception:
+            api_key = ""
+
+        orig = api_key  # CHANGED:
+
+        # CHANGED: Bulletproof sanitize to prevent illegal Authorization header values.
+        api_key = api_key.strip()  # CHANGED:
+        if (api_key.startswith('"') and api_key.endswith('"')) or (api_key.startswith("'") and api_key.endswith("'")):  # CHANGED:
+            api_key = api_key[1:-1].strip()  # CHANGED:
+        api_key = "".join(api_key.split())  # CHANGED: removes \r \n \t spaces anywhere (keys should never contain whitespace)
+
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not configured")
-        self.client = OpenAI(api_key=api_key)
+
+        if api_key != orig:
+            logger.warning("[PPA] OPENAI_API_KEY had extra whitespace/newlines; sanitized in-process.")  # CHANGED:
+
+        self.client = OpenAI(api_key=api_key)  # CHANGED:
         self.model = (
             getattr(settings, "PPA_CHAT_MODEL", None)
             or os.getenv("PPA_CHAT_MODEL")
@@ -846,7 +866,15 @@ class AssistantRunner:
                 ],
             )
         except Exception as exc:
-            logger.error("[PPA] Chat completion error: %s", exc, exc_info=True)
+            # CHANGED: Avoid leaking Authorization header (key) in logs on header-protocol errors.
+            msg = str(exc)
+            if "Illegal header value" in msg and "Bearer" in msg:
+                logger.error(
+                    "[PPA] Chat completion error: illegal Authorization header value (likely whitespace/newline in OPENAI_API_KEY).",
+                    exc_info=False,
+                )
+            else:
+                logger.error("[PPA] Chat completion error: %s", exc, exc_info=True)
             raise
 
         # Record usage immediately (best-effort; never breaks generation).  # CHANGED:
