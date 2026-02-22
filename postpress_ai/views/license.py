@@ -1,5 +1,5 @@
 # /home/techwithwayne/agentsuite/postpress_ai/views/license.py
-postpress_ai.views.license
+# postpress_ai.views.license
 
 """
 Licensing endpoints (Django is authoritative):
