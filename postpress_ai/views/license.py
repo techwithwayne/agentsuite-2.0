@@ -58,6 +58,7 @@ from __future__ import annotations
 #            - Prevents agency_byo showing max=0 + unlimited=False when DB booleans default False/True.               # CHANGED:
 #            - Keeps license.v1 response shape unchanged; only corrects computed entitlements.                         # CHANGED:
 # 2026-02-22: FIX: Include full activated sites list in license.v1 at license.sites.list (WP Account needs it). # CHANGED:
+# 2026-02-23: FIX: CSRF-exempt + POST-only /license/deactivate/ so WP server-to-server calls never 403. # CHANGED:
 
 import hmac
 import json
@@ -1636,6 +1637,8 @@ def license_verify(request: HttpRequest) -> JsonResponse:
         return resp
 
 
+@csrf_exempt
+@require_POST
 def license_deactivate(request: HttpRequest) -> JsonResponse:
     """
     Deactivate a site for a license.
