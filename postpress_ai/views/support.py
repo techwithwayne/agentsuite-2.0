@@ -17,10 +17,13 @@ CHANGE LOG
            - robust request parsing (JSON + form + legacy "payload" field)
            - conservative auth gate (shared secret) for server-to-server WP → Django calls
            - "not implemented yet" responses for action endpoints to prevent accidental money/key ops
+2026-02-23 • FIX: Implement support_account_status by delegating to existing /license/verify/ logic
+           (returns real payload; removes 501).  # CHANGED
 """
 
 import hashlib
 import hmac
+import importlib  # CHANGED
 import json
 import os
 import time
@@ -42,6 +45,12 @@ AUTH_HEADER_CANDIDATES = (
     "HTTP_X_PPA_AUTH",
     "HTTP_AUTHORIZATION",
 )
+
+# CHANGED: License/account extraction fallbacks (lets WP send values in body OR headers OR query).
+LICENSE_KEY_FIELDS = ("license_key", "key", "license")  # CHANGED
+SITE_URL_FIELDS = ("site_url", "install", "site")  # CHANGED
+HEADER_LICENSE_KEY = "HTTP_X_PPA_KEY"  # CHANGED
+HEADER_SITE_URL = "HTTP_X_PPA_INSTALL"  # CHANGED
 
 
 # -----------------------------
@@ -205,6 +214,120 @@ def _require_shared_secret(request: HttpRequest, payload: Dict[str, Any]) -> Opt
 
 
 # -----------------------------
+# Helpers (account extraction + delegation)
+# -----------------------------
+
+def _first_nonempty_str(v: Any) -> str:  # CHANGED
+    s = str(v or "").strip()
+    return s
+
+
+def _extract_account_fields(request: HttpRequest, payload: Dict[str, Any]) -> Tuple[str, str]:  # CHANGED
+    """
+    Bulletproof extraction for license_key + site_url.
+    Supports:
+      - JSON/body fields
+      - query params (GET)
+      - headers (X-PPA-Key / X-PPA-Install)
+    """
+    license_key = ""
+    site_url = ""
+
+    # 1) Payload fields
+    for k in LICENSE_KEY_FIELDS:
+        if k in payload:
+            license_key = _first_nonempty_str(payload.get(k))
+            if license_key:
+                break
+    for k in SITE_URL_FIELDS:
+        if k in payload:
+            site_url = _first_nonempty_str(payload.get(k))
+            if site_url:
+                break
+
+    # 2) Query params (GET)
+    if not license_key:
+        for k in LICENSE_KEY_FIELDS:
+            if k in request.GET:
+                license_key = _first_nonempty_str(request.GET.get(k))
+                if license_key:
+                    break
+    if not site_url:
+        for k in SITE_URL_FIELDS:
+            if k in request.GET:
+                site_url = _first_nonempty_str(request.GET.get(k))
+                if site_url:
+                    break
+
+    # 3) Headers
+    if not license_key:
+        license_key = _first_nonempty_str(request.META.get(HEADER_LICENSE_KEY))
+    if not site_url:
+        site_url = _first_nonempty_str(request.META.get(HEADER_SITE_URL))
+
+    return license_key, site_url
+
+
+def _delegate_to_license_verify(license_key: str, site_url: str) -> Tuple[Optional[JsonResponse], Optional[str]]:  # CHANGED
+    """
+    Calls the existing /license/verify/ view internally and returns its JsonResponse as-is.
+
+    Why:
+      - This is already the authoritative account contract (plan/sites/tokens/links).
+      - Support account_status should not invent a second contract.
+    """
+    try:
+        mod = importlib.import_module("postpress_ai.views.license")
+    except Exception as e:
+        return None, f"import postpress_ai.views.license failed: {e}"
+
+    # Try a few likely names without assuming
+    candidates = ("license_verify", "license_verify_v1", "license_verify_status", "license_verify_view")
+    fn = None
+    for name in candidates:
+        f = getattr(mod, name, None)
+        if callable(f):
+            fn = f
+            break
+
+    if fn is None:
+        return None, "license verify callable not found in postpress_ai.views.license"
+
+    # Create an internal request to the view.
+    # NOTE: We avoid passing shared secret; license verify has its own auth rules.
+    try:
+        from django.test.client import RequestFactory  # local import keeps module load conservative
+
+        rf = RequestFactory()
+        body = json.dumps({"license_key": license_key, "site_url": site_url})
+        req = rf.post(
+            "/postpress-ai/license/verify/",
+            data=body,
+            content_type="application/json",
+            **{
+                # Mirror what WP sends so the verify endpoint behaves exactly the same.
+                "HTTP_X_PPA_KEY": license_key,
+                "HTTP_X_PPA_INSTALL": site_url,
+                "HTTP_X_PPA_VIEW": "support_account_status",
+            },
+        )
+        resp = fn(req)
+        if isinstance(resp, JsonResponse):
+            return resp, None
+
+        # If a view returns HttpResponse-like, try to wrap if it’s JSON
+        try:
+            content = getattr(resp, "content", b"") or b""
+            code = int(getattr(resp, "status_code", 200))
+            decoded = json.loads(content.decode("utf-8", errors="replace"))
+            return JsonResponse(decoded, status=code), None
+        except Exception:
+            return None, "license verify returned non-JsonResponse and non-JSON content"
+    except Exception as e:
+        return None, f"delegate call failed: {e}"
+
+
+# -----------------------------
 # Helpers (very light router)
 # -----------------------------
 
@@ -285,12 +408,25 @@ def support_account_status(request: HttpRequest) -> JsonResponse:
     if auth_err:
         return auth_err
 
-    # Placeholder until we wire into existing account/license/usage services.
-    return _json_err(
-        "not_implemented",
-        http_status=501,
-        reason="account_status pending wiring",
-        user_message="Account status endpoint is not enabled yet.",
+    # CHANGED: Extract license_key + site_url and delegate to /license/verify/ for real account payload.
+    license_key, site_url = _extract_account_fields(request, payload)  # CHANGED
+    if not license_key or not site_url:  # CHANGED
+        return _json_err(
+            "invalid_payload",
+            http_status=400,
+            reason="missing license_key or site_url",
+            user_message="Missing account identifiers. Please refresh the page and try again.",
+        )
+
+    resp, why = _delegate_to_license_verify(license_key, site_url)  # CHANGED
+    if resp is not None:  # CHANGED
+        return resp  # CHANGED: return license verify JSON as-is (canonical contract)
+
+    return _json_err(  # CHANGED
+        "account_status_failed",
+        http_status=500,
+        reason=why or "delegate failed",
+        user_message="Account status is temporarily unavailable. Please try again in a moment.",
     )
 
 
