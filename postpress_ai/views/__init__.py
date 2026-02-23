@@ -1,10 +1,12 @@
-# /home/techwithwayne/agentsuite/postpress_ai/views/__init__.py
+# /opt/render/project/src/postpress_ai/views/__init__.py  # CHANGED:
 
 """
 PostPress AI — views package
 
 CHANGE LOG
 ----------
+2026-02-23 • NEW: Add lazy-exported Support endpoint wrappers (support_chat/account_status/action/*) so routes can reference safely.  # CHANGED:
+
 2026-01-25 • FIX: Restore module-level `urlopen` and implement WP health probe fields (wp_status/wp_reachable/wp_allowed).          # CHANGED:
           • FIX: Add store wrapper normalization (stored/mode/wp_status/target) + safe failure on legacy non-JSON.                 # CHANGED:
           • FIX: Ensure auth logging includes view context tag `[PPA][preview][auth]` to satisfy log-leak tests (no secrets logged). # CHANGED:
@@ -904,6 +906,82 @@ def store(request, *args, **kwargs):  # type: ignore
     return _json_response(out, view="store", status=200)  # CHANGED:
 
 
+# ---------- Support endpoints (WP Admin widget) ----------  # CHANGED:
+
+def _support_import():  # CHANGED:
+    """Lazy import to avoid startup-time circular imports or missing module crashes."""  # CHANGED:
+    try:  # CHANGED:
+        from . import support as _support  # type: ignore  # CHANGED:
+        return _support, None  # CHANGED:
+    except Exception as exc:  # CHANGED:
+        return None, exc  # CHANGED:
+
+
+def _support_not_enabled(view_name: str, exc: Optional[Exception] = None) -> JsonResponse:  # CHANGED:
+    """Return a stable 501 payload when support endpoints are not wired yet."""  # CHANGED:
+    details: Dict[str, Any] = {}  # CHANGED:
+    if exc is not None:  # CHANGED:
+        # Never include secrets; exception strings here should be safe (import errors, etc.).  # CHANGED:
+        details["detail"] = str(exc)[:300]  # CHANGED:
+    return _json_response(_error_payload("not_implemented", "support endpoint not enabled", details), view=view_name, status=501)  # CHANGED:
+
+
+@csrf_exempt  # CHANGED:
+def support_chat(request, *args, **kwargs):  # CHANGED:
+    _m, _e = _support_import()  # CHANGED:
+    if not _m or not hasattr(_m, "support_chat"):  # CHANGED:
+        return _support_not_enabled("support-chat", _e)  # CHANGED:
+    return _m.support_chat(request, *args, **kwargs)  # type: ignore  # CHANGED:
+
+
+@csrf_exempt  # CHANGED:
+def support_account_status(request, *args, **kwargs):  # CHANGED:
+    _m, _e = _support_import()  # CHANGED:
+    if not _m or not hasattr(_m, "support_account_status"):  # CHANGED:
+        return _support_not_enabled("support-account-status", _e)  # CHANGED:
+    return _m.support_account_status(request, *args, **kwargs)  # type: ignore  # CHANGED:
+
+
+@csrf_exempt  # CHANGED:
+def support_action_create_checkout(request, *args, **kwargs):  # CHANGED:
+    _m, _e = _support_import()  # CHANGED:
+    if not _m or not hasattr(_m, "support_action_create_checkout"):  # CHANGED:
+        return _support_not_enabled("support-create-checkout", _e)  # CHANGED:
+    return _m.support_action_create_checkout(request, *args, **kwargs)  # type: ignore  # CHANGED:
+
+
+@csrf_exempt  # CHANGED:
+def support_action_create_billing_portal(request, *args, **kwargs):  # CHANGED:
+    _m, _e = _support_import()  # CHANGED:
+    if not _m or not hasattr(_m, "support_action_create_billing_portal"):  # CHANGED:
+        return _support_not_enabled("support-billing-portal", _e)  # CHANGED:
+    return _m.support_action_create_billing_portal(request, *args, **kwargs)  # type: ignore  # CHANGED:
+
+
+@csrf_exempt  # CHANGED:
+def support_action_issue_license_key(request, *args, **kwargs):  # CHANGED:
+    _m, _e = _support_import()  # CHANGED:
+    if not _m or not hasattr(_m, "support_action_issue_license_key"):  # CHANGED:
+        return _support_not_enabled("support-issue-license-key", _e)  # CHANGED:
+    return _m.support_action_issue_license_key(request, *args, **kwargs)  # type: ignore  # CHANGED:
+
+
+@csrf_exempt  # CHANGED:
+def support_action_replace_license_key(request, *args, **kwargs):  # CHANGED:
+    _m, _e = _support_import()  # CHANGED:
+    if not _m or not hasattr(_m, "support_action_replace_license_key"):  # CHANGED:
+        return _support_not_enabled("support-replace-license-key", _e)  # CHANGED:
+    return _m.support_action_replace_license_key(request, *args, **kwargs)  # type: ignore  # CHANGED:
+
+
+@csrf_exempt  # CHANGED:
+def support_action_refund(request, *args, **kwargs):  # CHANGED:
+    _m, _e = _support_import()  # CHANGED:
+    if not _m or not hasattr(_m, "support_action_refund"):  # CHANGED:
+        return _support_not_enabled("support-refund", _e)  # CHANGED:
+    return _m.support_action_refund(request, *args, **kwargs)  # type: ignore  # CHANGED:
+
+
 # Back-compat alias
 preview_view = preview
 store_view = store
@@ -921,6 +999,13 @@ __all__ = [
     "store_view",
     "store_legacy",  # CHANGED:
     "generate",
+    "support_chat",  # CHANGED:
+    "support_account_status",  # CHANGED:
+    "support_action_create_checkout",  # CHANGED:
+    "support_action_create_billing_portal",  # CHANGED:
+    "support_action_issue_license_key",  # CHANGED:
+    "support_action_replace_license_key",  # CHANGED:
+    "support_action_refund",  # CHANGED:
     "urlopen",  # CHANGED:
     "_with_headers",
     "_json_response",
