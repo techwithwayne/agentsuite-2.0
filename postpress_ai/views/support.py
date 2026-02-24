@@ -19,6 +19,11 @@ CHANGE LOG
            - "not implemented yet" responses for action endpoints to prevent accidental money/key ops
 2026-02-23 • FIX: Implement support_account_status by delegating to existing /license/verify/ logic
            (returns real payload; removes 501).  # CHANGED
+2026-02-23 • FIX: Turn Support chat "online" (intent routing + account context detection) and
+           include actionable next steps (upgrade/billing/tokens/license/troubleshoot) while keeping
+           money/key operations gated behind explicit action endpoints.  # CHANGED
+2026-02-23 • HARDEN: Internal delegate to /license/verify/ now forwards the same shared-secret auth headers
+           as WP→Django calls to ensure consistent behavior.  # CHANGED
 """
 
 import hashlib
@@ -268,13 +273,22 @@ def _extract_account_fields(request: HttpRequest, payload: Dict[str, Any]) -> Tu
     return license_key, site_url
 
 
-def _delegate_to_license_verify(license_key: str, site_url: str) -> Tuple[Optional[JsonResponse], Optional[str]]:  # CHANGED
+def _delegate_to_license_verify(  # CHANGED
+    license_key: str,
+    site_url: str,
+    *,
+    shared_secret: str = "",
+) -> Tuple[Optional[JsonResponse], Optional[str]]:
     """
     Calls the existing /license/verify/ view internally and returns its JsonResponse as-is.
 
     Why:
       - This is already the authoritative account contract (plan/sites/tokens/links).
       - Support account_status should not invent a second contract.
+
+    Security:
+      - This stays server-side only (uses env shared secret).
+      - We forward the same auth headers WP would send, so behavior matches production.  # CHANGED
     """
     try:
         mod = importlib.import_module("postpress_ai.views.license")
@@ -294,22 +308,36 @@ def _delegate_to_license_verify(license_key: str, site_url: str) -> Tuple[Option
         return None, "license verify callable not found in postpress_ai.views.license"
 
     # Create an internal request to the view.
-    # NOTE: We avoid passing shared secret; license verify has its own auth rules.
     try:
         from django.test.client import RequestFactory  # local import keeps module load conservative
 
         rf = RequestFactory()
         body = json.dumps({"license_key": license_key, "site_url": site_url})
+
+        extra_headers = {
+            # Mirror what WP sends so the verify endpoint behaves exactly the same.
+            "HTTP_X_PPA_KEY": license_key,
+            "HTTP_X_PPA_INSTALL": site_url,
+            "HTTP_X_PPA_VIEW": "support_account_status",
+        }
+
+        # CHANGED: Some installs enforce the shared-secret gate for license verify as well.
+        # We forward the secret in multiple header styles to maximize compatibility,
+        # without leaking it to the browser (this is an internal server-side call).
+        if shared_secret:
+            extra_headers.update(
+                {
+                    "HTTP_X_PPA_SHARED_SECRET": shared_secret,
+                    "HTTP_X_PPA_AUTH": shared_secret,
+                    "HTTP_AUTHORIZATION": f"Bearer {shared_secret}",
+                }
+            )
+
         req = rf.post(
             "/postpress-ai/license/verify/",
             data=body,
             content_type="application/json",
-            **{
-                # Mirror what WP sends so the verify endpoint behaves exactly the same.
-                "HTTP_X_PPA_KEY": license_key,
-                "HTTP_X_PPA_INSTALL": site_url,
-                "HTTP_X_PPA_VIEW": "support_account_status",
-            },
+            **extra_headers,
         )
         resp = fn(req)
         if isinstance(resp, JsonResponse):
@@ -335,14 +363,17 @@ def _guess_intent(message: str) -> str:
     m = (message or "").lower().strip()
     if not m:
         return "unknown"
+
+    # Billing / plan changes (includes "upgrade"/"renew membership")  # CHANGED
+    if any(x in m for x in ("upgrade", "renew", "membership", "plan", "subscribe", "subscription", "cancel", "invoice", "billing", "portal")):
+        return "billing"
+
     if any(x in m for x in ("refund", "charged", "charge", "money back")):
         return "refund"
     if any(x in m for x in ("license", "activation", "activate", "key")):
         return "license"
     if any(x in m for x in ("token", "credit", "out of tokens", "buy tokens")):
         return "tokens"
-    if any(x in m for x in ("billing", "invoice", "portal", "subscription", "cancel")):
-        return "billing"
     if any(x in m for x in ("error", "broken", "not working", "failed", "bug")):
         return "troubleshoot"
     return "general"
@@ -366,31 +397,101 @@ def support_chat(request: HttpRequest) -> JsonResponse:
         return auth_err
 
     message = str(payload.get("message") or "").strip()
-    context = payload.get("context") or {}
+    thread_id = str(payload.get("thread_id") or payload.get("thread") or "").strip()  # CHANGED
+
+    # CHANGED: Detect account context from the same fields WP already knows server-side.
+    license_key, site_url = _extract_account_fields(request, payload)  # CHANGED
+    has_context = bool(license_key and site_url)  # CHANGED
+
     intent = _guess_intent(message)
 
-    # NOTE: We are intentionally not calling the AI yet, because we haven't wired
-    # the full policy, Stripe gates, and license tooling into these endpoints.
-    # This keeps it safe while we finish wiring URLs + action implementations.
+    # CHANGED: Friendly, actionable router (no money/key ops from chat yet).
+    if not message:
+        agent_message = (
+            "What can I help with?\n\n"
+            "A few examples:\n"
+            "• “upgrade my plan”\n"
+            "• “buy more tokens”\n"
+            "• “license won’t activate”\n"
+            "• “I’m getting an error in WordPress”"
+        )
+    elif intent == "billing":
+        agent_message = (
+            "Got it — billing/plan stuff.\n\n"
+            "Fastest move: go back to your **Account** screen and click **Upgrade Plan**.\n"
+            "That should open the secure billing flow.\n\n"
+            "If it doesn’t open (or you get an error), tell me what you see and I’ll guide you."
+        )
+    elif intent == "tokens":
+        agent_message = (
+            "Tokens — got you.\n\n"
+            "On the **Account** screen, use **Buy Tokens**.\n"
+            "If it fails, tell me exactly what happens (popup blocked, error text, or nothing)."
+        )
+    elif intent == "license":
+        agent_message = (
+            "License help — ok.\n\n"
+            "Tell me:\n"
+            "1) the exact message you see (copy/paste it)\n"
+            "2) what page you’re on when it shows up\n"
+            "3) whether this started today or after a change (update/plugin/theme)"
+        )
+    elif intent == "troubleshoot":
+        agent_message = (
+            "Alright — let’s diagnose it like a calm mechanic.\n\n"
+            "Reply with:\n"
+            "1) the exact error text (or screenshot)\n"
+            "2) the page where it happens\n"
+            "3) what changed right before it started (update, plugin, theme, hosting)"
+        )
+    elif intent == "refund":
+        agent_message = (
+            "Refunds are a human step (so we don’t do anything dumb by accident).\n\n"
+            "Email **support@waynehatter.com** with:\n"
+            "• the email on the purchase\n"
+            "• the amount + date\n"
+            "• any Stripe receipt/invoice ID (if you have it)\n\n"
+            "If you paste the exact message you’re seeing here, I can still help route it."
+        )
+    else:
+        agent_message = (
+            "Got it. Quick question so I don’t guess:\n\n"
+            "Is this about **billing**, **tokens**, **license**, or a **site issue**?\n"
+            "Drop one sentence with what you want to happen vs what’s happening."
+        )
+
+    suggested_actions = []  # CHANGED
+    if intent == "billing":
+        suggested_actions = [
+            {
+                "id": "go_to_upgrade_plan",
+                "label": "Use the Upgrade Plan button on the Account screen",
+                "kind": "ui_hint",
+            }
+        ]
+    elif intent == "tokens":
+        suggested_actions = [
+            {
+                "id": "go_to_buy_tokens",
+                "label": "Use the Buy Tokens button on the Account screen",
+                "kind": "ui_hint",
+            }
+        ]
+
     resp = {
         "agent": "SupportRouter",
         "intent": intent,
-        "stage": "bootstrapping",
-        "agent_message": (
-            "Support is coming online. I can see your message and your site context — "
-            "next step is wiring these endpoints into routes and turning on the full router."
-        ),
+        "stage": "online",  # CHANGED
+        "agent_message": agent_message,
+        "thread_id": thread_id,
         "echo": {
             "message_chars": len(message),
-            "has_context": isinstance(context, dict) and bool(context),
+            "has_context": has_context,
         },
-        "next_actions": [
-            "wire_urls",
-            "enable_account_status",
-            "enable_actions_safely",
-        ],
+        "suggested_actions": suggested_actions,
     }
     return _json_ok(resp)
+
 
 
 @csrf_exempt
@@ -418,7 +519,7 @@ def support_account_status(request: HttpRequest) -> JsonResponse:
             user_message="Missing account identifiers. Please refresh the page and try again.",
         )
 
-    resp, why = _delegate_to_license_verify(license_key, site_url)  # CHANGED
+    resp, why = _delegate_to_license_verify(license_key, site_url, shared_secret=_expected_shared_secret())  # CHANGED
     if resp is not None:  # CHANGED
         return resp  # CHANGED: return license verify JSON as-is (canonical contract)
 
