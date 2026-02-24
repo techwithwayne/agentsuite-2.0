@@ -8,15 +8,12 @@ PostPress AI — Support Agent Endpoints (Django)
 PURPOSE
 -------
 Django-driven support endpoints for the WP Admin widget (PostPress AI pages only).
-This file is intentionally SAFE to add without wiring URLs yet.
 
 CHANGE LOG
 ----------
-2026-02-24 • TONE: Bake "Wayne Vibe" directly into Support chat replies (Option 1) so responses are calm,
-           direct, human, and consistent (no post-processing linter).  # CHANGED:
-           • BRAND: Set support agent display name to "Yukia" in response payloads.  # CHANGED:
-           • UX: Remove robotic phrasing ("Fastest move", corporate filler) and enforce a clear next step.  # CHANGED:
-           • UX: Keep support-chat constraint: one primary action + one question max (unless user is blocked).  # CHANGED:
+2026-02-24 • TONE: Support chat replies now speak in the Wayne vibe (calm, direct, human).  # CHANGED
+           • BRAND: Support agent display name is "Yukia" and greeting uses "Hi, Yukia here."  # CHANGED
+           • UX: Support chat responses are plain text (no Markdown tokens like **bold**).  # CHANGED
 2026-02-23 • NEW: Scaffold Support endpoints (chat, account_status, action/*) with:
            - consistent JSON envelope
            - robust request parsing (JSON + form + legacy "payload" field)
@@ -56,14 +53,13 @@ AUTH_HEADER_CANDIDATES = (
     "HTTP_AUTHORIZATION",
 )
 
-# CHANGED: Support agent identity (user-facing)
-SUPPORT_AGENT_NAME = "Yukia"  # CHANGED:
+SUPPORT_AGENT_NAME = "Yukia"  # CHANGED
 
-# CHANGED: License/account extraction fallbacks (lets WP send values in body OR headers OR query).
-LICENSE_KEY_FIELDS = ("license_key", "key", "license")  # CHANGED
-SITE_URL_FIELDS = ("site_url", "install", "site")  # CHANGED
-HEADER_LICENSE_KEY = "HTTP_X_PPA_KEY"  # CHANGED
-HEADER_SITE_URL = "HTTP_X_PPA_INSTALL"  # CHANGED
+# License/account extraction fallbacks (lets WP send values in body OR headers OR query).
+LICENSE_KEY_FIELDS = ("license_key", "key", "license")
+SITE_URL_FIELDS = ("site_url", "install", "site")
+HEADER_LICENSE_KEY = "HTTP_X_PPA_KEY"
+HEADER_SITE_URL = "HTTP_X_PPA_INSTALL"
 
 
 # -----------------------------
@@ -71,7 +67,6 @@ HEADER_SITE_URL = "HTTP_X_PPA_INSTALL"  # CHANGED
 # -----------------------------
 
 def _server_time_iso() -> str:
-    # CHANGED: Use epoch-based UTC ISO without importing pytz/dateutil.
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
@@ -230,12 +225,11 @@ def _require_shared_secret(request: HttpRequest, payload: Dict[str, Any]) -> Opt
 # Helpers (account extraction + delegation)
 # -----------------------------
 
-def _first_nonempty_str(v: Any) -> str:  # CHANGED
-    s = str(v or "").strip()
-    return s
+def _first_nonempty_str(v: Any) -> str:
+    return str(v or "").strip()
 
 
-def _extract_account_fields(request: HttpRequest, payload: Dict[str, Any]) -> Tuple[str, str]:  # CHANGED
+def _extract_account_fields(request: HttpRequest, payload: Dict[str, Any]) -> Tuple[str, str]:
     """
     Bulletproof extraction for license_key + site_url.
     Supports:
@@ -281,7 +275,7 @@ def _extract_account_fields(request: HttpRequest, payload: Dict[str, Any]) -> Tu
     return license_key, site_url
 
 
-def _delegate_to_license_verify(  # CHANGED
+def _delegate_to_license_verify(
     license_key: str,
     site_url: str,
     *,
@@ -289,14 +283,6 @@ def _delegate_to_license_verify(  # CHANGED
 ) -> Tuple[Optional[JsonResponse], Optional[str]]:
     """
     Calls the existing /license/verify/ view internally and returns its JsonResponse as-is.
-
-    Why:
-      - This is already the authoritative account contract (plan/sites/tokens/links).
-      - Support account_status should not invent a second contract.
-
-    Security:
-      - This stays server-side only (uses env shared secret).
-      - We forward the same auth headers WP would send, so behavior matches production.  # CHANGED
     """
     try:
         mod = importlib.import_module("postpress_ai.views.license")
@@ -323,15 +309,11 @@ def _delegate_to_license_verify(  # CHANGED
         body = json.dumps({"license_key": license_key, "site_url": site_url})
 
         extra_headers = {
-            # Mirror what WP sends so the verify endpoint behaves exactly the same.
             "HTTP_X_PPA_KEY": license_key,
             "HTTP_X_PPA_INSTALL": site_url,
             "HTTP_X_PPA_VIEW": "support_account_status",
         }
 
-        # CHANGED: Some installs enforce the shared-secret gate for license verify as well.
-        # We forward the secret in multiple header styles to maximize compatibility,
-        # without leaking it to the browser (this is an internal server-side call).
         if shared_secret:
             extra_headers.update(
                 {
@@ -351,7 +333,6 @@ def _delegate_to_license_verify(  # CHANGED
         if isinstance(resp, JsonResponse):
             return resp, None
 
-        # If a view returns HttpResponse-like, try to wrap if it’s JSON
         try:
             content = getattr(resp, "content", b"") or b""
             code = int(getattr(resp, "status_code", 200))
@@ -364,76 +345,61 @@ def _delegate_to_license_verify(  # CHANGED
 
 
 # -----------------------------
-# Helpers (Wayne Vibe: deterministic message composer)
+# Helpers (Wayne vibe messages — PLAIN TEXT, NO MARKDOWN)
 # -----------------------------
 
-def _yukia_prefix() -> str:  # CHANGED:
-    # Keep the agent name visible even if the WP UI only renders message text.
-    return f"{SUPPORT_AGENT_NAME} here — "
+def _greeting() -> str:
+    return f"Hi, {SUPPORT_AGENT_NAME} here. What's going on?"
 
 
-def _wayne_vibe_guardrails() -> str:  # CHANGED:
-    """
-    NOTE:
-    Option 1 (bake voice into the router) is implemented by writing the canned messages
-    in the Wayne Vibe style. This function exists as a future anchor if/when we move
-    Support chat to an LLM-backed responder.
-    """
-    return ""
-
-
-def _msg_unknown() -> str:  # CHANGED:
+def _msg_help_examples() -> str:
     return (
-        f"{SUPPORT_AGENT_NAME} here. What can I help with?\n\n"
-        "Try:\n"
-        "• “upgrade my plan”\n"
-        "• “buy more tokens”\n"
-        "• “license won’t activate”\n"
-        "• “I’m seeing an error in WordPress”\n\n"
-        "Next step: tell me what you’re trying to do."
+        f"{_greeting()}\n\n"
+        "Try one of these:\n"
+        "• upgrade my plan\n"
+        "• buy more tokens\n"
+        "• license won’t activate\n"
+        "• I’m seeing an error in WordPress\n\n"
+        "Next step: tell me what you clicked and what you expected to happen."
     )
 
 
-def _msg_billing() -> str:  # CHANGED:
-    # One action + one question max. Ends with next step question.
+def _msg_billing() -> str:
     return (
-        f"{_yukia_prefix()}billing/plan stuff.\n\n"
-        "Go to **Account** → **Upgrade Plan**.\n"
+        f"{SUPPORT_AGENT_NAME} here — billing/plan stuff.\n\n"
+        "Go to Account → Upgrade Plan.\n"
         "If it doesn’t open, what did you click and what did you expect to happen?"
     )
 
 
-def _msg_tokens() -> str:  # CHANGED:
+def _msg_tokens() -> str:
     return (
-        f"{_yukia_prefix()}tokens.\n\n"
-        "Go to **Account** → **Buy Tokens**.\n"
+        f"{SUPPORT_AGENT_NAME} here — tokens.\n\n"
+        "Go to Account → Buy Tokens.\n"
         "If it doesn’t open, what did you click and what did you expect to happen?"
     )
 
 
-def _msg_license() -> str:  # CHANGED:
+def _msg_license() -> str:
     return (
-        f"{_yukia_prefix()}license help.\n\n"
-        "Paste the exact message you see + the page you’re on.\n"
-        "If this started after a change (update/plugin/theme), tell me what changed.\n\n"
+        f"{SUPPORT_AGENT_NAME} here — license help.\n\n"
+        "Paste the exact message you see and the page you’re on.\n"
         "Next step: paste the message."
     )
 
 
-def _msg_troubleshoot() -> str:  # CHANGED:
+def _msg_troubleshoot() -> str:
     return (
-        f"{_yukia_prefix()}let’s diagnose it.\n\n"
-        "Paste the exact error (or screenshot) + the page it happens on.\n"
-        "What changed right before it started?\n\n"
-        "Next step: paste the error text."
+        f"{SUPPORT_AGENT_NAME} here — let’s diagnose it.\n\n"
+        "Paste the exact error and the page it happens on.\n"
+        "Next step: what changed right before it started?"
     )
 
 
-def _msg_refund() -> str:  # CHANGED:
-    # Keep it safe: route to email, no money ops in chat.
+def _msg_refund() -> str:
     return (
-        f"{_yukia_prefix()}billing disputes/refunds.\n\n"
-        "Email **support@waynehatter.com** with:\n"
+        f"{SUPPORT_AGENT_NAME} here — billing disputes/refunds.\n\n"
+        "Email support@waynehatter.com with:\n"
         "• purchase email\n"
         "• amount + date\n"
         "• any receipt/invoice ID (if you have it)\n\n"
@@ -441,10 +407,10 @@ def _msg_refund() -> str:  # CHANGED:
     )
 
 
-def _msg_general() -> str:  # CHANGED:
+def _msg_general() -> str:
     return (
-        f"{_yukia_prefix()}quick check so I don’t guess.\n\n"
-        "Is this **billing**, **tokens**, **license**, or a **site issue**?\n"
+        f"{SUPPORT_AGENT_NAME} here. Quick check so I don’t guess.\n\n"
+        "Is this billing, tokens, license, or a site issue?\n"
         "Next step: one sentence — what you did + what you expected."
     )
 
@@ -458,8 +424,21 @@ def _guess_intent(message: str) -> str:
     if not m:
         return "unknown"
 
-    # Billing / plan changes (includes "upgrade"/"renew membership")  # CHANGED
-    if any(x in m for x in ("upgrade", "renew", "membership", "plan", "subscribe", "subscription", "cancel", "invoice", "billing", "portal")):
+    if any(
+        x in m
+        for x in (
+            "upgrade",
+            "renew",
+            "membership",
+            "plan",
+            "subscribe",
+            "subscription",
+            "cancel",
+            "invoice",
+            "billing",
+            "portal",
+        )
+    ):
         return "billing"
 
     if any(x in m for x in ("refund", "charged", "charge", "money back")):
@@ -491,17 +470,15 @@ def support_chat(request: HttpRequest) -> JsonResponse:
         return auth_err
 
     message = str(payload.get("message") or "").strip()
-    thread_id = str(payload.get("thread_id") or payload.get("thread") or "").strip()  # CHANGED
+    thread_id = str(payload.get("thread_id") or payload.get("thread") or "").strip()
 
-    # CHANGED: Detect account context from the same fields WP already knows server-side.
-    license_key, site_url = _extract_account_fields(request, payload)  # CHANGED
-    has_context = bool(license_key and site_url)  # CHANGED
+    license_key, site_url = _extract_account_fields(request, payload)
+    has_context = bool(license_key and site_url)
 
     intent = _guess_intent(message)
 
-    # CHANGED: Wayne Vibe baked-in responses (Option 1).
     if not message:
-        agent_message = _msg_unknown()
+        agent_message = _msg_help_examples()
     elif intent == "billing":
         agent_message = _msg_billing()
     elif intent == "tokens":
@@ -515,12 +492,12 @@ def support_chat(request: HttpRequest) -> JsonResponse:
     else:
         agent_message = _msg_general()
 
-    suggested_actions = []  # CHANGED
+    suggested_actions = []
     if intent == "billing":
         suggested_actions = [
             {
                 "id": "go_to_upgrade_plan",
-                "label": "Use the **Upgrade Plan** button on the Account screen",  # CHANGED:
+                "label": "Use the Upgrade Plan button on the Account screen",
                 "kind": "ui_hint",
             }
         ]
@@ -528,15 +505,15 @@ def support_chat(request: HttpRequest) -> JsonResponse:
         suggested_actions = [
             {
                 "id": "go_to_buy_tokens",
-                "label": "Use the **Buy Tokens** button on the Account screen",  # CHANGED:
+                "label": "Use the Buy Tokens button on the Account screen",
                 "kind": "ui_hint",
             }
         ]
 
     resp = {
-        "agent": SUPPORT_AGENT_NAME,  # CHANGED: user-facing agent name
+        "agent": SUPPORT_AGENT_NAME,
         "intent": intent,
-        "stage": "online",  # CHANGED
+        "stage": "online",
         "agent_message": agent_message,
         "thread_id": thread_id,
         "echo": {
@@ -544,9 +521,9 @@ def support_chat(request: HttpRequest) -> JsonResponse:
             "has_context": has_context,
         },
         "suggested_actions": suggested_actions,
+        "router": "SupportRouter",  # CHANGED (debug only, safe add)
     }
     return _json_ok(resp)
-
 
 
 @csrf_exempt
@@ -564,9 +541,8 @@ def support_account_status(request: HttpRequest) -> JsonResponse:
     if auth_err:
         return auth_err
 
-    # CHANGED: Extract license_key + site_url and delegate to /license/verify/ for real account payload.
-    license_key, site_url = _extract_account_fields(request, payload)  # CHANGED
-    if not license_key or not site_url:  # CHANGED
+    license_key, site_url = _extract_account_fields(request, payload)
+    if not license_key or not site_url:
         return _json_err(
             "invalid_payload",
             http_status=400,
@@ -574,11 +550,11 @@ def support_account_status(request: HttpRequest) -> JsonResponse:
             user_message="Missing account identifiers. Please refresh the page and try again.",
         )
 
-    resp, why = _delegate_to_license_verify(license_key, site_url, shared_secret=_expected_shared_secret())  # CHANGED
-    if resp is not None:  # CHANGED
-        return resp  # CHANGED: return license verify JSON as-is (canonical contract)
+    resp, why = _delegate_to_license_verify(license_key, site_url, shared_secret=_expected_shared_secret())
+    if resp is not None:
+        return resp
 
-    return _json_err(  # CHANGED
+    return _json_err(
         "account_status_failed",
         http_status=500,
         reason=why or "delegate failed",
@@ -649,7 +625,6 @@ def support_action_refund(request: HttpRequest) -> JsonResponse:
     if auth_err:
         return auth_err
 
-    # Extra safety: never refund without explicit "confirm": true
     confirm = bool(payload.get("confirm"))
     if not confirm:
         return _json_err(
