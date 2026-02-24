@@ -12,6 +12,11 @@ This file is intentionally SAFE to add without wiring URLs yet.
 
 CHANGE LOG
 ----------
+2026-02-24 • TONE: Bake "Wayne Vibe" directly into Support chat replies (Option 1) so responses are calm,
+           direct, human, and consistent (no post-processing linter).  # CHANGED:
+           • BRAND: Set support agent display name to "Yukia" in response payloads.  # CHANGED:
+           • UX: Remove robotic phrasing ("Fastest move", corporate filler) and enforce a clear next step.  # CHANGED:
+           • UX: Keep support-chat constraint: one primary action + one question max (unless user is blocked).  # CHANGED:
 2026-02-23 • NEW: Scaffold Support endpoints (chat, account_status, action/*) with:
            - consistent JSON envelope
            - robust request parsing (JSON + form + legacy "payload" field)
@@ -50,6 +55,9 @@ AUTH_HEADER_CANDIDATES = (
     "HTTP_X_PPA_AUTH",
     "HTTP_AUTHORIZATION",
 )
+
+# CHANGED: Support agent identity (user-facing)
+SUPPORT_AGENT_NAME = "Yukia"  # CHANGED:
 
 # CHANGED: License/account extraction fallbacks (lets WP send values in body OR headers OR query).
 LICENSE_KEY_FIELDS = ("license_key", "key", "license")  # CHANGED
@@ -356,6 +364,92 @@ def _delegate_to_license_verify(  # CHANGED
 
 
 # -----------------------------
+# Helpers (Wayne Vibe: deterministic message composer)
+# -----------------------------
+
+def _yukia_prefix() -> str:  # CHANGED:
+    # Keep the agent name visible even if the WP UI only renders message text.
+    return f"{SUPPORT_AGENT_NAME} here — "
+
+
+def _wayne_vibe_guardrails() -> str:  # CHANGED:
+    """
+    NOTE:
+    Option 1 (bake voice into the router) is implemented by writing the canned messages
+    in the Wayne Vibe style. This function exists as a future anchor if/when we move
+    Support chat to an LLM-backed responder.
+    """
+    return ""
+
+
+def _msg_unknown() -> str:  # CHANGED:
+    return (
+        f"{SUPPORT_AGENT_NAME} here. What can I help with?\n\n"
+        "Try:\n"
+        "• “upgrade my plan”\n"
+        "• “buy more tokens”\n"
+        "• “license won’t activate”\n"
+        "• “I’m seeing an error in WordPress”\n\n"
+        "Next step: tell me what you’re trying to do."
+    )
+
+
+def _msg_billing() -> str:  # CHANGED:
+    # One action + one question max. Ends with next step question.
+    return (
+        f"{_yukia_prefix()}billing/plan stuff.\n\n"
+        "Go to **Account** → **Upgrade Plan**.\n"
+        "If it doesn’t open, what did you click and what did you expect to happen?"
+    )
+
+
+def _msg_tokens() -> str:  # CHANGED:
+    return (
+        f"{_yukia_prefix()}tokens.\n\n"
+        "Go to **Account** → **Buy Tokens**.\n"
+        "If it doesn’t open, what did you click and what did you expect to happen?"
+    )
+
+
+def _msg_license() -> str:  # CHANGED:
+    return (
+        f"{_yukia_prefix()}license help.\n\n"
+        "Paste the exact message you see + the page you’re on.\n"
+        "If this started after a change (update/plugin/theme), tell me what changed.\n\n"
+        "Next step: paste the message."
+    )
+
+
+def _msg_troubleshoot() -> str:  # CHANGED:
+    return (
+        f"{_yukia_prefix()}let’s diagnose it.\n\n"
+        "Paste the exact error (or screenshot) + the page it happens on.\n"
+        "What changed right before it started?\n\n"
+        "Next step: paste the error text."
+    )
+
+
+def _msg_refund() -> str:  # CHANGED:
+    # Keep it safe: route to email, no money ops in chat.
+    return (
+        f"{_yukia_prefix()}billing disputes/refunds.\n\n"
+        "Email **support@waynehatter.com** with:\n"
+        "• purchase email\n"
+        "• amount + date\n"
+        "• any receipt/invoice ID (if you have it)\n\n"
+        "Next step: what did you click and what did you expect to happen?"
+    )
+
+
+def _msg_general() -> str:  # CHANGED:
+    return (
+        f"{_yukia_prefix()}quick check so I don’t guess.\n\n"
+        "Is this **billing**, **tokens**, **license**, or a **site issue**?\n"
+        "Next step: one sentence — what you did + what you expected."
+    )
+
+
+# -----------------------------
 # Helpers (very light router)
 # -----------------------------
 
@@ -405,67 +499,28 @@ def support_chat(request: HttpRequest) -> JsonResponse:
 
     intent = _guess_intent(message)
 
-    # CHANGED: Friendly, actionable router (no money/key ops from chat yet).
+    # CHANGED: Wayne Vibe baked-in responses (Option 1).
     if not message:
-        agent_message = (
-            "What can I help with?\n\n"
-            "A few examples:\n"
-            "• “upgrade my plan”\n"
-            "• “buy more tokens”\n"
-            "• “license won’t activate”\n"
-            "• “I’m getting an error in WordPress”"
-        )
+        agent_message = _msg_unknown()
     elif intent == "billing":
-        agent_message = (
-            "Got it — billing/plan stuff.\n\n"
-            "Fastest move: go back to your **Account** screen and click **Upgrade Plan**.\n"
-            "That should open the secure billing flow.\n\n"
-            "If it doesn’t open (or you get an error), tell me what you see and I’ll guide you."
-        )
+        agent_message = _msg_billing()
     elif intent == "tokens":
-        agent_message = (
-            "Tokens — got you.\n\n"
-            "On the **Account** screen, use **Buy Tokens**.\n"
-            "If it fails, tell me exactly what happens (popup blocked, error text, or nothing)."
-        )
+        agent_message = _msg_tokens()
     elif intent == "license":
-        agent_message = (
-            "License help — ok.\n\n"
-            "Tell me:\n"
-            "1) the exact message you see (copy/paste it)\n"
-            "2) what page you’re on when it shows up\n"
-            "3) whether this started today or after a change (update/plugin/theme)"
-        )
+        agent_message = _msg_license()
     elif intent == "troubleshoot":
-        agent_message = (
-            "Alright — let’s diagnose it like a calm mechanic.\n\n"
-            "Reply with:\n"
-            "1) the exact error text (or screenshot)\n"
-            "2) the page where it happens\n"
-            "3) what changed right before it started (update, plugin, theme, hosting)"
-        )
+        agent_message = _msg_troubleshoot()
     elif intent == "refund":
-        agent_message = (
-            "Refunds are a human step (so we don’t do anything dumb by accident).\n\n"
-            "Email **support@waynehatter.com** with:\n"
-            "• the email on the purchase\n"
-            "• the amount + date\n"
-            "• any Stripe receipt/invoice ID (if you have it)\n\n"
-            "If you paste the exact message you’re seeing here, I can still help route it."
-        )
+        agent_message = _msg_refund()
     else:
-        agent_message = (
-            "Got it. Quick question so I don’t guess:\n\n"
-            "Is this about **billing**, **tokens**, **license**, or a **site issue**?\n"
-            "Drop one sentence with what you want to happen vs what’s happening."
-        )
+        agent_message = _msg_general()
 
     suggested_actions = []  # CHANGED
     if intent == "billing":
         suggested_actions = [
             {
                 "id": "go_to_upgrade_plan",
-                "label": "Use the Upgrade Plan button on the Account screen",
+                "label": "Use the **Upgrade Plan** button on the Account screen",  # CHANGED:
                 "kind": "ui_hint",
             }
         ]
@@ -473,13 +528,13 @@ def support_chat(request: HttpRequest) -> JsonResponse:
         suggested_actions = [
             {
                 "id": "go_to_buy_tokens",
-                "label": "Use the Buy Tokens button on the Account screen",
+                "label": "Use the **Buy Tokens** button on the Account screen",  # CHANGED:
                 "kind": "ui_hint",
             }
         ]
 
     resp = {
-        "agent": "SupportRouter",
+        "agent": SUPPORT_AGENT_NAME,  # CHANGED: user-facing agent name
         "intent": intent,
         "stage": "online",  # CHANGED
         "agent_message": agent_message,
