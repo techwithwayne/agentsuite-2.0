@@ -12,6 +12,7 @@ Django-driven support endpoints for the WP Admin widget (PostPress AI pages only
 CHANGE LOG
 ----------
 2026-02-24 • FIX: Implement locked Yukia support behavior (plain text replies, no agent-meta phrasing, token/credit intent routing, suggested_actions contract, exception fallback).  # CHANGED
+2026-02-25 • FIX: Also return suggested_actions at the top-level JSON for WP UI button rendering (keeps data.suggested_actions for back-compat).  # CHANGED
 2026-02-23 • NEW: Scaffold Support endpoints (chat, account_status, action/*) with:
            - consistent JSON envelope
            - robust request parsing (JSON + form + legacy "payload" field)
@@ -468,7 +469,18 @@ def support_chat(request: HttpRequest) -> JsonResponse:
             },
             "suggested_actions": suggested_actions,
         }
-        return _json_ok(resp)
+        # CHANGED: Provide suggested_actions at the top-level as well (WP UI expects this for rendering buttons outside the bubble).
+        # Keep data.suggested_actions for backward compatibility.
+        aid = str(uuid.uuid4())  # CHANGED:
+        return JsonResponse(
+            {
+                "ok": True,
+                "data": resp,
+                "suggested_actions": suggested_actions,  # CHANGED:
+                "meta": {"audit_id": aid, "server_time": _server_time_iso()},
+            },
+            status=200,
+        )
     except Exception:
         # Unreachable/exception path must return ONLY this message (no click/expect line).
         resp = {
@@ -479,7 +491,17 @@ def support_chat(request: HttpRequest) -> JsonResponse:
             "thread_id": str(payload.get("thread_id") or payload.get("thread") or "").strip(),
             "suggested_actions": [],
         }
-        return _json_ok(resp)
+        # CHANGED: Provide suggested_actions top-level (empty) for UI consistency.
+        aid = str(uuid.uuid4())  # CHANGED:
+        return JsonResponse(
+            {
+                "ok": True,
+                "data": resp,
+                "suggested_actions": [],  # CHANGED:
+                "meta": {"audit_id": aid, "server_time": _server_time_iso()},
+            },
+            status=200,
+        )
 
 
 @csrf_exempt
