@@ -11,9 +11,7 @@ Django-driven support endpoints for the WP Admin widget (PostPress AI pages only
 
 CHANGE LOG
 ----------
-2026-02-24 • TONE: Support chat replies now speak in the Wayne vibe (calm, direct, human).  # CHANGED
-           • BRAND: Support agent display name is "Yukia" and greeting uses "Hi, Yukia here."  # CHANGED
-           • UX: Support chat responses are plain text (no Markdown tokens like **bold**).  # CHANGED
+2026-02-24 • FIX: Implement locked Yukia support behavior (plain text replies, no agent-meta phrasing, token/credit intent routing, suggested_actions contract, exception fallback).  # CHANGED
 2026-02-23 • NEW: Scaffold Support endpoints (chat, account_status, action/*) with:
            - consistent JSON envelope
            - robust request parsing (JSON + form + legacy "payload" field)
@@ -345,113 +343,93 @@ def _delegate_to_license_verify(
 
 
 # -----------------------------
-# Helpers (Wayne vibe messages — PLAIN TEXT, NO MARKDOWN)
+# Helpers (Yukia Support Replies — PLAIN TEXT ONLY)
 # -----------------------------
 
-def _greeting() -> str:
-    return f"Hi, {SUPPORT_AGENT_NAME} here. What's going on?"
+# NOTE:
+# - WP UI owns the greeting line.
+# - Messages returned here must be plain text only (no Markdown rendering, no emojis).
+# - Avoid agent-meta phrasing inside all replies.
+
+UNREACHABLE_MESSAGE = "I couldn’t reach support right now."
+
+# Token/credit intent reply must be EXACT (including punctuation + line breaks).
+TOKEN_INTENT_MESSAGE = "Okay, I see you’re asking about credits (tokens).\nPick one below:"
+
+# Suggested-actions payload contract (exact shape; max 3; fixed order)
+SUGGESTED_ACTIONS_TOKENS = [
+    {"id": "buy_tokens", "label": "Buy Tokens"},
+    {"id": "check_token_balance", "label": "Check My Token Balance"},
+    {"id": "something_looks_wrong", "label": "Something Looks Wrong"},
+]
 
 
-def _msg_help_examples() -> str:
-    return (
-        f"{_greeting()}\n\n"
-        "Try one of these:\n"
-        "• upgrade my plan\n"
-        "• buy more tokens\n"
-        "• license won’t activate\n"
-        "• I’m seeing an error in WordPress\n\n"
-        "Next step: tell me what you clicked and what you expected to happen."
-    )
+def _as_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    s = str(v or "").strip().lower()
+    return s in ("1", "true", "yes", "y", "on")
 
 
-def _msg_billing() -> str:
-    return (
-        f"{SUPPORT_AGENT_NAME} here — billing/plan stuff.\n\n"
-        "Go to Account → Upgrade Plan.\n"
-        "If it doesn’t open, what did you click and what did you expect to happen?"
-    )
+def _is_ui_failure_something_looks_wrong(payload: Dict[str, Any]) -> bool:
+    # WP may send an action id when the user clicks a suggested action.
+    action_id = str(
+        payload.get("action_id")
+        or payload.get("action")
+        or payload.get("suggested_action_id")
+        or payload.get("suggested_action")
+        or ""
+    ).strip().lower()
+    ui_event = str(payload.get("ui_event") or payload.get("event") or "").strip().lower()
+    return action_id == "something_looks_wrong" or ui_event == "something_looks_wrong"
 
 
-def _msg_tokens() -> str:
-    return (
-        f"{SUPPORT_AGENT_NAME} here — tokens.\n\n"
-        "Go to Account → Buy Tokens.\n"
-        "If it doesn’t open, what did you click and what did you expect to happen?"
-    )
+def _is_ui_failure_popup_blocked(payload: Dict[str, Any]) -> bool:
+    ui_event = str(payload.get("ui_event") or payload.get("event") or "").strip().lower()
+    return ui_event == "popup_blocked" or _as_bool(payload.get("popup_blocked"))
 
 
-def _msg_license() -> str:
-    return (
-        f"{SUPPORT_AGENT_NAME} here — license help.\n\n"
-        "Paste the exact message you see and the page you’re on.\n"
-        "Next step: paste the message."
-    )
-
-
-def _msg_troubleshoot() -> str:
-    return (
-        f"{SUPPORT_AGENT_NAME} here — let’s diagnose it.\n\n"
-        "Paste the exact error and the page it happens on.\n"
-        "Next step: what changed right before it started?"
-    )
-
-
-def _msg_refund() -> str:
-    return (
-        f"{SUPPORT_AGENT_NAME} here — billing disputes/refunds.\n\n"
-        "Email support@waynehatter.com with:\n"
-        "• purchase email\n"
-        "• amount + date\n"
-        "• any receipt/invoice ID (if you have it)\n\n"
-        "Next step: what did you click and what did you expect to happen?"
-    )
-
-
-def _msg_general() -> str:
-    return (
-        f"{SUPPORT_AGENT_NAME} here. Quick check so I don’t guess.\n\n"
-        "Is this billing, tokens, license, or a site issue?\n"
-        "Next step: one sentence — what you did + what you expected."
-    )
-
-
-# -----------------------------
-# Helpers (very light router)
-# -----------------------------
-
-def _guess_intent(message: str) -> str:
+def _is_token_intent(message: str) -> bool:
     m = (message or "").lower().strip()
     if not m:
-        return "unknown"
+        return False
 
-    if any(
-        x in m
-        for x in (
-            "upgrade",
-            "renew",
-            "membership",
-            "plan",
-            "subscribe",
-            "subscription",
-            "cancel",
-            "invoice",
-            "billing",
-            "portal",
-        )
-    ):
-        return "billing"
-
-    if any(x in m for x in ("refund", "charged", "charge", "money back")):
-        return "refund"
-    if any(x in m for x in ("license", "activation", "activate", "key")):
-        return "license"
-    if any(x in m for x in ("token", "credit", "out of tokens", "buy tokens")):
-        return "tokens"
-    if any(x in m for x in ("error", "broken", "not working", "failed", "bug")):
-        return "troubleshoot"
-    return "general"
+    # Tokens/credits/balance/usage/0 tokens
+    token_terms = (
+        "token",
+        "tokens",
+        "credit",
+        "credits",
+        "balance",
+        "usage",
+        "used",
+        "remaining",
+        "0 token",
+        "0 tokens",
+        "zero tokens",
+        "no tokens",
+        "out of tokens",
+    )
+    return any(t in m for t in token_terms)
 
 
+def _chat_reply_for_message(message: str, payload: Dict[str, Any]) -> Tuple[str, str, list]:
+    """
+    Returns: (intent, agent_message, suggested_actions)
+    """
+    # True UI failure paths only
+    if _is_ui_failure_something_looks_wrong(payload):
+        return "something_looks_wrong", "What did you click, and what did you expect?", SUGGESTED_ACTIONS_TOKENS
+
+    if _is_ui_failure_popup_blocked(payload):
+        return "popup_blocked", "What did you click, and what did you expect?", SUGGESTED_ACTIONS_TOKENS
+
+    # Token/credit intent (exact response)
+    if _is_token_intent(message):
+        return "tokens", TOKEN_INTENT_MESSAGE, SUGGESTED_ACTIONS_TOKENS
+
+    # Default: keep it tight, drive to the 3 actions.
+    return "general", "Pick one below:", SUGGESTED_ACTIONS_TOKENS
 # -----------------------------
 # Views (Support endpoints)
 # -----------------------------
@@ -469,61 +447,39 @@ def support_chat(request: HttpRequest) -> JsonResponse:
     if auth_err:
         return auth_err
 
-    message = str(payload.get("message") or "").strip()
-    thread_id = str(payload.get("thread_id") or payload.get("thread") or "").strip()
+    try:
+        message = str(payload.get("message") or "").strip()
+        thread_id = str(payload.get("thread_id") or payload.get("thread") or "").strip()
 
-    license_key, site_url = _extract_account_fields(request, payload)
-    has_context = bool(license_key and site_url)
+        license_key, site_url = _extract_account_fields(request, payload)
+        has_context = bool(license_key and site_url)
 
-    intent = _guess_intent(message)
+        intent, agent_message, suggested_actions = _chat_reply_for_message(message, payload)
 
-    if not message:
-        agent_message = _msg_help_examples()
-    elif intent == "billing":
-        agent_message = _msg_billing()
-    elif intent == "tokens":
-        agent_message = _msg_tokens()
-    elif intent == "license":
-        agent_message = _msg_license()
-    elif intent == "troubleshoot":
-        agent_message = _msg_troubleshoot()
-    elif intent == "refund":
-        agent_message = _msg_refund()
-    else:
-        agent_message = _msg_general()
-
-    suggested_actions = []
-    if intent == "billing":
-        suggested_actions = [
-            {
-                "id": "go_to_upgrade_plan",
-                "label": "Use the Upgrade Plan button on the Account screen",
-                "kind": "ui_hint",
-            }
-        ]
-    elif intent == "tokens":
-        suggested_actions = [
-            {
-                "id": "go_to_buy_tokens",
-                "label": "Use the Buy Tokens button on the Account screen",
-                "kind": "ui_hint",
-            }
-        ]
-
-    resp = {
-        "agent": SUPPORT_AGENT_NAME,
-        "intent": intent,
-        "stage": "online",
-        "agent_message": agent_message,
-        "thread_id": thread_id,
-        "echo": {
-            "message_chars": len(message),
-            "has_context": has_context,
-        },
-        "suggested_actions": suggested_actions,
-        "router": "SupportRouter",  # CHANGED (debug only, safe add)
-    }
-    return _json_ok(resp)
+        resp = {
+            "agent": SUPPORT_AGENT_NAME,
+            "intent": intent,
+            "stage": "online",
+            "agent_message": agent_message,
+            "thread_id": thread_id,
+            "echo": {
+                "message_chars": len(message),
+                "has_context": has_context,
+            },
+            "suggested_actions": suggested_actions,
+        }
+        return _json_ok(resp)
+    except Exception:
+        # Unreachable/exception path must return ONLY this message (no click/expect line).
+        resp = {
+            "agent": SUPPORT_AGENT_NAME,
+            "intent": "unreachable",
+            "stage": "online",
+            "agent_message": UNREACHABLE_MESSAGE,
+            "thread_id": str(payload.get("thread_id") or payload.get("thread") or "").strip(),
+            "suggested_actions": [],
+        }
+        return _json_ok(resp)
 
 
 @csrf_exempt
