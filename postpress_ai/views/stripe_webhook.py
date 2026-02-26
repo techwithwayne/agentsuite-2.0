@@ -48,7 +48,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_VER = "stripe-webhook.v2026-02-26.1"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-02-26.2"  # CHANGED:
 
 
 # ---------------------------
@@ -122,7 +122,7 @@ def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
     Source of truth: Stripe Price metadata.plan_slug
 
     Reliable approach:
-    - Use Checkout Session line_items API (not Session.retrieve expand)
+    - Use Checkout Session line_items API
     - Expand line item price
     - Read price.metadata.plan_slug
     """
