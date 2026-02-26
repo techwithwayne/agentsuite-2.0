@@ -20,6 +20,8 @@ ENV VARS (LOCKED BEHAVIOR)
 - STRIPE_WEBHOOK_SECRET (fallback for legacy deployments)                      # CHANGED:
 
 CHANGE LOG
+- 2026-02-26: FIX: Allow one endpoint to accept BOTH live + test/sandbox webhook signatures
+             by trying multiple secrets in a safe order (env var names only; never log secrets).  # CHANGED:
 - 2026-01-11: FIX: Remove stray CHANGE LOG text that got pasted into runtime code (syntax breaker).  # CHANGED:
 - 2026-01-11: ADD mode-aware webhook secret selection via PPA_STRIPE_MODE and
              STRIPE_{LIVE|TEST}_WEBHOOK_SECRET with fallback STRIPE_WEBHOOK_SECRET.
@@ -46,7 +48,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_VER = "stripe-webhook.v2026-01-11.2"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-02-26.1"  # CHANGED:
 
 
 # ---------------------------
@@ -254,16 +256,54 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
 
     # Mode-aware secret selection (LOCKED)  # CHANGED:
     endpoint_secret, secret_source, mode = _get_stripe_webhook_secret_info()  # CHANGED:
-    logger.info("PPA:stripe_webhook mode=%s secret_source=%s", mode, secret_source)  # CHANGED:
 
-    try:
-        event = stripe.Webhook.construct_event(payload=payload, sig_header=sig_header, secret=endpoint_secret)
-    except ValueError:
-        logger.warning("PPA:stripe_webhook invalid_payload")
-        return JsonResponse({"ok": False, "error": "invalid_payload", "ver": WEBHOOK_VER}, status=400)
-    except stripe.error.SignatureVerificationError:
-        logger.warning("PPA:stripe_webhook invalid_signature")
+    # CHANGED: Allow one endpoint to accept BOTH live + test/sandbox webhook signatures when both secrets exist.
+    # We try secrets in a safe order:
+    #   1) primary (based on PPA_STRIPE_MODE)
+    #   2) the "other" mode secret (if set)
+    #   3) STRIPE_WEBHOOK_SECRET legacy fallback (if set and not already tried)
+    candidates = []  # CHANGED:
+    seen = set()  # CHANGED:
+
+    def _add_candidate(secret_val: str, source_name: str) -> None:  # CHANGED:
+        if not secret_val:
+            return
+        if secret_val in seen:
+            return
+        candidates.append((secret_val, source_name))
+        seen.add(secret_val)
+
+    _add_candidate(endpoint_secret, secret_source)  # CHANGED:
+
+    other = "STRIPE_TEST_WEBHOOK_SECRET" if mode == "live" else "STRIPE_LIVE_WEBHOOK_SECRET"  # CHANGED:
+    _add_candidate(os.getenv(other, ""), other)  # CHANGED:
+    _add_candidate(os.getenv("STRIPE_WEBHOOK_SECRET", ""), "STRIPE_WEBHOOK_SECRET")  # CHANGED:
+
+    logger.info(
+        "PPA:stripe_webhook mode=%s secret_sources_tried=%s",
+        mode,
+        ",".join([src for _, src in candidates]),
+    )  # CHANGED:
+
+    event = None  # CHANGED:
+    used_source = ""  # CHANGED:
+
+    for secret_val, source_name in candidates:  # CHANGED:
+        try:
+            event = stripe.Webhook.construct_event(payload=payload, sig_header=sig_header, secret=secret_val)  # CHANGED:
+            used_source = source_name  # CHANGED:
+            break  # CHANGED:
+        except ValueError:
+            logger.warning("PPA:stripe_webhook invalid_payload")
+            return JsonResponse({"ok": False, "error": "invalid_payload", "ver": WEBHOOK_VER}, status=400)
+        except stripe.error.SignatureVerificationError:
+            continue
+
+    if event is None:  # CHANGED:
+        logger.warning("PPA:stripe_webhook invalid_signature sources_tried=%s", ",".join([src for _, src in candidates]))  # CHANGED:
         return JsonResponse({"ok": False, "error": "invalid_signature", "ver": WEBHOOK_VER}, status=400)
+
+    logger.info("PPA:stripe_webhook signature_ok source=%s", used_source)  # CHANGED:
 
     event_id = (event or {}).get("id", "")
     event_type = (event or {}).get("type", "")
