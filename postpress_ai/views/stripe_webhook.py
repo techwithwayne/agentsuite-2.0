@@ -84,20 +84,16 @@ def _get_stripe_webhook_secret_info() -> Tuple[str, str, str]:  # CHANGED:
 
     return secret, source, mode  # CHANGED:
 
-def _set_stripe_api_key_for_mode(mode: str) -> Tuple[str, str]:  # CHANGED:
-    """
-    Sets stripe.api_key based on mode.
 
-    Expected env vars:
-    - live: STRIPE_LIVE_SECRET_KEY (preferred)
-    - test: STRIPE_SECRET_KEY (preferred)
+def _set_stripe_api_key_for_event(event: dict) -> Tuple[str, str]:  # CHANGED:
     """
-    mode = (mode or "live").strip().lower()
-    if mode not in ("live", "test"):
-        mode = "live"
-
-    primary = "STRIPE_LIVE_SECRET_KEY" if mode == "live" else "STRIPE_SECRET_KEY"
-    fallback = "STRIPE_SECRET_KEY" if mode == "live" else "STRIPE_LIVE_SECRET_KEY"
+    Choose Stripe secret key based on webhook event livemode.
+    livemode=True  -> STRIPE_LIVE_SECRET_KEY (preferred)
+    livemode=False -> STRIPE_SECRET_KEY (preferred)
+    """
+    is_live = bool((event or {}).get("livemode"))
+    primary = "STRIPE_LIVE_SECRET_KEY" if is_live else "STRIPE_SECRET_KEY"
+    fallback = "STRIPE_SECRET_KEY" if is_live else "STRIPE_LIVE_SECRET_KEY"
 
     key = (os.getenv(primary) or "").strip()
     source = primary
@@ -112,8 +108,14 @@ def _set_stripe_api_key_for_mode(mode: str) -> Tuple[str, str]:  # CHANGED:
         )
 
     stripe.api_key = key
-    logger.info("PPA:stripe api_key_set mode=%s source=%s key=%s", mode, source, _mask_key(key))
+    logger.info(
+        "PPA:stripe api_key_set livemode=%s source=%s key=%s",
+        is_live,
+        source,
+        _mask_key(key),
+    )
     return key, source
+
 
 def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
     """
@@ -129,20 +131,37 @@ def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
             session_id,
             expand=["line_items.data.price"],
         )
+
         line_items = (sess or {}).get("line_items") or {}
         data = line_items.get("data") or []
+
+        logger.info(
+            "PPA:plan_slug_session_retrieved session=%s line_items_count=%s",
+            session_id,
+            len(data),
+        )
 
         for li in data:
             price = (li or {}).get("price") or {}
             md = (price or {}).get("metadata") or {}
             plan_slug = (md.get("plan_slug") or "").strip().lower()
+
+            logger.info(
+                "PPA:plan_slug_line_item session=%s price_id=%s plan_slug=%s price_md=%s",
+                session_id,
+                (price.get("id") or ""),
+                plan_slug,
+                md,
+            )
+
             if plan_slug:
                 return plan_slug
 
-    except Exception:
-        logger.exception("PPA:plan_slug_lookup_failed session=%s", session_id)
+    except Exception as e:
+        logger.exception("PPA:plan_slug_lookup_failed session=%s err=%s", session_id, str(e))
 
     return ""
+
 
 def _mask_key(key: str) -> str:
     if not key:
@@ -175,7 +194,7 @@ def _set_if_field(obj: Any, field_name: str, value: Any) -> None:
 def _normalize_tier(raw: Optional[str]) -> str:
     """
     LOCKED: Keep Tyler normalization.
-    Also supports plan fallback: missing metadata defaults to 'tyler' (solo -> tyler).
+    IMPORTANT: Do NOT force Solo -> Tyler.
     """
     s = (raw or "").strip().lower()
     if not s:
@@ -359,7 +378,10 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             continue
 
     if event is None:  # CHANGED:
-        logger.warning("PPA:stripe_webhook invalid_signature sources_tried=%s", ",".join([src for _, src in candidates]))  # CHANGED:
+        logger.warning(
+            "PPA:stripe_webhook invalid_signature sources_tried=%s",
+            ",".join([src for _, src in candidates]),
+        )  # CHANGED:
         return JsonResponse({"ok": False, "error": "invalid_signature", "ver": WEBHOOK_VER}, status=400)
 
     logger.info("PPA:stripe_webhook signature_ok source=%s", used_source)  # CHANGED:
@@ -376,9 +398,9 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     customer_email = (session.get("customer_details") or {}).get("email") or session.get("customer_email") or ""
     customer_name = (session.get("customer_details") or {}).get("name") or ""
 
-    # Metadata-driven tier, with locked fallback behavior
     # CHANGED: Price metadata is the source of truth (plan_slug)
-    _set_stripe_api_key_for_mode(mode)
+    # IMPORTANT: Use event.livemode to select the correct Stripe secret key for retrieval/expands.
+    _set_stripe_api_key_for_event(event)
 
     plan_slug = _get_plan_slug_from_price(session_id)
 
@@ -391,6 +413,15 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
         raw_tier = md.get("tier") or md.get("plan") or md.get("plan_code") or md.get("tier_name") or ""
         tier = _normalize_tier(raw_tier)
         plan_code = _derive_plan_code(tier)
+
+    logger.info(
+        "PPA:checkout_completed_resolved session_id=%s livemode=%s tier=%s plan_code=%s plan_slug=%s",
+        session_id,
+        bool((event or {}).get("livemode")),
+        tier,
+        plan_code,
+        plan_slug,
+    )
 
     # Persist Order + License FIRST (LOCKED ordering)
     Order = _model("postpress_ai", "Order")
