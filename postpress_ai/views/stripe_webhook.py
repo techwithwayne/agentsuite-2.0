@@ -563,10 +563,40 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                     pass
 
         if subscription_obj is not None and _has_field(Entitlement, "subscription"):
-            entitlement_obj, _ = Entitlement.objects.get_or_create(subscription=subscription_obj, defaults={})  # type: ignore
+            entitlement_defaults: Dict[str, Any] = {}
+
+            # Satisfy NOT NULL constraints on Entitlement.customer + Entitlement.plan (if present)
+            if customer_obj is not None and _has_field(Entitlement, "customer"):
+                entitlement_defaults["customer"] = customer_obj
+            if plan_obj is not None and _has_field(Entitlement, "plan"):
+                entitlement_defaults["plan"] = plan_obj
+
+            entitlement_obj, created = Entitlement.objects.get_or_create(  # type: ignore
+                subscription=subscription_obj,
+                defaults=entitlement_defaults,
+            )
             entitlement_db_id = getattr(entitlement_obj, "id", None)
+
+            # Keep entitlement aligned even on retries / existing rows
+            if not created:
+                dirty_fields = []
+                if customer_obj is not None and _has_field(Entitlement, "customer") and getattr(entitlement_obj, "customer_id", None) is None:
+                    _set_if_field(entitlement_obj, "customer", customer_obj)
+                    dirty_fields.append("customer")
+                if plan_obj is not None and _has_field(Entitlement, "plan") and getattr(entitlement_obj, "plan_id", None) is None:
+                    _set_if_field(entitlement_obj, "plan", plan_obj)
+                    dirty_fields.append("plan")
+                try:
+                    if dirty_fields:
+                        entitlement_obj.save(update_fields=dirty_fields)
+                except Exception:
+                    pass
+
+            # Tyler normalization stays (Entitlement model uses max_sites_override, so set both safely)
             if plan_code == "tyler":
+                _set_if_field(entitlement_obj, "max_sites_override", 3)
                 _set_if_field(entitlement_obj, "max_sites", 3)
+
             try:
                 entitlement_obj.save()
             except Exception:
