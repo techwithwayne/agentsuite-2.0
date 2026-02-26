@@ -120,29 +120,31 @@ def _set_stripe_api_key_for_event(event: dict) -> Tuple[str, str]:  # CHANGED:
 def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
     """
     Source of truth: Stripe Price metadata.plan_slug
-    We retrieve the Checkout Session with expanded line_items.data.price
-    and read price.metadata.plan_slug.
+
+    Reliable approach:
+    - Use Checkout Session line_items API (not Session.retrieve expand)
+    - Expand line item price
+    - Read price.metadata.plan_slug
     """
     if not session_id:
         return ""
 
     try:
-        sess = stripe.checkout.Session.retrieve(
+        li = stripe.checkout.Session.list_line_items(
             session_id,
-            expand=["line_items.data.price"],
+            limit=10,
+            expand=["data.price"],
         )
 
-        line_items = (sess or {}).get("line_items") or {}
-        data = line_items.get("data") or []
-
+        data = (li or {}).get("data") or []
         logger.info(
-            "PPA:plan_slug_session_retrieved session=%s line_items_count=%s",
+            "PPA:plan_slug_line_items_listed session=%s line_items_count=%s",
             session_id,
             len(data),
         )
 
-        for li in data:
-            price = (li or {}).get("price") or {}
+        for item in data:
+            price = (item or {}).get("price") or {}
             md = (price or {}).get("metadata") or {}
             plan_slug = (md.get("plan_slug") or "").strip().lower()
 
@@ -161,7 +163,6 @@ def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
         logger.exception("PPA:plan_slug_lookup_failed session=%s err=%s", session_id, str(e))
 
     return ""
-
 
 def _mask_key(key: str) -> str:
     if not key:
