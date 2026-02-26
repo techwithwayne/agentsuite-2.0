@@ -14,21 +14,29 @@ LOCKED INTENT
 - Do NOT redesign Early Bird/license plumbing.
 
 ENV VARS (LOCKED BEHAVIOR)
-- PPA_STRIPE_MODE: "live" | "test"  (default: live)                          # CHANGED:
-- STRIPE_LIVE_WEBHOOK_SECRET (preferred when mode=live)                       # CHANGED:
-- STRIPE_TEST_WEBHOOK_SECRET (preferred when mode=test)                       # CHANGED:
-- STRIPE_WEBHOOK_SECRET (fallback for legacy deployments)                      # CHANGED:
+- PPA_STRIPE_MODE: "live" | "test"  (default: live)
+- STRIPE_LIVE_WEBHOOK_SECRET (preferred when mode=live)
+- STRIPE_TEST_WEBHOOK_SECRET (preferred when mode=test)
+- STRIPE_WEBHOOK_SECRET (fallback for legacy deployments)
+
+SECRET KEY SELECTION (LOCKED BEHAVIOR)
+- Stripe object retrieval MUST use the secret key that matches event.livemode:
+    - livemode=True  -> STRIPE_LIVE_SECRET_KEY
+    - livemode=False -> STRIPE_SECRET_KEY
+- IMPORTANT: Do NOT cross-fallback between live/test keys.
+  If the correct key is missing, raise ImproperlyConfigured.
+
+PLAN RESOLUTION ORDER (LOCKED)
+1) price.metadata.plan_slug
+2) fallback to legacy tier normalization (_normalize_tier)
+3) never default to "tyler" unless truly Tyler
 
 CHANGE LOG
 - 2026-02-26: FIX: Allow one endpoint to accept BOTH live + test/sandbox webhook signatures
-             by trying multiple secrets in a safe order (env var names only; never log secrets).  # CHANGED:
-- 2026-01-11: FIX: Remove stray CHANGE LOG text that got pasted into runtime code (syntax breaker).  # CHANGED:
-- 2026-01-11: ADD mode-aware webhook secret selection via PPA_STRIPE_MODE and
-             STRIPE_{LIVE|TEST}_WEBHOOK_SECRET with fallback STRIPE_WEBHOOK_SECRET.
-             Log mode + env var name only; never log secret.                   # CHANGED:
-- 2026-01-11: HARDEN EmailLog idempotency: lookup pre-migration safe (no column assumption)
-             + IntegrityError guard for concurrent deliveries when unique constraint exists. # CHANGED:
-- 2026-01-10: Webhook persists Order + License first, then Command Center wiring, then EmailLog + email.
+             by trying multiple secrets in a safe order (env var names only; never log secrets).
+- 2026-02-26: FIX: Plan slug resolution uses Checkout Session line_items + Price metadata.plan_slug
+- 2026-02-26: FIX: Stripe secret key selection is STRICTLY based on event.livemode
+- 2026-02-26: FIX: Entitlement get_or_create includes required NOT NULL FKs (customer/plan) when present
 """
 
 from __future__ import annotations
@@ -48,7 +56,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_VER = "stripe-webhook.v2026-02-26.2"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-02-26.3"  # CHANGED:
 
 
 # ---------------------------
@@ -85,36 +93,44 @@ def _get_stripe_webhook_secret_info() -> Tuple[str, str, str]:  # CHANGED:
     return secret, source, mode  # CHANGED:
 
 
+def _mask_key(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 6:
+        return "PPA-…"
+    return f"{key[:4]}-…{key[-4:]}"
+
+
 def _set_stripe_api_key_for_event(event: dict) -> Tuple[str, str]:  # CHANGED:
     """
-    Choose Stripe secret key based on webhook event livemode.
-    livemode=True  -> STRIPE_LIVE_SECRET_KEY (preferred)
-    livemode=False -> STRIPE_SECRET_KEY (preferred)
+    Choose Stripe secret key STRICTLY based on webhook event livemode.
+
+    LOCKED:
+    - livemode=True  -> STRIPE_LIVE_SECRET_KEY (required)
+    - livemode=False -> STRIPE_SECRET_KEY (required)
+
+    IMPORTANT:
+    - Do NOT cross-fallback between live/test keys.
+      If the correct key is missing, raise ImproperlyConfigured.
     """
     is_live = bool((event or {}).get("livemode"))
+
     primary = "STRIPE_LIVE_SECRET_KEY" if is_live else "STRIPE_SECRET_KEY"
-    fallback = "STRIPE_SECRET_KEY" if is_live else "STRIPE_LIVE_SECRET_KEY"
-
     key = (os.getenv(primary) or "").strip()
-    source = primary
-
-    if not key:
-        key = (os.getenv(fallback) or "").strip()
-        source = fallback
 
     if not key:
         raise ImproperlyConfigured(
-            f"Missing Stripe secret key. Set {primary} (preferred) or {fallback}."
+            f"Missing Stripe secret key for livemode={is_live}. Set {primary}."
         )
 
     stripe.api_key = key
     logger.info(
         "PPA:stripe api_key_set livemode=%s source=%s key=%s",
         is_live,
-        source,
+        primary,
         _mask_key(key),
     )
-    return key, source
+    return key, primary
 
 
 def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
@@ -164,13 +180,6 @@ def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
 
     return ""
 
-def _mask_key(key: str) -> str:
-    if not key:
-        return ""
-    if len(key) <= 6:
-        return "PPA-…"
-    return f"{key[:4]}-…{key[-4:]}"
-
 
 def _model(app_label: str, model_name: str):
     """apps.get_model wrapper so we never depend on models/__init__.py exports."""
@@ -195,11 +204,14 @@ def _set_if_field(obj: Any, field_name: str, value: Any) -> None:
 def _normalize_tier(raw: Optional[str]) -> str:
     """
     LOCKED: Keep Tyler normalization.
-    IMPORTANT: Do NOT force Solo -> Tyler.
+
+    IMPORTANT (LOCKED):
+    - Do NOT force Solo -> Tyler.
+    - Do NOT default to 'tyler' when blank.
     """
     s = (raw or "").strip().lower()
     if not s:
-        return "tyler"
+        return ""
     if s in {"tyler", "early bird tyler", "tyler early bird", "earlybird", "early-bird"}:
         return "tyler"
     return s
@@ -207,17 +219,20 @@ def _normalize_tier(raw: Optional[str]) -> str:
 
 def _derive_plan_code(tier: str) -> str:
     """
-    LOCKED: Plan fallback.
-    If tier is empty or unknown, default to 'tyler'.
+    LOCKED: Plan code derivation.
+
+    IMPORTANT (LOCKED):
+    - Do NOT default to 'tyler' unless tier normalizes to Tyler.
+    - If tier is missing/unknown, use 'unknown' (safe sentinel) rather than forcing Tyler.
     """
-    tier = _normalize_tier(tier)
-    return tier or "tyler"
+    t = _normalize_tier(tier)
+    return t or "unknown"
 
 
 def _derive_max_sites_from_plan(plan_obj: Any, fallback: int = 3) -> int:
     """
     Tyler Early Bird is confirmed: max_sites=3.
-    We attempt to read plan.max_sites if it exists; else fallback to 3 for tyler.
+    We attempt to read plan.max_sites if it exists; else fallback.
     """
     if plan_obj is None:
         return fallback
@@ -316,6 +331,7 @@ def _send_license_key_email_best_effort(
 # Main webhook
 # ---------------------------
 
+
 @csrf_exempt
 def stripe_webhook(request: HttpRequest) -> JsonResponse:
     """
@@ -325,7 +341,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     Idempotency:
     - Order + License: enforced by unique Stripe session id (model-level or logic-level).
     - EmailLog + email: DB-level via unique (stripe_event_id, to_email) when migration applied,
-      with pre-migration safety fallback + IntegrityError guard for concurrency.            # CHANGED:
+      with pre-migration safety fallback + IntegrityError guard for concurrency.
     """
     if request.method != "POST":
         return JsonResponse({"ok": False, "error": "method_not_allowed", "ver": WEBHOOK_VER}, status=405)
@@ -333,18 +349,18 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     payload = request.body
     sig_header = request.META.get("HTTP_STRIPE_SIGNATURE", "")
 
-    # Mode-aware secret selection (LOCKED)  # CHANGED:
-    endpoint_secret, secret_source, mode = _get_stripe_webhook_secret_info()  # CHANGED:
+    # Mode-aware secret selection (LOCKED)
+    endpoint_secret, secret_source, mode = _get_stripe_webhook_secret_info()
 
-    # CHANGED: Allow one endpoint to accept BOTH live + test/sandbox webhook signatures when both secrets exist.
+    # Allow one endpoint to accept BOTH live + test/sandbox webhook signatures when both secrets exist.
     # We try secrets in a safe order:
     #   1) primary (based on PPA_STRIPE_MODE)
     #   2) the "other" mode secret (if set)
     #   3) STRIPE_WEBHOOK_SECRET legacy fallback (if set and not already tried)
-    candidates = []  # CHANGED:
-    seen = set()  # CHANGED:
+    candidates = []
+    seen = set()
 
-    def _add_candidate(secret_val: str, source_name: str) -> None:  # CHANGED:
+    def _add_candidate(secret_val: str, source_name: str) -> None:
         if not secret_val:
             return
         if secret_val in seen:
@@ -352,40 +368,40 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
         candidates.append((secret_val, source_name))
         seen.add(secret_val)
 
-    _add_candidate(endpoint_secret, secret_source)  # CHANGED:
+    _add_candidate(endpoint_secret, secret_source)
 
-    other = "STRIPE_TEST_WEBHOOK_SECRET" if mode == "live" else "STRIPE_LIVE_WEBHOOK_SECRET"  # CHANGED:
-    _add_candidate(os.getenv(other, ""), other)  # CHANGED:
-    _add_candidate(os.getenv("STRIPE_WEBHOOK_SECRET", ""), "STRIPE_WEBHOOK_SECRET")  # CHANGED:
+    other = "STRIPE_TEST_WEBHOOK_SECRET" if mode == "live" else "STRIPE_LIVE_WEBHOOK_SECRET"
+    _add_candidate(os.getenv(other, ""), other)
+    _add_candidate(os.getenv("STRIPE_WEBHOOK_SECRET", ""), "STRIPE_WEBHOOK_SECRET")
 
     logger.info(
         "PPA:stripe_webhook mode=%s secret_sources_tried=%s",
         mode,
         ",".join([src for _, src in candidates]),
-    )  # CHANGED:
+    )
 
-    event = None  # CHANGED:
-    used_source = ""  # CHANGED:
+    event = None
+    used_source = ""
 
-    for secret_val, source_name in candidates:  # CHANGED:
+    for secret_val, source_name in candidates:
         try:
-            event = stripe.Webhook.construct_event(payload=payload, sig_header=sig_header, secret=secret_val)  # CHANGED:
-            used_source = source_name  # CHANGED:
-            break  # CHANGED:
+            event = stripe.Webhook.construct_event(payload=payload, sig_header=sig_header, secret=secret_val)
+            used_source = source_name
+            break
         except ValueError:
             logger.warning("PPA:stripe_webhook invalid_payload")
             return JsonResponse({"ok": False, "error": "invalid_payload", "ver": WEBHOOK_VER}, status=400)
         except stripe.error.SignatureVerificationError:
             continue
 
-    if event is None:  # CHANGED:
+    if event is None:
         logger.warning(
             "PPA:stripe_webhook invalid_signature sources_tried=%s",
             ",".join([src for _, src in candidates]),
-        )  # CHANGED:
+        )
         return JsonResponse({"ok": False, "error": "invalid_signature", "ver": WEBHOOK_VER}, status=400)
 
-    logger.info("PPA:stripe_webhook signature_ok source=%s", used_source)  # CHANGED:
+    logger.info("PPA:stripe_webhook signature_ok source=%s", used_source)
 
     event_id = (event or {}).get("id", "")
     event_type = (event or {}).get("type", "")
@@ -399,7 +415,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     customer_email = (session.get("customer_details") or {}).get("email") or session.get("customer_email") or ""
     customer_name = (session.get("customer_details") or {}).get("name") or ""
 
-    # CHANGED: Price metadata is the source of truth (plan_slug)
+    # Price metadata is the source of truth (plan_slug)
     # IMPORTANT: Use event.livemode to select the correct Stripe secret key for retrieval/expands.
     _set_stripe_api_key_for_event(event)
 
@@ -442,7 +458,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     except Exception:
         raw_session_safe = {"id": session_id, "payment_status": payment_status}
 
-    license_obj = None  # CHANGED: ensure exists after atomic block for later email section
+    license_obj = None  # ensure exists after atomic block for later email section
 
     with transaction.atomic():
         # --- Order upsert (idempotent by stripe_session_id) ---
@@ -580,7 +596,11 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             # Keep entitlement aligned even on retries / existing rows
             if not created:
                 dirty_fields = []
-                if customer_obj is not None and _has_field(Entitlement, "customer") and getattr(entitlement_obj, "customer_id", None) is None:
+                if (
+                    customer_obj is not None
+                    and _has_field(Entitlement, "customer")
+                    and getattr(entitlement_obj, "customer_id", None) is None
+                ):
                     _set_if_field(entitlement_obj, "customer", customer_obj)
                     dirty_fields.append("customer")
                 if plan_obj is not None and _has_field(Entitlement, "plan") and getattr(entitlement_obj, "plan_id", None) is None:
@@ -632,7 +652,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
         )
 
     # Email delivery (idempotent on Stripe retries)
-    existing = _email_log_lookup_locked(to_email=customer_email, stripe_event_id=event_id)  # CHANGED:
+    existing = _email_log_lookup_locked(to_email=customer_email, stripe_event_id=event_id)
     if existing:
         return JsonResponse(
             {
@@ -707,13 +727,13 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
 
     _set_if_field(elog, "meta", meta)
 
-    # Set the new column if it exists (post-migration), without assuming it exists.  # CHANGED:
-    _set_if_field(elog, "stripe_event_id", event_id)  # CHANGED:
+    # Set the new column if it exists (post-migration), without assuming it exists.
+    _set_if_field(elog, "stripe_event_id", event_id)
 
     try:
-        elog.save()  # CHANGED:
-    except IntegrityError:  # CHANGED:
-        logger.info("PPA:email_log idempotent hit (IntegrityError) to=%s event=%s", customer_email, event_id)  # CHANGED:
+        elog.save()
+    except IntegrityError:
+        logger.info("PPA:email_log idempotent hit (IntegrityError) to=%s event=%s", customer_email, event_id)
         return JsonResponse(
             {
                 "ok": True,
