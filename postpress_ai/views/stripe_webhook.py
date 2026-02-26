@@ -84,6 +84,65 @@ def _get_stripe_webhook_secret_info() -> Tuple[str, str, str]:  # CHANGED:
 
     return secret, source, mode  # CHANGED:
 
+def _set_stripe_api_key_for_mode(mode: str) -> Tuple[str, str]:  # CHANGED:
+    """
+    Sets stripe.api_key based on mode.
+
+    Expected env vars:
+    - live: STRIPE_LIVE_SECRET_KEY (preferred)
+    - test: STRIPE_SECRET_KEY (preferred)
+    """
+    mode = (mode or "live").strip().lower()
+    if mode not in ("live", "test"):
+        mode = "live"
+
+    primary = "STRIPE_LIVE_SECRET_KEY" if mode == "live" else "STRIPE_SECRET_KEY"
+    fallback = "STRIPE_SECRET_KEY" if mode == "live" else "STRIPE_LIVE_SECRET_KEY"
+
+    key = (os.getenv(primary) or "").strip()
+    source = primary
+
+    if not key:
+        key = (os.getenv(fallback) or "").strip()
+        source = fallback
+
+    if not key:
+        raise ImproperlyConfigured(
+            f"Missing Stripe secret key. Set {primary} (preferred) or {fallback}."
+        )
+
+    stripe.api_key = key
+    logger.info("PPA:stripe api_key_set mode=%s source=%s key=%s", mode, source, _mask_key(key))
+    return key, source
+
+def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
+    """
+    Source of truth: Stripe Price metadata.plan_slug
+    We retrieve the Checkout Session with expanded line_items.data.price
+    and read price.metadata.plan_slug.
+    """
+    if not session_id:
+        return ""
+
+    try:
+        sess = stripe.checkout.Session.retrieve(
+            session_id,
+            expand=["line_items.data.price"],
+        )
+        line_items = (sess or {}).get("line_items") or {}
+        data = line_items.get("data") or []
+
+        for li in data:
+            price = (li or {}).get("price") or {}
+            md = (price or {}).get("metadata") or {}
+            plan_slug = (md.get("plan_slug") or "").strip().lower()
+            if plan_slug:
+                return plan_slug
+
+    except Exception:
+        logger.exception("PPA:plan_slug_lookup_failed session=%s", session_id)
+
+    return ""
 
 def _mask_key(key: str) -> str:
     if not key:
@@ -121,7 +180,7 @@ def _normalize_tier(raw: Optional[str]) -> str:
     s = (raw or "").strip().lower()
     if not s:
         return "tyler"
-    if s in {"tyler", "early bird tyler", "tyler early bird", "solo", "earlybird", "early-bird"}:
+    if s in {"tyler", "early bird tyler", "tyler early bird", "earlybird", "early-bird"}:
         return "tyler"
     return s
 
@@ -318,10 +377,20 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     customer_name = (session.get("customer_details") or {}).get("name") or ""
 
     # Metadata-driven tier, with locked fallback behavior
-    md = session.get("metadata") or {}
-    raw_tier = md.get("tier") or md.get("plan") or md.get("plan_code") or md.get("tier_name") or ""
-    tier = _normalize_tier(raw_tier)
-    plan_code = _derive_plan_code(tier)
+    # CHANGED: Price metadata is the source of truth (plan_slug)
+    _set_stripe_api_key_for_mode(mode)
+
+    plan_slug = _get_plan_slug_from_price(session_id)
+
+    if plan_slug:
+        tier = plan_slug
+        plan_code = plan_slug
+    else:
+        # Fallback: legacy tier normalization
+        md = session.get("metadata") or {}
+        raw_tier = md.get("tier") or md.get("plan") or md.get("plan_code") or md.get("tier_name") or ""
+        tier = _normalize_tier(raw_tier)
+        plan_code = _derive_plan_code(tier)
 
     # Persist Order + License FIRST (LOCKED ordering)
     Order = _model("postpress_ai", "Order")
