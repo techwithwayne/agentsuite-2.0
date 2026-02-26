@@ -56,7 +56,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_VER = "stripe-webhook.v2026-02-26.3"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-02-26.4"  # CHANGED:
 
 
 # ---------------------------
@@ -500,14 +500,22 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             )
             license_created = bool(created)
         else:
-            if _has_field(License, "order_id") and order is not None:
+            # IMPORTANT: For a ForeignKey field named "order", Django's field name is "order" (not "order_id").
+            # Using "order_id" here would fail _has_field(...) and could incorrectly reuse an unrelated license.
+            if _has_field(License, "order") and order is not None:
                 license_obj, created = License.objects.get_or_create(  # type: ignore
                     order=order,
                     defaults={},
                 )
                 license_created = bool(created)
             else:
-                license_obj = License.objects.order_by("-id").first()
+                logger.error(
+                    "PPA:license_upsert_missing_fields session=%s has_stripe_session_id=%s has_order_field=%s", 
+                    session_id,
+                    _has_field(License, "stripe_session_id"),
+                    _has_field(License, "order"),
+                )
+                license_obj = None
 
         if license_obj is not None:
             _set_if_field(license_obj, "email", customer_email)
