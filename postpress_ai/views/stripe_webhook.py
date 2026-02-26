@@ -161,15 +161,23 @@ def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
 
         for item in data:
             price = (item or {}).get("price") or {}
-            md = (price or {}).get("metadata") or {}
-            plan_slug = (md.get("plan_slug") or "").strip().lower()
+            md_raw = (price or {}).get("metadata") or {}
+
+            # Normalize metadata keys (Stripe dashboard can include accidental trailing spaces)
+            plan_slug_val = ""
+            for k, v in md_raw.items():
+                if str(k).strip().lower() == "plan_slug":
+                    plan_slug_val = v
+                    break
+
+            plan_slug = str(plan_slug_val or "").strip().lower()
 
             logger.info(
                 "PPA:plan_slug_line_item session=%s price_id=%s plan_slug=%s price_md=%s",
                 session_id,
                 (price.get("id") or ""),
                 plan_slug,
-                md,
+                md_raw,
             )
 
             if plan_slug:
@@ -552,7 +560,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 pass
 
         plan_obj = None
-        if _has_field(Plan, "code"):
+        if plan_code and plan_code != "unknown" and _has_field(Plan, "code"):
             plan_obj, _ = Plan.objects.get_or_create(code=plan_code, defaults={})  # type: ignore
             plan_db_id = getattr(plan_obj, "id", None)
             _set_if_field(plan_obj, "name", tier.title() if tier else plan_code.title())
