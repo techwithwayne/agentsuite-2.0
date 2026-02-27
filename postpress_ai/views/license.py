@@ -101,7 +101,7 @@ VERIFY_TOUCH_MIN_SECONDS = 600  # 10 minutes (throttle DB writes from verify)  #
 # ------------------------------
 PLAN_DEFAULTS = {  # CHANGED:
     # slug: (max_sites, unlimited, monthly_tokens, ai_included, byo_required)
-    "tyler": (3, False, 500_000, True, False),  # CHANGED: early bird aligned to "creator" class tokens
+    "tyler": (3, False, 120_000, True, False),  # CHANGED: early bird aligned to "creator" class tokens
     "solo": (1, False, 200_000, True, False),
     "creator": (3, False, 500_000, True, False),
     "studio": (10, False, 1_500_000, True, False),
