@@ -37,6 +37,10 @@ CHANGE LOG
 - 2026-02-26: FIX: Plan slug resolution uses Checkout Session line_items + Price metadata.plan_slug
 - 2026-02-26: FIX: Stripe secret key selection is STRICTLY based on event.livemode
 - 2026-02-26: FIX: Entitlement get_or_create includes required NOT NULL FKs (customer/plan) when present
+- 2026-02-27: FIX: License issuance when License model lacks stripe_session_id/order FK:
+             - Issue License via generated unique key + plan_slug
+             - Idempotency via Order.notes PPA_LICENSE_KEY
+             - Email retry allowed when EmailLog exists but status=failed
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, Optional, Tuple
 
 import stripe
@@ -56,14 +61,15 @@ from django.views.decorators.csrf import csrf_exempt
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_VER = "stripe-webhook.v2026-02-26.4"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-02-26.5"  # CHANGED:
 
 
 # ---------------------------
 # Helpers (locked behavior)
 # ---------------------------
 
-def _get_stripe_webhook_secret_info() -> Tuple[str, str, str]:  # CHANGED:
+
+def _get_stripe_webhook_secret_info() -> Tuple[str, str, str]:
     """
     Returns: (secret, source_env_var_name, mode)
 
@@ -73,24 +79,24 @@ def _get_stripe_webhook_secret_info() -> Tuple[str, str, str]:  # CHANGED:
     - Fallback to STRIPE_WEBHOOK_SECRET
     - NEVER logs the secret value
     """
-    mode = (os.getenv("PPA_STRIPE_MODE") or "live").strip().lower()  # CHANGED:
-    if mode not in ("live", "test"):  # CHANGED:
-        mode = "live"  # CHANGED:
+    mode = (os.getenv("PPA_STRIPE_MODE") or "live").strip().lower()
+    if mode not in ("live", "test"):
+        mode = "live"
 
-    primary = "STRIPE_LIVE_WEBHOOK_SECRET" if mode == "live" else "STRIPE_TEST_WEBHOOK_SECRET"  # CHANGED:
-    secret = os.getenv(primary)  # CHANGED:
-    source = primary  # CHANGED:
+    primary = "STRIPE_LIVE_WEBHOOK_SECRET" if mode == "live" else "STRIPE_TEST_WEBHOOK_SECRET"
+    secret = os.getenv(primary) or ""
+    source = primary
 
-    if not secret:  # CHANGED:
-        secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")  # CHANGED:
-        source = "STRIPE_WEBHOOK_SECRET"  # CHANGED:
+    if not secret:
+        secret = os.getenv("STRIPE_WEBHOOK_SECRET", "") or ""
+        source = "STRIPE_WEBHOOK_SECRET"
 
-    if not secret:  # CHANGED:
+    if not secret:
         raise ImproperlyConfigured(
             f"Missing Stripe webhook secret. Set {primary} (preferred) or STRIPE_WEBHOOK_SECRET."
-        )  # CHANGED:
+        )
 
-    return secret, source, mode  # CHANGED:
+    return secret, source, mode
 
 
 def _mask_key(key: str) -> str:
@@ -101,7 +107,7 @@ def _mask_key(key: str) -> str:
     return f"{key[:4]}-…{key[-4:]}"
 
 
-def _set_stripe_api_key_for_event(event: dict) -> Tuple[str, str]:  # CHANGED:
+def _set_stripe_api_key_for_event(event: dict) -> Tuple[str, str]:
     """
     Choose Stripe secret key STRICTLY based on webhook event livemode.
 
@@ -114,79 +120,15 @@ def _set_stripe_api_key_for_event(event: dict) -> Tuple[str, str]:  # CHANGED:
       If the correct key is missing, raise ImproperlyConfigured.
     """
     is_live = bool((event or {}).get("livemode"))
-
     primary = "STRIPE_LIVE_SECRET_KEY" if is_live else "STRIPE_SECRET_KEY"
     key = (os.getenv(primary) or "").strip()
 
     if not key:
-        raise ImproperlyConfigured(
-            f"Missing Stripe secret key for livemode={is_live}. Set {primary}."
-        )
+        raise ImproperlyConfigured(f"Missing Stripe secret key for livemode={is_live}. Set {primary}.")
 
     stripe.api_key = key
-    logger.info(
-        "PPA:stripe api_key_set livemode=%s source=%s key=%s",
-        is_live,
-        primary,
-        _mask_key(key),
-    )
+    logger.info("PPA:stripe api_key_set livemode=%s source=%s key=%s", is_live, primary, _mask_key(key))
     return key, primary
-
-
-def _get_plan_slug_from_price(session_id: str) -> str:  # CHANGED:
-    """
-    Source of truth: Stripe Price metadata.plan_slug
-
-    Reliable approach:
-    - Use Checkout Session line_items API
-    - Expand line item price
-    - Read price.metadata.plan_slug
-    """
-    if not session_id:
-        return ""
-
-    try:
-        li = stripe.checkout.Session.list_line_items(
-            session_id,
-            limit=10,
-            expand=["data.price"],
-        )
-
-        data = (li or {}).get("data") or []
-        logger.info(
-            "PPA:plan_slug_line_items_listed session=%s line_items_count=%s",
-            session_id,
-            len(data),
-        )
-
-        for item in data:
-            price = (item or {}).get("price") or {}
-            md_raw = (price or {}).get("metadata") or {}
-
-            # Normalize metadata keys (Stripe dashboard can include accidental trailing spaces)
-            plan_slug_val = ""
-            for k, v in md_raw.items():
-                if str(k).strip().lower() == "plan_slug":
-                    plan_slug_val = v
-                    break
-
-            plan_slug = str(plan_slug_val or "").strip().lower()
-
-            logger.info(
-                "PPA:plan_slug_line_item session=%s price_id=%s plan_slug=%s price_md=%s",
-                session_id,
-                (price.get("id") or ""),
-                plan_slug,
-                md_raw,
-            )
-
-            if plan_slug:
-                return plan_slug
-
-    except Exception as e:
-        logger.exception("PPA:plan_slug_lookup_failed session=%s err=%s", session_id, str(e))
-
-    return ""
 
 
 def _model(app_label: str, model_name: str):
@@ -237,19 +179,141 @@ def _derive_plan_code(tier: str) -> str:
     return t or "unknown"
 
 
-def _derive_max_sites_from_plan(plan_obj: Any, fallback: int = 3) -> int:
-    """
-    Tyler Early Bird is confirmed: max_sites=3.
-    We attempt to read plan.max_sites if it exists; else fallback.
-    """
+def _derive_max_sites_from_plan(plan_obj: Any, fallback: int) -> int:
+    """Read plan.max_sites if present; else fallback."""
     if plan_obj is None:
         return fallback
-    if hasattr(plan_obj, "max_sites") and isinstance(getattr(plan_obj, "max_sites"), int):
-        return int(getattr(plan_obj, "max_sites"))
+    if hasattr(plan_obj, "max_sites") and getattr(plan_obj, "max_sites") is not None:
+        try:
+            return int(getattr(plan_obj, "max_sites"))
+        except Exception:
+            return fallback
     return fallback
 
 
-def _email_log_lookup_locked(to_email: str, stripe_event_id: str):  # CHANGED:
+def _normalize_price_metadata(md: Dict[str, Any]) -> Dict[str, str]:
+    """Normalize Stripe Price metadata keys by stripping whitespace and lowercasing."""
+    out: Dict[str, str] = {}
+    for k, v in (md or {}).items():
+        kk = str(k).strip().lower().replace("-", "_")
+        out[kk] = str(v).strip() if v is not None else ""
+    return out
+
+
+def _get_plan_slug_and_price_md(session_id: str) -> Tuple[str, Dict[str, str]]:
+    """
+    Source of truth: Stripe Price metadata.plan_slug
+
+    Reliable approach:
+    - Use Checkout Session line_items API
+    - Expand line item price
+    - Read price.metadata.plan_slug
+
+    NOTE: Stripe dashboard metadata keys may include trailing spaces, so we normalize keys.
+    """
+    if not session_id:
+        return "", {}
+
+    try:
+        li = stripe.checkout.Session.list_line_items(session_id, limit=10, expand=["data.price"])
+        data = (li or {}).get("data") or []
+        logger.info("PPA:plan_slug_line_items_listed session=%s line_items_count=%s", session_id, len(data))
+
+        for item in data:
+            price = (item or {}).get("price") or {}
+            md_raw = (price or {}).get("metadata") or {}
+            md = _normalize_price_metadata(md_raw)
+
+            plan_slug = (md.get("plan_slug") or "").strip().lower()
+            logger.info(
+                "PPA:plan_slug_line_item session=%s price_id=%s plan_slug=%s price_md=%s",
+                session_id,
+                (price.get("id") or ""),
+                plan_slug,
+                md_raw,
+            )
+            return plan_slug, md
+
+    except Exception as e:
+        logger.exception("PPA:plan_slug_lookup_failed session=%s err=%s", session_id, str(e))
+
+    return "", {}
+
+
+def _order_notes_get_license_key(notes: str) -> str:
+    if not notes:
+        return ""
+    m = re.search(r"PPA_LICENSE_KEY=([A-Z0-9-]+)", notes or "")
+    return (m.group(1) if m else "") or ""
+
+
+def _order_notes_set_license_key(notes: str, key: str) -> str:
+    notes = notes or ""
+    if re.search(r"PPA_LICENSE_KEY=[A-Z0-9-]+", notes):
+        return re.sub(r"PPA_LICENSE_KEY=[A-Z0-9-]+", f"PPA_LICENSE_KEY={key}", notes)
+    sep = chr(10) if notes and not notes.endswith(chr(10)) else ""
+    return f"{notes}{sep}PPA_LICENSE_KEY={key}"
+
+
+def _license_defaults_for_plan(plan_slug: str, price_md: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Compute License flags/limits from plan_slug and (optional) price metadata.
+
+    - site_limit (int) overrides max_sites when present.
+    - byo_key (truthy) forces byo_key_required True and ai_included False.
+    """
+    slug = (plan_slug or "").strip().lower().replace("-", "_")
+
+    def _to_int(s: str) -> Optional[int]:
+        try:
+            ss = (s or "").strip()
+            if not ss:
+                return None
+            return int(float(ss))
+        except Exception:
+            return None
+
+    site_limit = _to_int(price_md.get("site_limit", ""))
+    byo_raw = (price_md.get("byo_key", "") or "").strip().lower()
+    byo = byo_raw in {"1", "true", "yes", "on"}
+
+    defaults = {
+        "tyler": {"max_sites": 3, "unlimited_sites": False, "byo_key_required": False, "ai_included": True},
+        "solo": {"max_sites": 1, "unlimited_sites": False, "byo_key_required": False, "ai_included": True},
+        "creator": {"max_sites": 3, "unlimited_sites": False, "byo_key_required": False, "ai_included": True},
+        "studio": {"max_sites": 10, "unlimited_sites": False, "byo_key_required": False, "ai_included": True},
+        "agency": {"max_sites": 25, "unlimited_sites": False, "byo_key_required": False, "ai_included": True},
+        "agency_byo": {"max_sites": None, "unlimited_sites": True, "byo_key_required": True, "ai_included": False},
+        "agency_unlimited_byo": {"max_sites": None, "unlimited_sites": True, "byo_key_required": True, "ai_included": False},
+    }
+    base = defaults.get(
+        slug,
+        {"max_sites": 1, "unlimited_sites": False, "byo_key_required": False, "ai_included": True},
+    )
+
+    unlimited_sites = bool(base.get("unlimited_sites"))
+    max_sites = base.get("max_sites")
+
+    if site_limit is not None:
+        if site_limit <= 0:
+            unlimited_sites = True
+            max_sites = None
+        else:
+            unlimited_sites = False
+            max_sites = int(site_limit)
+
+    byo_key_required = bool(byo or base.get("byo_key_required"))
+    ai_included = bool((not byo_key_required) and base.get("ai_included"))
+
+    return {
+        "max_sites": max_sites,
+        "unlimited_sites": unlimited_sites,
+        "byo_key_required": byo_key_required,
+        "ai_included": ai_included,
+    }
+
+
+def _email_log_lookup_locked(to_email: str, stripe_event_id: str):
     """
     DB-level idempotency lookup.
 
@@ -258,36 +322,26 @@ def _email_log_lookup_locked(to_email: str, stripe_event_id: str):  # CHANGED:
 
     Returns EmailLog instance or None.
     """
-    if not to_email or not stripe_event_id:  # CHANGED:
-        return None  # CHANGED:
+    if not to_email or not stripe_event_id:
+        return None
 
-    EmailLog = _model("postpress_ai", "EmailLog")  # CHANGED:
+    EmailLog = _model("postpress_ai", "EmailLog")
 
-    try:  # CHANGED:
-        EmailLog._meta.get_field("stripe_event_id")  # CHANGED:
-        has_col = True  # CHANGED:
-    except Exception:  # CHANGED:
-        has_col = False  # CHANGED:
+    try:
+        EmailLog._meta.get_field("stripe_event_id")
+        has_col = True
+    except Exception:
+        has_col = False
 
-    if has_col:  # CHANGED:
-        return (
-            EmailLog.objects.filter(to_email=to_email, stripe_event_id=stripe_event_id)  # CHANGED:
-            .order_by("-id")  # CHANGED:
-            .first()  # CHANGED:
-        )
+    if has_col:
+        return EmailLog.objects.filter(to_email=to_email, stripe_event_id=stripe_event_id).order_by("-id").first()
 
-    # Pre-migration fallback: JSON lookups not supported on this backend, so scan in Python.  # CHANGED:
-    qs = (
-        EmailLog.objects.filter(to_email=to_email)  # CHANGED:
-        .only("id", "meta")  # CHANGED:
-        .order_by("-id")[:250]  # CHANGED: bounded scan
-    )
-    for row in qs:  # CHANGED:
-        ev = (row.meta or {}).get("stripe_event_id")  # CHANGED:
-        if ev == stripe_event_id:  # CHANGED:
-            return row  # CHANGED:
-
-    return None  # CHANGED:
+    qs = EmailLog.objects.filter(to_email=to_email).only("id", "meta").order_by("-id")[:250]
+    for row in qs:
+        ev = (row.meta or {}).get("stripe_event_id")
+        if ev == stripe_event_id:
+            return row
+    return None
 
 
 def _send_license_key_email_best_effort(
@@ -301,38 +355,34 @@ def _send_license_key_email_best_effort(
     Lazy import to avoid circular imports (LOCKED).
     Returns provider message id if the underlying sender returns one.
     """
-    from postpress_ai.emailing import send_license_key_email  # lazy import (LOCKED)
+    from postpress_ai.emailing import send_license_key_email
 
-    # Try a few compatible calling conventions (keeps us resilient to signature changes).
-    # We do NOT change the locked subject line here; emailing.py owns it.
     try:
-        return str(
-            send_license_key_email(
-                to_email=to_email,
-                name=customer_name,
-                license_key=license_key,
-                tier=tier,
-                max_sites=max_sites,
-            )
+        send_license_key_email(
+            to_email=to_email,
+            name=customer_name,
+            license_key=license_key,
+            tier=tier,
+            max_sites=max_sites,
         )
+        return ""
     except TypeError:
         pass
 
     try:
-        return str(
-            send_license_key_email(
-                to_email,
-                license_key,
-                tier=tier,
-                max_sites=max_sites,
-                name=customer_name,
-            )
+        send_license_key_email(
+            to_email,
+            license_key,
+            tier=tier,
+            max_sites=max_sites,
+            name=customer_name,
         )
+        return ""
     except TypeError:
         pass
 
-    # Minimal fallback
-    return str(send_license_key_email(to_email=to_email, license_key=license_key))
+    send_license_key_email(to_email=to_email, license_key=license_key)
+    return ""
 
 
 # ---------------------------
@@ -345,11 +395,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     """
     Stripe webhook receiver with signature verification.
     Handles: checkout.session.completed
-
-    Idempotency:
-    - Order + License: enforced by unique Stripe session id (model-level or logic-level).
-    - EmailLog + email: DB-level via unique (stripe_event_id, to_email) when migration applied,
-      with pre-migration safety fallback + IntegrityError guard for concurrency.
     """
     if request.method != "POST":
         return JsonResponse({"ok": False, "error": "method_not_allowed", "ver": WEBHOOK_VER}, status=405)
@@ -357,14 +402,9 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     payload = request.body
     sig_header = request.META.get("HTTP_STRIPE_SIGNATURE", "")
 
-    # Mode-aware secret selection (LOCKED)
     endpoint_secret, secret_source, mode = _get_stripe_webhook_secret_info()
 
     # Allow one endpoint to accept BOTH live + test/sandbox webhook signatures when both secrets exist.
-    # We try secrets in a safe order:
-    #   1) primary (based on PPA_STRIPE_MODE)
-    #   2) the "other" mode secret (if set)
-    #   3) STRIPE_WEBHOOK_SECRET legacy fallback (if set and not already tried)
     candidates = []
     seen = set()
 
@@ -377,7 +417,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
         seen.add(secret_val)
 
     _add_candidate(endpoint_secret, secret_source)
-
     other = "STRIPE_TEST_WEBHOOK_SECRET" if mode == "live" else "STRIPE_LIVE_WEBHOOK_SECRET"
     _add_candidate(os.getenv(other, ""), other)
     _add_candidate(os.getenv("STRIPE_WEBHOOK_SECRET", ""), "STRIPE_WEBHOOK_SECRET")
@@ -427,13 +466,12 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     # IMPORTANT: Use event.livemode to select the correct Stripe secret key for retrieval/expands.
     _set_stripe_api_key_for_event(event)
 
-    plan_slug = _get_plan_slug_from_price(session_id)
+    plan_slug, price_md = _get_plan_slug_and_price_md(session_id)
 
     if plan_slug:
         tier = plan_slug
         plan_code = plan_slug
     else:
-        # Fallback: legacy tier normalization
         md = session.get("metadata") or {}
         raw_tier = md.get("tier") or md.get("plan") or md.get("plan_code") or md.get("tier_name") or ""
         tier = _normalize_tier(raw_tier)
@@ -448,14 +486,12 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
         plan_slug,
     )
 
-    # Persist Order + License FIRST (LOCKED ordering)
     Order = _model("postpress_ai", "Order")
     License = _model("postpress_ai", "License")
 
     order_created = False
     license_created = False
 
-    # Persist minimal snapshots for audit/debug (not secrets)
     try:
         raw_event_safe = json.loads(payload.decode("utf-8"))
     except Exception:
@@ -466,84 +502,87 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     except Exception:
         raw_session_safe = {"id": session_id, "payment_status": payment_status}
 
-    license_obj = None  # ensure exists after atomic block for later email section
+    license_obj = None
 
     with transaction.atomic():
-        # --- Order upsert (idempotent by stripe_session_id) ---
-        order = None
-        if _has_field(Order, "stripe_session_id"):
-            order, created = Order.objects.get_or_create(  # type: ignore
-                stripe_session_id=session_id,
-                defaults={},
-            )
-            order_created = bool(created)
-        else:
-            order = Order.objects.order_by("-id").first()
+        order, created = Order.objects.get_or_create(stripe_session_id=session_id, defaults={})  # type: ignore
+        order_created = bool(created)
 
-        if order is not None:
-            _set_if_field(order, "email", customer_email)
-            _set_if_field(order, "tier", tier)
-            _set_if_field(order, "plan_code", plan_code)
-            _set_if_field(order, "status", "fulfilled" if payment_status == "paid" else "pending")
-            _set_if_field(order, "raw_event", raw_event_safe)
-            _set_if_field(order, "raw_session", raw_session_safe)
+        try:
+            order = Order.objects.select_for_update().get(pk=order.pk)  # type: ignore
+        except Exception:
+            pass
+
+        _set_if_field(order, "stripe_event_id", event_id)
+        _set_if_field(order, "purchaser_email", customer_email)
+        _set_if_field(order, "purchaser_name", customer_name)
+        _set_if_field(order, "stripe_customer_id", session.get("customer") or "")
+        _set_if_field(order, "stripe_payment_intent_id", session.get("payment_intent") or "")
+        _set_if_field(order, "amount_total", session.get("amount_total"))
+        _set_if_field(order, "currency", session.get("currency"))
+        _set_if_field(order, "status", "fulfilled" if payment_status == "paid" else "pending")
+        _set_if_field(order, "raw_event", raw_event_safe)
+        _set_if_field(order, "raw_session", raw_session_safe)
+        try:
+            order.save()
+        except Exception:
+            logger.exception("PPA:order_save_failed session=%s", session_id)
+
+        existing_key = ""
+        if _has_field(Order, "notes"):
+            existing_key = _order_notes_get_license_key(str(getattr(order, "notes", "") or ""))
+
+        if existing_key:
             try:
-                order.save()
+                license_obj = License.objects.filter(key=existing_key).first()
             except Exception:
-                logger.exception("PPA:order_save_failed session=%s", session_id)
-
-        # --- License upsert (idempotent by stripe_session_id) ---
-        if _has_field(License, "stripe_session_id"):
-            license_obj, created = License.objects.get_or_create(  # type: ignore
-                stripe_session_id=session_id,
-                defaults={},
-            )
-            license_created = bool(created)
-        else:
-            # IMPORTANT: For a ForeignKey field named "order", Django's field name is "order" (not "order_id").
-            # Using "order_id" here would fail _has_field(...) and could incorrectly reuse an unrelated license.
-            if _has_field(License, "order") and order is not None:
-                license_obj, created = License.objects.get_or_create(  # type: ignore
-                    order=order,
-                    defaults={},
-                )
-                license_created = bool(created)
-            else:
-                logger.error(
-                    "PPA:license_upsert_missing_fields session=%s has_stripe_session_id=%s has_order_field=%s", 
-                    session_id,
-                    _has_field(License, "stripe_session_id"),
-                    _has_field(License, "order"),
-                )
                 license_obj = None
 
-        if license_obj is not None:
-            _set_if_field(license_obj, "email", customer_email)
-            _set_if_field(license_obj, "tier", tier)
-            _set_if_field(license_obj, "plan_code", plan_code)
+        if license_obj is None:
+            from postpress_ai.license_keys import generate_unique_license_key
 
-            Plan = _model("postpress_ai", "Plan")
-            plan_obj = None
+            def _exists(k: str) -> bool:
+                return License.objects.filter(key=k).exists()
+
+            new_key = generate_unique_license_key(exists=_exists)
+
+            plan_for_license = (plan_slug or plan_code or tier or "").strip().lower().replace("-", "_")
+            if not plan_for_license:
+                plan_for_license = "unknown"
+
+            defaults = _license_defaults_for_plan(plan_for_license, price_md)
+
+            create_kwargs: Dict[str, Any] = {
+                "key": new_key,
+                "plan_slug": plan_for_license,
+            }
+
+            if _has_field(License, "status"):
+                create_kwargs["status"] = "active" if payment_status == "paid" else "active"
+            if _has_field(License, "max_sites"):
+                create_kwargs["max_sites"] = defaults.get("max_sites")
+            if _has_field(License, "unlimited_sites"):
+                create_kwargs["unlimited_sites"] = defaults.get("unlimited_sites")
+            if _has_field(License, "byo_key_required"):
+                create_kwargs["byo_key_required"] = defaults.get("byo_key_required")
+            if _has_field(License, "ai_included"):
+                create_kwargs["ai_included"] = defaults.get("ai_included")
+
             try:
-                if _has_field(Plan, "code"):
-                    plan_obj = Plan.objects.filter(code=plan_code).first()
+                license_obj = License.objects.create(**create_kwargs)  # type: ignore
+                license_created = True
             except Exception:
-                plan_obj = None
+                logger.exception("PPA:license_create_failed session=%s", session_id)
+                license_obj = None
 
-            max_sites = _derive_max_sites_from_plan(plan_obj, fallback=3 if plan_code == "tyler" else 1)
-            _set_if_field(license_obj, "max_sites", max_sites)
-
-            if payment_status == "paid":
-                _set_if_field(license_obj, "status", "active")
-                _set_if_field(license_obj, "is_active", True)
-
-            if order is not None:
-                _set_if_field(license_obj, "order", order)
-
-            try:
-                license_obj.save()
-            except Exception:
-                logger.exception("PPA:license_save_failed session=%s", session_id)
+            if license_obj is not None and _has_field(Order, "notes"):
+                try:
+                    cur_notes = str(getattr(order, "notes", "") or "")
+                    new_notes = _order_notes_set_license_key(cur_notes, str(getattr(license_obj, "key", "")))
+                    _set_if_field(order, "notes", new_notes)
+                    order.save(update_fields=["notes"])
+                except Exception:
+                    logger.exception("PPA:order_notes_save_failed session=%s", session_id)
 
     # Command Center wiring happens AFTER Order + License (LOCKED ordering)
     customer_db_id = None
@@ -597,7 +636,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
         if subscription_obj is not None and _has_field(Entitlement, "subscription"):
             entitlement_defaults: Dict[str, Any] = {}
 
-            # Satisfy NOT NULL constraints on Entitlement.customer + Entitlement.plan (if present)
             if customer_obj is not None and _has_field(Entitlement, "customer"):
                 entitlement_defaults["customer"] = customer_obj
             if plan_obj is not None and _has_field(Entitlement, "plan"):
@@ -609,14 +647,9 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             )
             entitlement_db_id = getattr(entitlement_obj, "id", None)
 
-            # Keep entitlement aligned even on retries / existing rows
             if not created:
                 dirty_fields = []
-                if (
-                    customer_obj is not None
-                    and _has_field(Entitlement, "customer")
-                    and getattr(entitlement_obj, "customer_id", None) is None
-                ):
+                if customer_obj is not None and _has_field(Entitlement, "customer") and getattr(entitlement_obj, "customer_id", None) is None:
                     _set_if_field(entitlement_obj, "customer", customer_obj)
                     dirty_fields.append("customer")
                 if plan_obj is not None and _has_field(Entitlement, "plan") and getattr(entitlement_obj, "plan_id", None) is None:
@@ -628,7 +661,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 except Exception:
                     pass
 
-            # Tyler normalization stays (Entitlement model uses max_sites_override, so set both safely)
             if plan_code == "tyler":
                 _set_if_field(entitlement_obj, "max_sites_override", 3)
                 _set_if_field(entitlement_obj, "max_sites", 3)
@@ -667,9 +699,27 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             }
         )
 
-    # Email delivery (idempotent on Stripe retries)
-    existing = _email_log_lookup_locked(to_email=customer_email, stripe_event_id=event_id)
-    if existing:
+    EmailLog = _model("postpress_ai", "EmailLog")
+
+    # Resolve license key for email
+    license_key = ""
+    max_sites_for_email = 3 if plan_code == "tyler" else 1
+    if license_obj is not None:
+        try:
+            if hasattr(license_obj, "key"):
+                license_key = str(getattr(license_obj, "key") or "")
+            if hasattr(license_obj, "max_sites") and getattr(license_obj, "max_sites") is not None:
+                try:
+                    max_sites_for_email = int(getattr(license_obj, "max_sites"))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    existing_elog = _email_log_lookup_locked(to_email=customer_email, stripe_event_id=event_id)
+
+    # If already SENT, do not send again.
+    if existing_elog is not None and getattr(existing_elog, "status", "") == getattr(EmailLog, "STATUS_SENT", "sent"):
         return JsonResponse(
             {
                 "ok": True,
@@ -685,7 +735,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                     "license_created": license_created,
                     "license_emailed": True,
                     "email_skipped": True,
-                    "email_reason": "EmailLog exists",
+                    "email_reason": "EmailLog exists (sent)",
                     "customer_db_id": customer_db_id,
                     "plan_db_id": plan_db_id,
                     "subscription_db_id": subscription_db_id,
@@ -694,96 +744,61 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             }
         )
 
-    # Create EmailLog row first (winner sends)
-    EmailLog = _model("postpress_ai", "EmailLog")
-    elog = EmailLog()  # type: ignore
+    # If exists but FAILED, allow retry using the same row (prevents duplicates).
+    elog = existing_elog if existing_elog is not None else EmailLog()  # type: ignore
 
-    # Link customer if possible
-    try:
-        if customer_db_id and _has_field(EmailLog, "customer_id"):
-            _set_if_field(elog, "customer_id", customer_db_id)
-    except Exception:
-        pass
+    if existing_elog is not None and getattr(existing_elog, "status", "") == getattr(EmailLog, "STATUS_FAILED", "failed"):
+        try:
+            _set_if_field(elog, "status", getattr(EmailLog, "STATUS_QUEUED", "queued"))
+            _set_if_field(elog, "error_message", "")
+        except Exception:
+            pass
 
-    _set_if_field(elog, "to_email", customer_email)
-    _set_if_field(elog, "subject", "Welcome to PostPress AI — here’s your key")  # audit-only; emailing.py owns actual subject
-    _set_if_field(elog, "email_type", getattr(EmailLog, "TYPE_LICENSE_KEY", "license_key"))
-    _set_if_field(elog, "status", getattr(EmailLog, "STATUS_QUEUED", "queued"))
-    _set_if_field(elog, "provider", "sendgrid")
-    _set_if_field(elog, "created_at", timezone.now())
+    if existing_elog is None:
+        try:
+            if customer_db_id and _has_field(EmailLog, "customer_id"):
+                _set_if_field(elog, "customer_id", customer_db_id)
+        except Exception:
+            pass
 
-    # Safe meta (do NOT store full license keys)
+        _set_if_field(elog, "to_email", customer_email)
+        _set_if_field(elog, "subject", "Welcome to PostPress AI — here’s your key")
+        _set_if_field(elog, "email_type", getattr(EmailLog, "TYPE_LICENSE_KEY", "license_key"))
+        _set_if_field(elog, "status", getattr(EmailLog, "STATUS_QUEUED", "queued"))
+        _set_if_field(elog, "provider", "sendgrid")
+        _set_if_field(elog, "created_at", timezone.now())
+        _set_if_field(elog, "stripe_event_id", event_id)
+
     meta: Dict[str, Any] = {
         "stripe_event_id": event_id,
         "stripe_session_id": session_id,
         "plan_code": plan_code,
         "tier": tier,
         "payment_status": payment_status,
+        "license_key_masked": _mask_key(license_key),
+        "max_sites": max_sites_for_email,
     }
-
-    # Store masked key info for admin visibility
-    license_key = ""
-    max_sites = 3 if plan_code == "tyler" else 1
-    if license_obj is not None:
-        try:
-            if hasattr(license_obj, "key"):
-                license_key = str(getattr(license_obj, "key") or "")
-            elif hasattr(license_obj, "license_key"):
-                license_key = str(getattr(license_obj, "license_key") or "")
-            if hasattr(license_obj, "max_sites"):
-                try:
-                    max_sites = int(getattr(license_obj, "max_sites") or max_sites)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    meta["license_key_masked"] = _mask_key(license_key)
-    meta["max_sites"] = max_sites
-
     _set_if_field(elog, "meta", meta)
-
-    # Set the new column if it exists (post-migration), without assuming it exists.
-    _set_if_field(elog, "stripe_event_id", event_id)
 
     try:
         elog.save()
     except IntegrityError:
         logger.info("PPA:email_log idempotent hit (IntegrityError) to=%s event=%s", customer_email, event_id)
-        return JsonResponse(
-            {
-                "ok": True,
-                "ver": WEBHOOK_VER,
-                "data": {
-                    "event": event_type,
-                    "session_id": session_id,
-                    "payment_status": payment_status,
-                    "email": customer_email,
-                    "tier": tier.title() if tier else tier,
-                    "plan_code": plan_code,
-                    "order_created": order_created,
-                    "license_created": license_created,
-                    "license_emailed": False,
-                    "email_skipped": True,
-                    "email_reason": "unique_constraint",
-                    "customer_db_id": customer_db_id,
-                    "plan_db_id": plan_db_id,
-                    "subscription_db_id": subscription_db_id,
-                    "entitlement_db_id": entitlement_db_id,
-                },
-            }
-        )
+        elog = _email_log_lookup_locked(to_email=customer_email, stripe_event_id=event_id) or elog
 
-    # Send email
     provider_msg_id = ""
     try:
+        if not license_key:
+            raise ValueError("missing license_key")
+
         provider_msg_id = _send_license_key_email_best_effort(
             to_email=customer_email,
             customer_name=customer_name,
             license_key=license_key,
-            tier=tier,
-            max_sites=max_sites,
+            tier=tier or plan_code,
+            max_sites=max_sites_for_email,
         )
+
         try:
             if hasattr(elog, "mark_sent"):
                 elog.mark_sent(provider_message_id=provider_msg_id or "")
@@ -794,7 +809,10 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 elog.save(update_fields=["status", "provider_message_id", "sent_at"])
         except Exception:
             pass
+
         license_emailed = True
+        email_error = ""
+
     except Exception as e:
         logger.exception("PPA:send_email_failed to=%s session=%s", customer_email, session_id)
         try:
@@ -806,7 +824,9 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 elog.save(update_fields=["status", "error_message"])
         except Exception:
             pass
+
         license_emailed = False
+        email_error = (str(e) or "")[:300]
 
     return JsonResponse(
         {
@@ -824,6 +844,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 "license_created": license_created,
                 "license_emailed": license_emailed,
                 "license_key_masked": _mask_key(license_key),
+                "email_error": email_error,
                 "customer_db_id": customer_db_id,
                 "plan_db_id": plan_db_id,
                 "subscription_db_id": subscription_db_id,
