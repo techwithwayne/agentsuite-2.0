@@ -660,74 +660,8 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                         entitlement_obj.save(update_fields=dirty_fields)
                 except Exception:
                     pass
-                # FILE: postpress_ai/views/stripe_webhook.py
-                # PATCH GOAL:
-                #   1) Link Entitlement -> License (so license_id stops being None)
-                #   2) Ensure only ONE active entitlement per customer (upgrade-safe)
-                #
-                # WHERE TO INSERT:
-                #   Find the block shown in your screenshot:
-                #     - entitlement_obj, created = Entitlement.objects.get_or_create(...)
-                #     - if not created: ... dirty_fields ... try: entitlement_obj.save(update_fields=dirty_fields) except: pass
-                #   INSERT THIS SNIPPET immediately AFTER that `except Exception: pass` (the save of dirty_fields)
-                #   and BEFORE the next `if plan_code == "tyler":` block.
 
-                # --- BEGIN INSERT ---
-                # Link Entitlement -> License once ("key for life" foundation)
-                try:
-                    if (
-                        entitlement_obj is not None
-                        and 'license_obj' in locals()
-                        and license_obj is not None
-                        and _has_field(Entitlement, "license")
-                        and getattr(entitlement_obj, "license_id", None) is None
-                    ):
-                        entitlement_obj.license = license_obj
-                        update_fields = ["license"]
-                        if _has_field(Entitlement, "updated_at"):
-                            update_fields.append("updated_at")
-                        entitlement_obj.save(update_fields=update_fields)
-                except Exception:
-                    logger.exception("PPA:entitlement_license_link_failed session=%s entitlement_id=%s", session_id, getattr(entitlement_obj, "id", None))
-
-                # Ensure only one ACTIVE entitlement per customer (newest paid wins)
-                try:
-                    if (
-                        payment_status == "paid"
-                        and entitlement_obj is not None
-                        and customer_obj is not None
-                        and _has_field(Entitlement, "customer")
-                        and _has_field(Entitlement, "status")
-                    ):
-                        # Pick safe ACTIVE/INACTIVE values based on model choices if present
-                        status_field = Entitlement._meta.get_field("status")
-                        choices = [c[0] for c in (getattr(status_field, "choices", None) or [])]
-                        choices_set = set(choices)
-
-                        ACTIVE = "active" if ("active" in choices_set or not choices) else choices[0]
-                        INACTIVE = (
-                            "inactive" if "inactive" in choices_set else
-                            "canceled" if "canceled" in choices_set else
-                            "cancelled" if "cancelled" in choices_set else
-                            "revoked" if "revoked" in choices_set else
-                            "expired" if "expired" in choices_set else
-                            "inactive"  # final fallback (DB can store even if not in choices)
-                        )
-
-                        # Deactivate all other entitlements for this customer
-                        Entitlement.objects.filter(customer=customer_obj).exclude(id=entitlement_obj.id).update(status=INACTIVE)
-
-                        # Make sure the current one is ACTIVE
-                        if getattr(entitlement_obj, "status", None) != ACTIVE:
-                            entitlement_obj.status = ACTIVE
-                            update_fields = ["status"]
-                            if _has_field(Entitlement, "updated_at"):
-                                update_fields.append("updated_at")
-                            entitlement_obj.save(update_fields=update_fields)
-                except Exception:
-                    logger.exception("PPA:entitlement_single_active_enforce_failed session=%s customer_id=%s", session_id, getattr(customer_obj, "id", None))
-                # --- END INSERT ---
-
+            # Link Entitlement -> License once ("key for life" foundation)
             try:
                 if (
                     entitlement_obj is not None
@@ -780,7 +714,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                         entitlement_obj.save(update_fields=update_fields)
             except Exception:
                 logger.exception("PPA:entitlement_single_active_enforce_failed session=%s customer_id=%s", session_id, getattr(customer_obj, "id", None))
-            # --- END INSERT ---
 
             if plan_code == "tyler":
                 _set_if_field(entitlement_obj, "max_sites_override", 3)
