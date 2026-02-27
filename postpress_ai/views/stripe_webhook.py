@@ -679,12 +679,12 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                         entitlement_obj is not None
                         and 'license_obj' in locals()
                         and license_obj is not None
-                        and has_field(Entitlement, "license")
+                        and _has_field(Entitlement, "license")
                         and getattr(entitlement_obj, "license_id", None) is None
                     ):
                         entitlement_obj.license = license_obj
                         update_fields = ["license"]
-                        if has_field(Entitlement, "updated_at"):
+                        if _has_field(Entitlement, "updated_at"):
                             update_fields.append("updated_at")
                         entitlement_obj.save(update_fields=update_fields)
                 except Exception:
@@ -696,8 +696,8 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                         payment_status == "paid"
                         and entitlement_obj is not None
                         and customer_obj is not None
-                        and has_field(Entitlement, "customer")
-                        and has_field(Entitlement, "status")
+                        and _has_field(Entitlement, "customer")
+                        and _has_field(Entitlement, "status")
                     ):
                         # Pick safe ACTIVE/INACTIVE values based on model choices if present
                         status_field = Entitlement._meta.get_field("status")
@@ -721,7 +721,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                         if getattr(entitlement_obj, "status", None) != ACTIVE:
                             entitlement_obj.status = ACTIVE
                             update_fields = ["status"]
-                            if has_field(Entitlement, "updated_at"):
+                            if _has_field(Entitlement, "updated_at"):
                                 update_fields.append("updated_at")
                             entitlement_obj.save(update_fields=update_fields)
                 except Exception:
