@@ -1,0 +1,42 @@
+﻿[
+  {
+    "name": "Empty message returns KB starter",
+    "input": { "message": "", "context": { "page_kind": "support_widget" } },
+    "expect": {
+      "assistant_message_contains": ["Support Knowledge Pack", "Install", "Activation"],
+      "suggested_action_types": ["resend_activation_key", "escalate_to_support"]
+    }
+  },
+  {
+    "name": "Activation email missing routes to resend flow",
+    "input": { "message": "I never got my activation email. Can you resend it?" },
+    "expect": {
+      "assistant_message_contains": ["resend", "checkout email", "site URL"],
+      "suggested_action_types": ["resend_activation_key", "collect_verification"]
+    }
+  },
+  {
+    "name": "Install question returns 4-step install",
+    "input": { "message": "How do I install the plugin zip?" },
+    "expect": {
+      "assistant_message_contains": ["Upload Plugin", "Activate", "license key"],
+      "suggested_action_types": ["open_download_link", "escalate_to_support"]
+    }
+  },
+  {
+    "name": "Billing issue escalates",
+    "input": { "message": "I was charged twice, I need a refund." },
+    "expect": {
+      "assistant_message_contains": ["human", "support@postpressai.com"],
+      "suggested_action_types": ["escalate_to_support"]
+    }
+  },
+  {
+    "name": "Popup blocked UX issue",
+    "input": { "message": "Popup blocked when I click download" },
+    "expect": {
+      "assistant_message_contains": ["allow pop-ups", "try incognito"],
+      "suggested_action_types": ["escalate_to_support"]
+    }
+  }
+]
