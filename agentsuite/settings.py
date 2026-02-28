@@ -78,7 +78,7 @@ for _env in ENV_CANDIDATES:
         break
 else:
     load_dotenv()
-    print("[settings_pm] No .env found in common locations; relying on os.environ.")
+    _settings_pm("[settings_pm] No .env found in common locations; relying on os.environ.")
 
 # ========= PDF Engine (TherapyLib) =========
 ALLOWED_PDF_ENGINES = {"weasyprint", "xhtml2pdf", "pdfkit"}  # CHANGED
