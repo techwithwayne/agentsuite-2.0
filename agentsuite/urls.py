@@ -34,6 +34,10 @@ CHANGE LOG
 - FIX: Eliminate 301 redirects for missing trailing slash on critical PostPress endpoints.    # CHANGED:
        WordPress POSTs can lose body/headers across 301. Add no-slash alias routes that      # CHANGED:
        internally dispatch to the canonical trailing-slash endpoint without redirecting.     # CHANGED:
+
+2026-02-28
+- ADD: Project-level /postpress-ai/support/diag/ endpoint + no-slash alias to stop 404s.      # CHANGED:
+       This is a non-secret support snapshot (env/build/time/cache/db/stripe-mode/features). # CHANGED:
 """
 
 # /home/techwithwayne/agentsuite/agentsuite/urls.py
@@ -64,6 +68,9 @@ from postpress_ai.views.stripe_webhook import stripe_webhook
 # ✅ FIXED IMPORT PATH  # CHANGED:
 from postpress_ai.views.checkout_session import create_checkout_session  # CHANGED:
 
+# CHANGED: Support diagnostics endpoint (non-secret)
+from postpress_ai.views.support_diag import support_diag  # CHANGED:
+
 from webdoctor import views as webdoctor_views
 from barista_assistant.views import success_view
 
@@ -83,6 +90,7 @@ def _alias_to(canonical_path: str):
     This view rewrites request.path/path_info in-memory and dispatches to the canonical # CHANGED:
     trailing-slash endpoint via django.urls.resolve().                                  # CHANGED:
     """
+
     def _view(request, *args, **kwargs):  # noqa: ARG001
         orig_path = getattr(request, "path", "")
         orig_path_info = getattr(request, "path_info", "")
@@ -124,7 +132,7 @@ urlpatterns = [
     # NO-SLASH ALIASES (stop 301 redirects; preserve POST body/headers)         # CHANGED:
     # -------------------------------------------------------------------------
     re_path(r"^preview$", _alias_to("/preview/")),  # CHANGED:
-    re_path(r"^store$", _alias_to("/store/")),      # CHANGED:
+    re_path(r"^store$", _alias_to("/store/")),  # CHANGED:
 
     re_path(r"^postpress-ai/health$", _alias_to("/postpress-ai/health/")),  # CHANGED:
     re_path(r"^postpress-ai/version$", _alias_to("/postpress-ai/version/")),  # CHANGED:
@@ -137,6 +145,8 @@ urlpatterns = [
     re_path(r"^postpress-ai/license/verify$", _alias_to("/postpress-ai/license/verify/")),  # CHANGED:
     re_path(r"^postpress-ai/license/deactivate$", _alias_to("/postpress-ai/license/deactivate/")),  # CHANGED:
     re_path(r"^postpress-ai/license/debug-auth$", _alias_to("/postpress-ai/license/debug-auth/")),  # CHANGED:
+
+    re_path(r"^postpress-ai/support/diag$", _alias_to("/postpress-ai/support/diag/")),  # CHANGED:
 
     re_path(r"^postpress-ai/stripe/webhook$", _alias_to("/postpress-ai/stripe/webhook/")),  # CHANGED:
     re_path(r"^postpress-ai/stripe/checkout/create$", _alias_to("/postpress-ai/stripe/checkout/create/")),  # CHANGED:
@@ -154,6 +164,9 @@ urlpatterns = [
     path("postpress-ai/license/deactivate/", license_deactivate),
 
     path("postpress-ai/license/debug-auth/", license_debug_auth),
+
+    # CHANGED: Support diagnostics (non-secret)
+    path("postpress-ai/support/diag/", support_diag, name="ppa_support_diag"),  # CHANGED:
 
     path("postpress-ai/stripe/webhook/", stripe_webhook),
 
@@ -191,9 +204,11 @@ urlpatterns = [
 # Some deployments do not have the 'apps' package checked out; include only if importable.
 try:
     import importlib
+
     importlib.import_module("apps.api.urls")
 except ModuleNotFoundError:
     import sys
+
     sys.stderr.write("[urls] Optional 'apps.api.urls' not present; skipping /reclaimr/ route\n")
 else:
     urlpatterns.append(path("reclaimr/", include("apps.api.urls")))
