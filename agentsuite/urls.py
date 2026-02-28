@@ -38,6 +38,10 @@ CHANGE LOG
 2026-02-28
 - ADD: Project-level /postpress-ai/support/diag/ endpoint + no-slash alias to stop 404s.      # CHANGED:
        This is a non-secret support snapshot (env/build/time/cache/db/stripe-mode/features). # CHANGED:
+- ADD: Project-level /postpress-ai/support/chat/ endpoint + no-slash alias to stop 404/301.   # CHANGED:
+       Support chat must be project-level for precedence and must avoid 301 for WP POSTs.     # CHANGED:
+- FIX: Add minimal CORS+OPTIONS handling for /postpress-ai/support/* so browser JS can call it. # CHANGED:
+       WP admin calls cross-origin w/ custom header -> triggers preflight OPTIONS.             # CHANGED:
 """
 
 # /home/techwithwayne/agentsuite/agentsuite/urls.py
@@ -70,6 +74,9 @@ from postpress_ai.views.checkout_session import create_checkout_session  # CHANG
 
 # CHANGED: Support diagnostics endpoint (non-secret)
 from postpress_ai.views.support_diag import support_diag  # CHANGED:
+
+# CHANGED: Support chat endpoint (shared-secret)
+from postpress_ai.views.support import support_chat  # CHANGED:
 
 from webdoctor import views as webdoctor_views
 from barista_assistant.views import success_view
@@ -127,6 +134,45 @@ def _alias_to(canonical_path: str):
     return _view
 
 
+# -------------------------------------------------------------------------
+# Minimal CORS wrapper for WP admin cross-origin fetch() calls               # CHANGED:
+# Why: custom headers trigger OPTIONS preflight; without CORS headers the     # CHANGED:
+# browser blocks the request and the support UI appears "dead".              # CHANGED:
+# -------------------------------------------------------------------------
+def _add_cors_headers(resp, origin: str, allow_methods: str) -> None:  # CHANGED:
+    if origin:
+        resp["Access-Control-Allow-Origin"] = origin
+        resp["Vary"] = "Origin"
+        resp["Access-Control-Allow-Credentials"] = "true"
+    resp["Access-Control-Allow-Methods"] = allow_methods
+    resp["Access-Control-Allow-Headers"] = (
+        "Content-Type, X-Requested-With, X-PPA-Shared-Secret, X-PPA-WP-Shared-Secret, "
+        "X-Shared-Secret, X-Api-Key"
+    )
+    resp["Access-Control-Max-Age"] = "86400"
+
+
+def _cors(view_func, allow_methods: str = "POST, OPTIONS"):  # CHANGED:
+    def _wrapped(request, *args, **kwargs):
+        origin = request.headers.get("Origin", "")
+        if request.method == "OPTIONS":
+            resp = JsonResponse({"ok": True})
+            resp.status_code = 204
+            _add_cors_headers(resp, origin, allow_methods)
+            return resp
+
+        resp = view_func(request, *args, **kwargs)
+        _add_cors_headers(resp, origin, allow_methods)
+        return resp
+
+    return _wrapped
+
+
+# CORS-safe support endpoints (WP browser calls)                               # CHANGED:
+support_chat_cors = _cors(support_chat, allow_methods="POST, OPTIONS")  # CHANGED:
+support_diag_cors = _cors(support_diag, allow_methods="GET, OPTIONS")   # CHANGED:
+
+
 urlpatterns = [
     # -------------------------------------------------------------------------
     # NO-SLASH ALIASES (stop 301 redirects; preserve POST body/headers)         # CHANGED:
@@ -147,8 +193,9 @@ urlpatterns = [
     re_path(r"^postpress-ai/license/debug-auth$", _alias_to("/postpress-ai/license/debug-auth/")),  # CHANGED:
 
     re_path(r"^postpress-ai/support/diag$", _alias_to("/postpress-ai/support/diag/")),  # CHANGED:
+    re_path(r"^postpress-ai/support/chat$", _alias_to("/postpress-ai/support/chat/")),  # CHANGED:
 
-    re_path(r"^postpress-ai/stripe/webhook$", _alias_to("/postpress-ai/stripe/webhook/")),  # CHANGED:
+    re_path(r"^postpress-ai/stripe/webhook$", _alias_to("/postpress-ai/stripe/webhook$")),  # CHANGED:
     re_path(r"^postpress-ai/stripe/checkout/create$", _alias_to("/postpress-ai/stripe/checkout/create/")),  # CHANGED:
 
     # -------------------------------------------------------------------------
@@ -165,8 +212,11 @@ urlpatterns = [
 
     path("postpress-ai/license/debug-auth/", license_debug_auth),
 
-    # CHANGED: Support diagnostics (non-secret)
-    path("postpress-ai/support/diag/", support_diag, name="ppa_support_diag"),  # CHANGED:
+    # CHANGED: Support diagnostics (non-secret) + CORS wrapper
+    path("postpress-ai/support/diag/", support_diag_cors, name="ppa_support_diag"),  # CHANGED:
+
+    # CHANGED: Support chat (shared-secret) + CORS wrapper
+    path("postpress-ai/support/chat/", support_chat_cors, name="ppa_support_chat"),  # CHANGED:
 
     path("postpress-ai/stripe/webhook/", stripe_webhook),
 
