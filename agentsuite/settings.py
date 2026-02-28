@@ -172,6 +172,7 @@ try:
         except ModuleNotFoundError:
             # Treat monorepo-local apps as optional; skip if not importable on this deployment
             if _app.startswith("apps.") or _app in {
+                "corsheaders"
                 "website_analyzer",
                 "barista_assistant",
                 "barista_assistant.menu",
@@ -484,3 +485,17 @@ STRIPE_CANCEL_URL = os.getenv(
     f"{DEPLOY_BASE_URL}/barista-assistant/"
 )
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+
+# --- PostPress AI Support CORS (browser-based widget) ---
+CORS_URLS_REGEX = r"^/postpress-ai/support/.*$"
+CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = False
+
+from corsheaders.defaults import default_headers  # noqa: E402
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "X-PPA-Shared-Secret",
+    "X-PPA-WP-Shared-Secret",
+    "X-Shared-Secret",
+    "X-Api-Key",
+]
