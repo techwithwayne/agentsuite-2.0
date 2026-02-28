@@ -51,7 +51,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_VER = "stripe-webhook.v2026-02-28.1"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-02-27.1"  # CHANGED:
 
 
 # ---------------------------
@@ -95,6 +95,19 @@ def _mask_key(key: str) -> str:
     if len(key) <= 6:
         return "PPA-…"
     return f"{key[:4]}-…{key[-4:]}"
+
+
+def _int_from_any(value: Any, default: int = 0) -> int:  # CHANGED:
+    """Best-effort int parse for Stripe metadata values."""  # CHANGED:
+    if value is None:
+        return default
+    try:
+        s = str(value).strip()
+        if not s:
+            return default
+        return int(float(s))
+    except Exception:
+        return default
 
 
 def _model(app_label: str, model_name: str):
@@ -193,91 +206,6 @@ def _default_plan_seed(plan_code: str) -> Dict[str, Any]:  # CHANGED:
     if code in {"agency_unlimited_byo", "agency_byo"}:
         return {"name": "Agency Unlimited (BYO Key)", "max_sites": None, "ai_mode": "byo_key", "is_active": True}
     return {"name": code.title() if code else "Plan", "max_sites": 1, "ai_mode": "included", "is_active": True}
-
-
-# ---------------------------
-# Token Pack helpers (top-ups)
-# ---------------------------
-
-def _is_token_pack_checkout(session: Dict[str, Any], md: Dict[str, Any], stripe_subscription_id: str) -> bool:  # CHANGED:
-    """
-    Detect token-pack (one-time) purchases so we do NOT issue/modify plans or email license keys.
-
-    We treat the checkout as a token pack when:
-    - Stripe Checkout mode == "payment" (one-time), AND
-    - metadata indicates a pack/intent, OR there is no subscription id and a pack is present.
-    """  # CHANGED:
-    mode = (session.get("mode") or "").strip().lower()  # CHANGED:
-    if mode != "payment":  # CHANGED:
-        return False  # CHANGED:
-
-    intent = (md.get("intent") or md.get("purchase_intent") or md.get("kind") or "").strip().lower()  # CHANGED:
-    if intent in {"buy_tokens", "token_pack", "topup", "top_up", "credits", "credit_pack"}:  # CHANGED:
-        return True  # CHANGED:
-
-    pack = _token_pack_type_from_metadata(md)  # CHANGED:
-    if pack:  # CHANGED:
-        return True  # CHANGED:
-
-    # If Stripe sent a subscription id, it is not a token pack.  # CHANGED:
-    if stripe_subscription_id:  # CHANGED:
-        return False  # CHANGED:
-
-    return False  # CHANGED:
-
-
-def _token_pack_type_from_metadata(md: Dict[str, Any]) -> str:  # CHANGED:
-    """Return 'small'|'medium'|'large' when present, else ''."""  # CHANGED:
-    raw = (
-        md.get("pack")
-        or md.get("pack_type")
-        or md.get("token_pack")
-        or md.get("credit_pack")
-        or md.get("credits_pack")
-        or ""
-    )
-    s = (str(raw) if raw is not None else "").strip().lower()  # CHANGED:
-    if s in {"small", "s"}:  # CHANGED:
-        return "small"  # CHANGED:
-    if s in {"medium", "m"}:  # CHANGED:
-        return "medium"  # CHANGED:
-    if s in {"large", "l"}:  # CHANGED:
-        return "large"  # CHANGED:
-    return ""  # CHANGED:
-
-
-def _token_pack_credits(pack_type: str) -> int:  # CHANGED:
-    """
-    Credits granted per token pack.
-    Uses env var PPA_TOKEN_PACK_CREDITS_JSON if set (e.g. {"small":50000,"medium":150000,"large":500000}).
-    Fallback defaults are safe and can be tuned later without code changes.
-    """  # CHANGED:
-    pack = (pack_type or "").strip().lower()  # CHANGED:
-    defaults = {"small": 50000, "medium": 150000, "large": 500000}  # CHANGED:
-
-    raw = (os.getenv("PPA_TOKEN_PACK_CREDITS_JSON") or "").strip()  # CHANGED:
-    if raw:  # CHANGED:
-        try:  # CHANGED:
-            data = json.loads(raw)  # CHANGED:
-            if isinstance(data, dict):  # CHANGED:
-                v = data.get(pack)  # CHANGED:
-                if isinstance(v, int) and v >= 0:  # CHANGED:
-                    return int(v)  # CHANGED:
-                if isinstance(v, str) and v.strip().isdigit():  # CHANGED:
-                    return int(v.strip())  # CHANGED:
-        except Exception:  # CHANGED:
-            # env var may be misconfigured; fall back silently  # CHANGED:
-            pass  # CHANGED:
-
-    return int(defaults.get(pack, 0))  # CHANGED:
-
-
-def _metadata_license_key(md: Dict[str, Any]) -> str:  # CHANGED:
-    """Best-effort extract of license key from Stripe metadata."""  # CHANGED:
-    raw = md.get("license_key") or md.get("key") or md.get("ppa_license_key") or md.get("license") or ""  # CHANGED:
-    s = (str(raw) if raw is not None else "").strip()  # CHANGED:
-    return s  # CHANGED:
-
 
 
 def _email_log_lookup_locked(to_email: str, stripe_event_id: str):  # CHANGED:
@@ -461,8 +389,258 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
 
     is_paid = payment_status == "paid"
 
-    # Metadata-driven tier, with locked fallback behavior
+    # Metadata + mode
     md = session.get("metadata") or {}
+    session_mode = (session.get("mode") or "").strip().lower()  # CHANGED:
+
+    # ---------------------------
+    # Token pack (one-time) purchases
+    # ---------------------------
+    # These MUST NOT create subscriptions/entitlements or send license emails.
+    # They only grant credits to the customer ledger (and optionally link to a license).
+    billing_period = (md.get("billing_period") or "").strip().lower()  # CHANGED:
+    ppa_kind = (md.get("ppa_kind") or md.get("kind") or "").strip().lower()  # CHANGED:
+    pack_type = (md.get("pack_type") or md.get("pack") or "").strip().lower()  # CHANGED:
+    pack_tokens_raw = md.get("pack_tokens") or md.get("tokens") or md.get("credits") or ""  # CHANGED:
+    license_key_md = (
+        md.get("license_key")
+        or md.get("ppa_license_key")
+        or md.get("activation_key")
+        or md.get("key")
+        or ""
+    ).strip()  # CHANGED:
+
+    is_token_pack = (session_mode == "payment" or not stripe_subscription_id) and (
+        ppa_kind == "pack"
+        or billing_period in {"one_time", "one-time", "one time"}
+        or bool(pack_type)
+        or bool(pack_tokens_raw)
+    )  # CHANGED:
+
+    if is_token_pack:  # CHANGED:
+        if not is_paid:
+            return JsonResponse(
+                {
+                    "ok": True,
+                    "ver": WEBHOOK_VER,
+                    "data": {
+                        "event": event_type,
+                        "session_id": session_id,
+                        "payment_status": payment_status,
+                        "purchase_kind": "token_pack",
+                        "handled": False,
+                        "reason": "payment_not_paid",
+                    },
+                }
+            )
+
+        if not customer_email:
+            logger.warning("PPA:token_pack missing_email session=%s", session_id)
+            return JsonResponse(
+                {
+                    "ok": True,
+                    "ver": WEBHOOK_VER,
+                    "data": {
+                        "event": event_type,
+                        "session_id": session_id,
+                        "payment_status": payment_status,
+                        "purchase_kind": "token_pack",
+                        "handled": False,
+                        "reason": "missing_email",
+                    },
+                }
+            )
+
+        credits_granted = _int_from_any(pack_tokens_raw, 0)
+        if credits_granted <= 0:
+            logger.warning(
+                "PPA:token_pack invalid_pack_tokens session=%s pack_type=%s raw=%s",
+                session_id,
+                pack_type,
+                str(pack_tokens_raw)[:80],
+            )
+            return JsonResponse(
+                {
+                    "ok": True,
+                    "ver": WEBHOOK_VER,
+                    "data": {
+                        "event": event_type,
+                        "session_id": session_id,
+                        "payment_status": payment_status,
+                        "purchase_kind": "token_pack",
+                        "handled": False,
+                        "reason": "invalid_pack_tokens",
+                    },
+                }
+            )
+
+        pack_norm = pack_type if pack_type in {"small", "medium", "large"} else "small"
+
+        try:
+            Customer = _model("postpress_ai", "Customer")
+            Subscription = _model("postpress_ai", "Subscription")
+            License = _model("postpress_ai", "License")
+            CreditPackPurchase = _model("postpress_ai", "CreditPackPurchase")
+            CreditLedger = _model("postpress_ai", "CreditLedger")
+        except Exception:
+            logger.exception("PPA:token_pack models_missing")
+            return JsonResponse(
+                {
+                    "ok": True,
+                    "ver": WEBHOOK_VER,
+                    "data": {
+                        "event": event_type,
+                        "session_id": session_id,
+                        "payment_status": payment_status,
+                        "purchase_kind": "token_pack",
+                        "handled": False,
+                        "reason": "models_missing",
+                    },
+                }
+            )
+
+        with transaction.atomic():
+            customer_obj, _ = Customer.objects.get_or_create(email=customer_email, defaults={})  # type: ignore
+            first, last = _split_name(customer_name)
+            if first:
+                _set_if_field(customer_obj, "first_name", first)
+            if last:
+                _set_if_field(customer_obj, "last_name", last)
+            _set_if_field(customer_obj, "last_seen_at", timezone.now())
+            try:
+                customer_obj.save()
+            except Exception:
+                pass
+
+            subscription_obj = None
+            try:
+                subscription_obj = Subscription.objects.filter(customer=customer_obj).order_by("-id").first()  # type: ignore
+            except Exception:
+                subscription_obj = None
+
+            license_obj_pack = None
+            if license_key_md and _has_field(License, "key"):
+                try:
+                    license_obj_pack = License.objects.filter(key=license_key_md).first()  # type: ignore
+                except Exception:
+                    license_obj_pack = None
+
+            # Idempotency: prefer payment_intent, fallback to checkout session id.
+            purchase = None
+            if stripe_payment_intent_id:
+                purchase = (
+                    CreditPackPurchase.objects.filter(stripe_payment_intent_id=stripe_payment_intent_id)
+                    .order_by("-id")
+                    .first()
+                )
+            if purchase is None and session_id:
+                purchase = (
+                    CreditPackPurchase.objects.filter(stripe_checkout_session_id=session_id)
+                    .order_by("-id")
+                    .first()
+                )
+
+            purchase_created = False
+            if purchase is None:
+                create_kwargs: Dict[str, Any] = {
+                    "customer": customer_obj,
+                    "pack_type": pack_norm,
+                    "credits_granted": int(credits_granted),
+                    "stripe_payment_intent_id": stripe_payment_intent_id or "",
+                    "stripe_checkout_session_id": session_id or "",
+                    "currency": (currency or "usd") or "usd",
+                    "amount_cents": int(amount_total or 0),
+                    "meta": {
+                        "stripe_event_id": event_id,
+                        "stripe_session_id": session_id,
+                        "stripe_customer_id": stripe_customer_id,
+                        "pack_type": pack_norm,
+                        "pack_tokens": int(credits_granted),
+                        "license_key": license_key_md or "",
+                        "raw_metadata": md,
+                    },
+                }
+
+                if license_obj_pack is not None:
+                    create_kwargs["license"] = license_obj_pack
+                if subscription_obj is not None:
+                    create_kwargs["subscription"] = subscription_obj
+
+                purchase = CreditPackPurchase.objects.create(**create_kwargs)  # type: ignore
+                purchase_created = True
+            else:
+                # Opportunistically backfill links if they were missing.
+                dirty = False
+                if license_obj_pack is not None and getattr(purchase, "license_id", None) in (None, ""):
+                    _set_if_field(purchase, "license", license_obj_pack)
+                    dirty = True
+                if subscription_obj is not None and getattr(purchase, "subscription_id", None) in (None, ""):
+                    _set_if_field(purchase, "subscription", subscription_obj)
+                    dirty = True
+                if dirty:
+                    try:
+                        purchase.save()
+                    except Exception:
+                        pass
+
+            # Ledger idempotency: exactly one pack_grant per purchase.
+            entry_type = getattr(CreditLedger, "TYPE_PACK_GRANT", "pack_grant")
+            has_entry = False
+            try:
+                has_entry = CreditLedger.objects.filter(credit_pack=purchase, entry_type=entry_type).exists()  # type: ignore
+            except Exception:
+                has_entry = False
+
+            ledger_created = False
+            if not has_entry:
+                ledger_kwargs: Dict[str, Any] = {
+                    "customer": customer_obj,
+                    "credit_pack": purchase,
+                    "subscription": subscription_obj,
+                    "license": license_obj_pack,
+                    "entry_type": entry_type,
+                    "amount": int(credits_granted),
+                    "description": f"Token pack ({pack_norm})",
+                    "meta": {
+                        "stripe_event_id": event_id,
+                        "stripe_session_id": session_id,
+                        "stripe_payment_intent_id": stripe_payment_intent_id,
+                        "pack_type": pack_norm,
+                        "credits_granted": int(credits_granted),
+                        "license_key": license_key_md or "",
+                    },
+                }
+                CreditLedger.objects.create(**ledger_kwargs)  # type: ignore
+                ledger_created = True
+
+        logger.info(
+            "PPA:token_pack granted=%s pack=%s email=%s session=%s created=%s ledger_created=%s",
+            credits_granted,
+            pack_norm,
+            customer_email,
+            session_id,
+            purchase_created,
+            ledger_created,
+        )
+
+        return JsonResponse(
+            {
+                "ok": True,
+                "ver": WEBHOOK_VER,
+                "data": {
+                    "event": event_type,
+                    "session_id": session_id,
+                    "payment_status": payment_status,
+                    "purchase_kind": "token_pack",
+                    "pack_type": pack_norm,
+                    "credits_granted": int(credits_granted),
+                    "ledger_created": bool(ledger_created),
+                    "email": customer_email,
+                },
+            }
+        )
+
+    # Metadata-driven tier, with locked fallback behavior
     raw_tier = md.get("tier") or md.get("plan") or md.get("plan_code") or md.get("tier_name") or ""
     tier = _normalize_tier(raw_tier)
     plan_code = _derive_plan_code(tier)
@@ -584,222 +762,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 except Exception:
                     logger.exception("PPA:license_upsert_failed session=%s", session_id)
 
-    
-
-    # ---------------------------
-    # Token Pack purchases (top-ups)
-    # ---------------------------
-    # One-time credit packs MUST NOT create plans, subscriptions, entitlements, or license emails.  # CHANGED:
-    if _is_token_pack_checkout(session=session, md=md, stripe_subscription_id=stripe_subscription_id):  # CHANGED:
-        pack_type = _token_pack_type_from_metadata(md)  # CHANGED:
-        license_key_md = _metadata_license_key(md)  # CHANGED:
-
-        if not is_paid:  # CHANGED:
-            return JsonResponse({  # CHANGED:
-                "ok": True,
-                "ver": WEBHOOK_VER,
-                "data": {
-                    "event": event_type,
-                    "handled": True,
-                    "purchase_kind": "token_pack",
-                    "session_id": session_id,
-                    "payment_status": payment_status,
-                    "pack_type": pack_type or None,
-                    "credits_granted": 0,
-                    "granted": False,
-                    "reason": "payment_not_paid",
-                },
-            })  # CHANGED:
-
-        credits_granted = 0  # CHANGED:
-        if pack_type:  # CHANGED:
-            credits_granted = _token_pack_credits(pack_type)  # CHANGED:
-
-        # Allow explicit override in metadata (safe for controlled checkout creation).  # CHANGED:
-        raw_credits = md.get("credits") or md.get("credits_granted") or md.get("tokens") or None  # CHANGED:
-        try:  # CHANGED:
-            if raw_credits is not None and str(raw_credits).strip().isdigit():  # CHANGED:
-                credits_granted = int(str(raw_credits).strip())  # CHANGED:
-        except Exception:  # CHANGED:
-            pass  # CHANGED:
-
-        if credits_granted <= 0:  # CHANGED:
-            return JsonResponse({  # CHANGED:
-                "ok": True,
-                "ver": WEBHOOK_VER,
-                "data": {
-                    "event": event_type,
-                    "handled": True,
-                    "purchase_kind": "token_pack",
-                    "session_id": session_id,
-                    "payment_status": payment_status,
-                    "pack_type": pack_type or None,
-                    "credits_granted": 0,
-                    "granted": False,
-                    "reason": "missing_or_invalid_pack",
-                },
-            })  # CHANGED:
-
-        # Create customer / attach license if we can (license is optional for packs).  # CHANGED:
-        Customer = _model("postpress_ai", "Customer")  # CHANGED:
-        License = _model("postpress_ai", "License")  # CHANGED:
-        Entitlement = _model("postpress_ai", "Entitlement")  # CHANGED:
-        CreditPackPurchase = _model("postpress_ai", "CreditPackPurchase")  # CHANGED:
-        CreditLedger = _model("postpress_ai", "CreditLedger")  # CHANGED:
-
-        license_for_pack = None  # CHANGED:
-        entitlement_for_license = None  # CHANGED:
-        customer_obj = None  # CHANGED:
-
-        if license_key_md:  # CHANGED:
-            try:  # CHANGED:
-                license_for_pack = License.objects.filter(key=license_key_md).first()  # type: ignore  # CHANGED:
-            except Exception:  # CHANGED:
-                license_for_pack = None  # CHANGED:
-
-        if license_for_pack is not None:  # CHANGED:
-            try:  # CHANGED:
-                entitlement_for_license = Entitlement.objects.filter(license=license_for_pack).order_by("-id").first()  # type: ignore  # CHANGED:
-                if entitlement_for_license is not None:  # CHANGED:
-                    customer_obj = getattr(entitlement_for_license, "customer", None)  # CHANGED:
-            except Exception:  # CHANGED:
-                entitlement_for_license = None  # CHANGED:
-
-        if customer_obj is None and customer_email:  # CHANGED:
-            try:  # CHANGED:
-                customer_obj, _ = Customer.objects.get_or_create(email=customer_email, defaults={})  # type: ignore  # CHANGED:
-                first, last = _split_name(customer_name)  # CHANGED:
-                if first:
-                    _set_if_field(customer_obj, "first_name", first)
-                if last:
-                    _set_if_field(customer_obj, "last_name", last)
-                _set_if_field(customer_obj, "last_seen_at", timezone.now())
-                try:
-                    customer_obj.save()
-                except Exception:
-                    pass
-            except Exception:  # CHANGED:
-                customer_obj = None  # CHANGED:
-
-        if customer_obj is None:  # CHANGED:
-            return JsonResponse({  # CHANGED:
-                "ok": True,
-                "ver": WEBHOOK_VER,
-                "data": {
-                    "event": event_type,
-                    "handled": True,
-                    "purchase_kind": "token_pack",
-                    "session_id": session_id,
-                    "payment_status": payment_status,
-                    "pack_type": pack_type or None,
-                    "credits_granted": 0,
-                    "granted": False,
-                    "reason": "missing_customer",
-                },
-            })  # CHANGED:
-
-        customer_db_id = getattr(customer_obj, "id", None)  # CHANGED:
-
-        # Idempotency: one credit pack per PaymentIntent (preferred) or Checkout Session id.  # CHANGED:
-        ident_field = "stripe_payment_intent_id" if stripe_payment_intent_id else "stripe_checkout_session_id"  # CHANGED:
-        ident_value = stripe_payment_intent_id or session_id  # CHANGED:
-
-        pack_obj = None  # CHANGED:
-        pack_created = False  # CHANGED:
-        ledger_created = False  # CHANGED:
-
-        with transaction.atomic():  # CHANGED:
-            try:  # CHANGED:
-                query = {ident_field: ident_value}  # CHANGED:
-                pack_obj = CreditPackPurchase.objects.filter(**query).order_by("-id").first()  # type: ignore  # CHANGED:
-            except Exception:  # CHANGED:
-                pack_obj = None  # CHANGED:
-
-            if pack_obj is None:  # CHANGED:
-                try:  # CHANGED:
-                    create_kwargs: Dict[str, Any] = {  # CHANGED:
-                        "customer": customer_obj,
-                        "pack_type": pack_type or CreditPackPurchase.PACK_SMALL,  # type: ignore
-                        "credits_granted": int(credits_granted),
-                        "stripe_payment_intent_id": stripe_payment_intent_id or "",
-                        "stripe_checkout_session_id": session_id or "",
-                        "currency": (currency or "usd") or "usd",
-                        "amount_cents": int(amount_total or 0) if amount_total is not None else 0,
-                        "meta": {
-                            "stripe_event_id": event_id,
-                            "tier": tier,
-                            "plan_code": plan_code,
-                            "license_key_masked": _mask_key(license_key_md) if license_key_md else "",
-                        },
-                    }  # CHANGED:
-                    if license_for_pack is not None:
-                        create_kwargs["license"] = license_for_pack
-                    if stripe_subscription_id:
-                        # Rare: a pack purchased inside a subscription checkout; link if available.
-                        try:
-                            Subscription = _model("postpress_ai", "Subscription")
-                            sub = Subscription.objects.filter(stripe_subscription_id=stripe_subscription_id).order_by("-id").first()  # type: ignore
-                            if sub is not None:
-                                create_kwargs["subscription"] = sub
-                        except Exception:
-                            pass
-
-                    pack_obj = CreditPackPurchase.objects.create(**create_kwargs)  # type: ignore  # CHANGED:
-                    pack_created = True  # CHANGED:
-                except Exception:  # CHANGED:
-                    logger.exception("PPA:credit_pack_create_failed session=%s", session_id)  # CHANGED:
-                    pack_obj = None  # CHANGED:
-
-            # Create ledger entry only once per credit pack.  # CHANGED:
-            if pack_obj is not None:  # CHANGED:
-                try:  # CHANGED:
-                    exists = CreditLedger.objects.filter(credit_pack=pack_obj, entry_type=CreditLedger.TYPE_PACK_GRANT).exists()  # type: ignore  # CHANGED:
-                except Exception:  # CHANGED:
-                    exists = False  # CHANGED:
-
-                if not exists:  # CHANGED:
-                    try:  # CHANGED:
-                        create_kwargs2: Dict[str, Any] = {  # CHANGED:
-                            "customer": customer_obj,
-                            "license": license_for_pack,
-                            "credit_pack": pack_obj,
-                            "entry_type": CreditLedger.TYPE_PACK_GRANT,
-                            "amount": int(credits_granted),
-                            "description": f"Token pack ({pack_type or 'unknown'})",
-                            "meta": {
-                                "stripe_event_id": event_id,
-                                "stripe_session_id": session_id,
-                                "stripe_payment_intent_id": stripe_payment_intent_id,
-                            },
-                        }  # CHANGED:
-                        # Remove null keys to avoid ORM errors if fields disallow null.
-                        if license_for_pack is None:
-                            create_kwargs2.pop("license", None)
-                        CreditLedger.objects.create(**create_kwargs2)  # type: ignore  # CHANGED:
-                        ledger_created = True  # CHANGED:
-                    except Exception:  # CHANGED:
-                        logger.exception("PPA:credit_ledger_create_failed session=%s", session_id)  # CHANGED:
-
-        return JsonResponse({  # CHANGED:
-            "ok": True,
-            "ver": WEBHOOK_VER,
-            "data": {
-                "event": event_type,
-                "handled": True,
-                "purchase_kind": "token_pack",
-                "session_id": session_id,
-                "payment_status": payment_status,
-                "email": customer_email,
-                "pack_type": pack_type or None,
-                "credits_granted": int(credits_granted),
-                "customer_db_id": customer_db_id,
-                "license_key_masked": _mask_key(license_key_md) if license_key_md else "",
-                "pack_created": pack_created,
-                "ledger_created": ledger_created,
-            },
-        })  # CHANGED:
-
-# Command Center wiring happens AFTER Order + License (LOCKED ordering)
+    # Command Center wiring happens AFTER Order + License (LOCKED ordering)
     customer_db_id = None
     plan_db_id = None
     subscription_db_id = None
