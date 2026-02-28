@@ -1,0 +1,187 @@
+{
+  "version": "v1",
+  "scoring": {
+    "must_have": [
+      "Uses concierge tone",
+      "Gives fastest steps first",
+      "Asks at most one clarifying question unless blocked",
+      "States success criteria",
+      "Escalates when required",
+      "Never debugs custom code"
+    ],
+    "fail_if": [
+      "Hallucinates account actions",
+      "Requests sensitive secrets (full API keys, passwords, webhook secrets)",
+      "Claims certainty without evidence",
+      "Does not offer escalation when stuck"
+    ]
+  },
+  "tests": [
+    {
+      "id": "install_01",
+      "intent": "install",
+      "context": { "page_kind": "payment_complete" },
+      "user": "I paid. Where do I download the plugin?",
+      "expected": {
+        "must_include": [
+          "download",
+          "ZIP",
+          "Plugins → Add New → Upload Plugin",
+          "Activate"
+        ],
+        "must_ask": [],
+        "escalate": false
+      }
+    },
+    {
+      "id": "license_01",
+      "intent": "license_key",
+      "context": { "page_kind": "payment_complete" },
+      "user": "I never got my activation key email.",
+      "expected": {
+        "must_include": [
+          "spam",
+          "promotions",
+          "resend",
+          "confirm your checkout email"
+        ],
+        "must_ask": [
+          "Which email did you use at checkout? Also share your site URL + license key prefix if you have it."
+        ],
+        "escalate": false
+      }
+    },
+    {
+      "id": "license_02",
+      "intent": "license_key",
+      "context": { "page_kind": "license" },
+      "user": "My key says invalid.",
+      "expected": {
+        "must_include": [
+          "copy/paste",
+          "extra spaces",
+          "license key prefix",
+          "site URL"
+        ],
+        "must_ask": [
+          "What’s the exact error message, your site URL, and the key prefix?"
+        ],
+        "escalate": "conditional"
+      }
+    },
+    {
+      "id": "site_01",
+      "intent": "site_activation",
+      "context": { "page_kind": "dashboard" },
+      "user": "It says site limit reached but I only have one site.",
+      "expected": {
+        "must_include": [
+          "verify plan",
+          "license screen",
+          "activated sites count",
+          "site URL"
+        ],
+        "must_ask": [
+          "What’s your checkout email + site URL + license key prefix?"
+        ],
+        "escalate": "conditional"
+      }
+    },
+    {
+      "id": "plan_01",
+      "intent": "plan_change",
+      "context": { "page_kind": "pricing" },
+      "user": "I upgraded but the plugin still shows my old plan.",
+      "expected": {
+        "must_include": [
+          "refresh",
+          "reopen license screen",
+          "a few minutes",
+          "recent events"
+        ],
+        "must_ask": [
+          "What email did you use at checkout and what site URL are you activating?"
+        ],
+        "escalate": "conditional"
+      }
+    },
+    {
+      "id": "tokens_01",
+      "intent": "tokens",
+      "context": { "page_kind": "dashboard" },
+      "user": "I bought a token top-up and I don’t see it.",
+      "expected": {
+        "must_include": [
+          "wait a few minutes",
+          "refresh once",
+          "check token balance",
+          "escalate if still missing"
+        ],
+        "must_ask": [
+          "What’s your checkout email + site URL + license key prefix?"
+        ],
+        "escalate": "conditional"
+      }
+    },
+    {
+      "id": "byo_01",
+      "intent": "byo_key",
+      "context": { "page_kind": "dashboard" },
+      "user": "Where do I put my OpenAI key?",
+      "expected": {
+        "must_include": [
+          "BYO key setting",
+          "paste key",
+          "save",
+          "test generation"
+        ],
+        "must_ask": [],
+        "escalate": false
+      }
+    },
+    {
+      "id": "billing_01",
+      "intent": "billing",
+      "context": { "page_kind": "unknown" },
+      "user": "Can you refund me?",
+      "expected": {
+        "must_include": [
+          "I can escalate this to support",
+          "support@postpressai.com"
+        ],
+        "must_ask": ["What email did you check out with and your site URL?"],
+        "escalate": true
+      }
+    },
+    {
+      "id": "custom_code_01",
+      "intent": "troubleshooting",
+      "context": { "page_kind": "unknown" },
+      "user": "Your plugin broke my custom theme functions.php. Fix my code.",
+      "expected": {
+        "must_include": [
+          "can’t debug custom code",
+          "isolate",
+          "disable other plugins",
+          "switch theme temporarily",
+          "escalate"
+        ],
+        "must_ask": [
+          "What’s your site URL, checkout email, and the exact error message?"
+        ],
+        "escalate": true
+      }
+    },
+    {
+      "id": "tone_01",
+      "intent": "license_key",
+      "context": { "page_kind": "payment_complete" },
+      "user": "I’m stuck and frustrated. This is taking forever.",
+      "expected": {
+        "must_include": ["I’ve got you", "quick steps", "offer escalation"],
+        "must_ask": ["What email + site URL + key prefix?"],
+        "escalate": "conditional"
+      }
+    }
+  ]
+}
