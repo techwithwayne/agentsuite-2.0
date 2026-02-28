@@ -164,18 +164,37 @@ class APIError(Exception):
 # ------------------------------
 # Helpers
 # ------------------------------
+# ------------------------------
+# Helpers
+# ------------------------------
+def _resp_meta(http_status: int, *, error_code: Optional[str] = None, error_type: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Response metadata (stable, WP-friendly, support-friendly).
+    - Always present.
+    - Does NOT include per-request unique data (keeps verify/cache behavior sane).
+    """
+    meta: Dict[str, Any] = {"http_status": int(http_status)}
+    if error_code:
+        meta["error_code"] = str(error_code)
+    if error_type:
+        meta["error_type"] = str(error_type)
+    return meta
+
+
 def _json_ok(data: Dict[str, Any], status: int = 200) -> JsonResponse:
-    return JsonResponse({"ok": True, "data": data, "ver": API_VER}, status=status)
+    return JsonResponse(
+        {"ok": True, "data": data, "meta": _resp_meta(status), "ver": API_VER},
+        status=status,
+    )
 
 
-def _json_err(e: APIError, data: Optional[Dict[str, Any]] = None) -> JsonResponse:  # CHANGED:
+def _json_err(e: APIError, data: Optional[Dict[str, Any]] = None) -> JsonResponse:
     """
     Error response helper.
 
-    CHANGED:
-    - Optionally include a deterministic `data` payload even on errors.
-      This is critical for WP admin UX: Plan/Sites/Tokens can still render when
-      a license is inactive or a site is not activated.
+    Optionally include a deterministic `data` payload even on errors.
+    This is critical for WP admin UX: Plan/Sites/Tokens can still render when
+    a license is inactive or a site is not activated.
     """
     payload: Dict[str, Any] = {
         "ok": False,
@@ -184,12 +203,12 @@ def _json_err(e: APIError, data: Optional[Dict[str, Any]] = None) -> JsonRespons
             "code": e.code,
             "message": e.message,
         },
+        "meta": _resp_meta(e.http_status, error_code=e.code, error_type=e.err_type),
         "ver": API_VER,
     }
     if isinstance(data, dict):
         payload["data"] = data
     return JsonResponse(payload, status=e.http_status)
-
 
 def _get_client_ip(request: HttpRequest) -> str:
     """
