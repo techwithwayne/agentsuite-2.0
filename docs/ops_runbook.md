@@ -1,4 +1,4 @@
-﻿# PostPress AI — Ops Runbook (Source of Truth)
+﻿# PostPress AI  Ops Runbook (Source of Truth)
 
 ## Truth sources (no guessing)
 - **CODE truth:** GitHub `origin/licensing`
@@ -16,8 +16,8 @@ Pass means:
 
 ## Render safe key export (PROD)
 ```bash
-export LIC_KEY="$(python manage.py shell --verbosity 0 -c 'from postpress_ai.models.license import License; print(License.objects.order_by("-id").values_list("key", flat=True).first() or "")')"
-echo "LIC_KEY=${LIC_KEY:0:8}…"
+export LIC_KEY="$(python manage.py shell --verbosity 0 -c 'from postpress_ai.models.license import License; print(License.objects.order_by(\"-id\").values_list(\"key\", flat=True).first() or \"\")')"
+echo "LIC_KEY=${LIC_KEY:0:8}"
 ```
 
 ## License sanity checks (PROD)
