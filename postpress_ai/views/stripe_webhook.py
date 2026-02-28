@@ -1,4 +1,3 @@
-
 """
 PostPress AI — Stripe Webhook (Django-only fulfillment layer)
 Path: postpress_ai/views/stripe_webhook.py
@@ -20,17 +19,21 @@ ENV VARS (LOCKED BEHAVIOR)
 - STRIPE_WEBHOOK_SECRET (fallback for legacy deployments)                      # CHANGED:
 
 CHANGE LOG
+- 2026-02-28: FIX: Prefer session.metadata.plan_slug for plan_code resolution (prevents solo → tyler fallback)
+              while preserving legacy tier fallback behavior.
+              FIX: Basil compatibility: persist current_period_start/end from subscription.items.data[0].current_period_*
+              (subscription-level current_period_* are deprecated and may be None).  # CHANGED:
 - 2026-02-27: FIX: Command Center wiring now supplies required Entitlement defaults (customer+plan)
-             and always ensures active entitlements have a license_id for paid checkouts.
-             Also fixes Order/Customer/Plan field mapping and blocks email unless paid.  # CHANGED:
+              and always ensures active entitlements have a license_id for paid checkouts.
+              Also fixes Order/Customer/Plan field mapping and blocks email unless paid.  # CHANGED:
 - 2026-02-26: FIX: Allow one endpoint to accept BOTH live + test/sandbox webhook signatures
-             by trying multiple secrets in a safe order (env var names only; never log secrets).  # CHANGED:
+              by trying multiple secrets in a safe order (env var names only; never log secrets).  # CHANGED:
 - 2026-01-11: FIX: Remove stray CHANGE LOG text that got pasted into runtime code (syntax breaker).  # CHANGED:
 - 2026-01-11: ADD mode-aware webhook secret selection via PPA_STRIPE_MODE and
-             STRIPE_{LIVE|TEST}_WEBHOOK_SECRET with fallback STRIPE_WEBHOOK_SECRET.
-             Log mode + env var name only; never log secret.                   # CHANGED:
+              STRIPE_{LIVE|TEST}_WEBHOOK_SECRET with fallback STRIPE_WEBHOOK_SECRET.
+              Log mode + env var name only; never log secret.                   # CHANGED:
 - 2026-01-11: HARDEN EmailLog idempotency: lookup pre-migration safe (no column assumption)
-             + IntegrityError guard for concurrent deliveries when unique constraint exists. # CHANGED:
+              + IntegrityError guard for concurrent deliveries when unique constraint exists. # CHANGED:
 - 2026-01-10: Webhook persists Order + License first, then Command Center wiring, then EmailLog + email.
 """
 
@@ -39,6 +42,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone as dt_timezone  # CHANGED
 from typing import Any, Dict, Optional, Tuple
 
 import stripe
@@ -51,7 +55,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_VER = "stripe-webhook.v2026-02-27.1"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-02-28.1"  # CHANGED:
 
 
 # ---------------------------
@@ -87,6 +91,36 @@ def _get_stripe_webhook_secret_info() -> Tuple[str, str, str]:  # CHANGED:
         )  # CHANGED:
 
     return secret, source, mode  # CHANGED:
+
+
+def _get_stripe_api_key_info(mode: str) -> Tuple[str, str]:  # CHANGED:
+    """
+    Best-effort Stripe API key selection (used ONLY for non-critical enrichment, e.g. subscription periods).
+
+    Returns: (api_key, source_env_var_name)
+    - Prefers STRIPE_{LIVE|TEST}_SECRET_KEY based on PPA_STRIPE_MODE
+    - Falls back to STRIPE_SECRET_KEY
+    - Falls back to the other mode key as a last resort
+    - NEVER logs the secret value
+    """
+    m = (mode or "live").strip().lower()
+    if m not in ("live", "test"):
+        m = "live"
+
+    primary = "STRIPE_LIVE_SECRET_KEY" if m == "live" else "STRIPE_TEST_SECRET_KEY"
+    key = os.getenv(primary, "") or ""
+    source = primary
+
+    if not key:
+        key = os.getenv("STRIPE_SECRET_KEY", "") or ""
+        source = "STRIPE_SECRET_KEY"
+
+    if not key:
+        other = "STRIPE_TEST_SECRET_KEY" if m == "live" else "STRIPE_LIVE_SECRET_KEY"
+        key = os.getenv(other, "") or ""
+        source = other if key else source
+
+    return key, source
 
 
 def _mask_key(key: str) -> str:
@@ -143,6 +177,26 @@ def _normalize_tier(raw: Optional[str]) -> str:
     return s
 
 
+def _normalize_plan_code_from_slug(raw: Optional[str]) -> str:  # CHANGED:
+    """
+    Plan code derived from session.metadata.plan_slug (preferred for modern flows).
+
+    Notes:
+    - Keeps Tyler Early Bird normalization by mapping early_bird → tyler.
+    - Does NOT apply legacy tier normalization (tier=solo → tyler). That legacy behavior remains in _normalize_tier().
+    """
+    s = (raw or "").strip().lower()
+    if not s:
+        return ""
+    if s in {"early_bird", "earlybird", "early-bird", "tyler early bird", "tyler_early_bird", "tyler"}:
+        return "tyler"
+    if s in {"agency_byo", "agency-unlimited-byo", "agency_unlimited"}:
+        return "agency_unlimited_byo"
+    if s == "agency_unlimited_byo":
+        return "agency_unlimited_byo"
+    return s
+
+
 def _derive_plan_code(tier: str) -> str:
     """
     LOCKED: Plan fallback.
@@ -184,9 +238,7 @@ def _plan_code_to_license_slug(plan_code: str) -> str:  # CHANGED:
         return "tyler"
     if code == "agency_unlimited_byo":
         return "agency_byo"
-    if code == "solo":  # legacy alias
-        return "tyler"
-    return code
+    return code  # CHANGED: allow solo → solo (prevents solo checkouts becoming tyler licenses)
 
 
 def _default_plan_seed(plan_code: str) -> Dict[str, Any]:  # CHANGED:
@@ -363,7 +415,9 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             continue
 
     if event is None:  # CHANGED:
-        logger.warning("PPA:stripe_webhook invalid_signature sources_tried=%s", ",".join([src for _, src in candidates]))  # CHANGED:
+        logger.warning(
+            "PPA:stripe_webhook invalid_signature sources_tried=%s", ",".join([src for _, src in candidates])
+        )  # CHANGED:
         return JsonResponse({"ok": False, "error": "invalid_signature", "ver": WEBHOOK_VER}, status=400)
 
     logger.info("PPA:stripe_webhook signature_ok source=%s", used_source)  # CHANGED:
@@ -390,7 +444,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     is_paid = payment_status == "paid"
 
     # Metadata + mode
-    md = session.get("metadata") or {}
+    md = {str(k).strip(): v for k, v in (session.get("metadata") or {}).items()}  # CHANGED
     session_mode = (session.get("mode") or "").strip().lower()  # CHANGED:
 
     # ---------------------------
@@ -640,10 +694,21 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             }
         )
 
-    # Metadata-driven tier, with locked fallback behavior
-    raw_tier = md.get("tier") or md.get("plan") or md.get("plan_code") or md.get("tier_name") or ""
-    tier = _normalize_tier(raw_tier)
-    plan_code = _derive_plan_code(tier)
+    # CHANGED: Prefer plan_slug for plan selection (prevents solo → tyler fallback)
+    raw_plan_slug = (
+        md.get("plan_slug")
+        or md.get("ppa_plan_slug")
+        or md.get("ppa_plan")
+        or ""
+    )
+    plan_code = _normalize_plan_code_from_slug(str(raw_plan_slug) if raw_plan_slug is not None else "")
+    if plan_code:
+        tier = plan_code  # used for email + response payloads  # CHANGED
+    else:
+        # Metadata-driven tier, with locked fallback behavior (legacy)
+        raw_tier = md.get("tier") or md.get("plan") or md.get("plan_code") or md.get("tier_name") or ""
+        tier = _normalize_tier(str(raw_tier))
+        plan_code = _derive_plan_code(tier)
 
     # Persist Order FIRST (idempotent by stripe_session_id)  # CHANGED:
     Order = _model("postpress_ai", "Order")
@@ -768,7 +833,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     subscription_db_id = None
     entitlement_db_id = None
 
-
     try:
         Customer = _model("postpress_ai", "Customer")
         Plan = _model("postpress_ai", "Plan")
@@ -841,6 +905,41 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                     _set_if_field(subscription_obj, "stripe_subscription_id", stripe_subscription_id)
                     _set_if_field(subscription_obj, "stripe_payment_intent_id", stripe_payment_intent_id)
                     _set_if_field(subscription_obj, "stripe_checkout_session_id", session_id)
+
+                    # CHANGED: Basil-safe period persistence (item-level current_period_* when available)
+                    if stripe_subscription_id:
+                        api_key, api_source = _get_stripe_api_key_info(mode)
+                        if api_key:
+                            try:
+                                stripe.api_key = api_key
+                                sub_obj = stripe.Subscription.retrieve(stripe_subscription_id)
+                                cap = sub_obj.get("cancel_at_period_end")
+                                if cap is not None:
+                                    _set_if_field(subscription_obj, "cancel_at_period_end", bool(cap))
+
+                                items = (sub_obj.get("items") or {}).get("data") or []
+                                it0 = items[0] if items else {}
+                                cps = (it0 or {}).get("current_period_start") or sub_obj.get("current_period_start")
+                                cpe = (it0 or {}).get("current_period_end") or sub_obj.get("current_period_end")
+
+                                if cps:
+                                    _set_if_field(
+                                        subscription_obj,
+                                        "current_period_start",
+                                        datetime.fromtimestamp(int(cps), tz=dt_timezone.utc),
+                                    )
+                                if cpe:
+                                    _set_if_field(
+                                        subscription_obj,
+                                        "current_period_end",
+                                        datetime.fromtimestamp(int(cpe), tz=dt_timezone.utc),
+                                    )
+                            except Exception:
+                                logger.exception(
+                                    "PPA:stripe_subscription_retrieve_failed sub=%s source=%s",
+                                    stripe_subscription_id,
+                                    api_source,
+                                )
 
                     try:
                         subscription_obj.save()
@@ -945,7 +1044,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
     except Exception:
         logger.exception("PPA:command_center_wiring_failed session=%s", session_id)
 
-# If we don't have the minimum for email, still return OK (Stripe wants 2xx).
+    # If we don't have the minimum for email, still return OK (Stripe wants 2xx).
     if not customer_email or not event_id:
         return JsonResponse(
             {
@@ -996,7 +1095,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                 },
             }
         )
-
 
     # Email delivery (idempotent on Stripe retries)
     existing = _email_log_lookup_locked(to_email=customer_email, stripe_event_id=event_id)  # CHANGED:
@@ -1068,7 +1166,6 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
                     pass
         except Exception:
             pass
-
 
     if not license_key:  # CHANGED:
         logger.warning("PPA:missing_license_key session=%s entitlement=%s", session_id, entitlement_db_id)  # CHANGED:
