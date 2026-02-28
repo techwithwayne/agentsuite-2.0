@@ -41,12 +41,12 @@ CHANGE LOG
 - ADD: Project-level /postpress-ai/support/chat/ endpoint + no-slash alias to stop 404/301.   # CHANGED:
        Support chat must be project-level for precedence and must avoid 301 for WP POSTs.     # CHANGED:
 - FIX: Add minimal CORS+OPTIONS handling for /postpress-ai/support/* so browser JS can call it. # CHANGED:
-       WP admin calls cross-origin w/ custom header -> triggers preflight OPTIONS.             # CHANGED:
+       WP admin calls cross-origin -> triggers preflight OPTIONS.                              # CHANGED:
 - FIX: Inject shared secret server-side for support chat browser calls to prevent 403.         # CHANGED:
        Browser widget must not need to carry the shared secret; backend injects it.            # CHANGED:
+- FIX: CSRF-exempt the wrapper + alias dispatcher (Render curl/browser were blocked).          # CHANGED:
 """
 
-# /home/techwithwayne/agentsuite/agentsuite/urls.py
 """
 CHANGE LOG
 ----------
@@ -61,6 +61,7 @@ from django.conf import settings  # CHANGED:
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import path, include, re_path, resolve  # CHANGED:
+from django.views.decorators.csrf import csrf_exempt  # CHANGED:
 
 from postpress_ai import views as ppa_views
 from postpress_ai.views.store import store_view
@@ -109,6 +110,7 @@ def _alias_to(canonical_path: str):
     trailing-slash endpoint via django.urls.resolve().                                  # CHANGED:
     """
 
+    @csrf_exempt  # CHANGED: alias dispatcher must not be blocked by CSRF
     def _view(request, *args, **kwargs):  # noqa: ARG001
         orig_path = getattr(request, "path", "")
         orig_path_info = getattr(request, "path_info", "")
@@ -116,12 +118,9 @@ def _alias_to(canonical_path: str):
         orig_meta_request_uri = request.META.get("REQUEST_URI")
 
         try:
-            # Pretend the request arrived at the canonical URL so downstream logic
-            # (headers/logging/build_absolute_uri/etc.) behaves consistently.           # CHANGED:
             request.path = canonical_path
             request.path_info = canonical_path
             request.META["PATH_INFO"] = canonical_path
-            # Keep querystring if present.
             if request.META.get("QUERY_STRING"):
                 request.META["REQUEST_URI"] = canonical_path + "?" + request.META["QUERY_STRING"]
             else:
@@ -130,7 +129,6 @@ def _alias_to(canonical_path: str):
             match = resolve(canonical_path)
             return match.func(request, *match.args, **match.kwargs)
         finally:
-            # Restore request to original values to avoid confusing later middleware.  # CHANGED:
             request.path = orig_path
             request.path_info = orig_path_info
             if orig_meta_path_info is None:
@@ -147,11 +145,8 @@ def _alias_to(canonical_path: str):
 
 # -------------------------------------------------------------------------
 # Minimal CORS wrapper for WP admin cross-origin fetch() calls               # CHANGED:
-# Why: custom headers trigger OPTIONS preflight; without CORS headers the     # CHANGED:
-# browser blocks the request and the support UI appears "dead".              # CHANGED:
-#
-# ALSO: Support chat auth requires shared secret; browser widget should NOT   # CHANGED:
-# carry it. We inject it server-side for /postpress-ai/support/chat/.         # CHANGED:
+# ALSO: Support chat auth requires shared secret; browser widget should NOT  # CHANGED:
+# carry it. We inject it server-side for /postpress-ai/support/chat/.        # CHANGED:
 # -------------------------------------------------------------------------
 def _add_cors_headers(resp, origin: str, allow_methods: str) -> None:  # CHANGED:
     if origin:
@@ -167,7 +162,6 @@ def _add_cors_headers(resp, origin: str, allow_methods: str) -> None:  # CHANGED
 
 
 def _inject_shared_secret_if_missing(request) -> None:  # CHANGED:
-    # If the browser didn't send a secret (expected), inject it so support_chat auth passes.
     if request.META.get("HTTP_X_PPA_SHARED_SECRET"):
         return
     if request.META.get("HTTP_X_PPA_WP_SHARED_SECRET"):
@@ -183,6 +177,7 @@ def _inject_shared_secret_if_missing(request) -> None:  # CHANGED:
 
 
 def _cors(view_func, allow_methods: str = "POST, OPTIONS", inject_secret: bool = False):  # CHANGED:
+    @csrf_exempt  # CHANGED: wrapper must be CSRF-exempt (Render curl/browser were blocked)
     def _wrapped(request, *args, **kwargs):
         origin = request.headers.get("Origin", "")
 
@@ -202,13 +197,16 @@ def _cors(view_func, allow_methods: str = "POST, OPTIONS", inject_secret: bool =
     return _wrapped
 
 
-# CORS-safe support endpoints (WP browser calls)                               # CHANGED:
-support_chat_cors = _cors(  # CHANGED:
+support_chat_cors = _cors(
     support_chat,
     allow_methods="POST, OPTIONS",
-    inject_secret=True,  # CHANGED: fixes 403 missing_shared_secret
+    inject_secret=True,  # fixes missing_shared_secret for browser widget
 )
-support_diag_cors = _cors(support_diag, allow_methods="GET, OPTIONS", inject_secret=False)  # CHANGED:
+support_diag_cors = _cors(
+    support_diag,
+    allow_methods="GET, OPTIONS",
+    inject_secret=False,
+)
 
 
 urlpatterns = [
@@ -250,15 +248,11 @@ urlpatterns = [
 
     path("postpress-ai/license/debug-auth/", license_debug_auth),
 
-    # CHANGED: Support diagnostics (non-secret) + CORS wrapper
     path("postpress-ai/support/diag/", support_diag_cors, name="ppa_support_diag"),  # CHANGED:
-
-    # CHANGED: Support chat (shared-secret) + CORS wrapper + SERVER-SIDE SECRET INJECTION
     path("postpress-ai/support/chat/", support_chat_cors, name="ppa_support_chat"),  # CHANGED:
 
     path("postpress-ai/stripe/webhook/", stripe_webhook),
 
-    # ✅ Stripe Checkout Create (now import-safe)
     path(
         "postpress-ai/stripe/checkout/create/",
         create_checkout_session,
@@ -289,7 +283,6 @@ urlpatterns = [
 
 
 # === Optional/Monorepo routes (guarded) ============================================
-# Some deployments do not have the 'apps' package checked out; include only if importable.
 try:
     import importlib
 
