@@ -19,6 +19,3 @@ pip install -e .
 - Local preflight: `make preflight` (or run `powershell -ExecutionPolicy Bypass -File .\tools\ppa_preflight.ps1`)
 - Runbook: `docs/ops_runbook.md`
 
-## Ops Quickstart
-- Local preflight: `make preflight` (or run `powershell -ExecutionPolicy Bypass -File .\tools\ppa_preflight.ps1`)
-- Runbook: `docs/ops_runbook.md`
