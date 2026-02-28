@@ -1,4 +1,4 @@
-# PostPress AI - Makefile (gentle smokes + ops)
+﻿# PostPress AI - Makefile (gentle smokes + ops)
 # This file avoids TAB issues by using .RECIPEPREFIX so recipe lines start with "> ".
 .RECIPEPREFIX := >
 SHELL := /bin/bash
@@ -96,3 +96,6 @@ push:
 >   git commit -m "chore: sync PostPress AI normalize-only workflow" || true; \
 > fi && \
 > git push || echo "WARN: push failed (auth/network?)"
+
+preflight:
+	powershell -ExecutionPolicy Bypass -File .\tools\ppa_preflight.ps1
