@@ -97,5 +97,6 @@ push:
 > fi && \
 > git push || echo "WARN: push failed (auth/network?)"
 
+.PHONY: preflight
 preflight:
 	powershell -ExecutionPolicy Bypass -File .\tools\ppa_preflight.ps1
