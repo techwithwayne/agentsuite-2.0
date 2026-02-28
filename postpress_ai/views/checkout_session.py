@@ -40,6 +40,11 @@ Optional:
 - KEEP: CSRF exempt checkout create endpoint (server-to-server + curl).                          # CHANGED:
 - KEEP: cache-based rate limiting + idempotency key support.                                     # CHANGED:
 - KEEP: safe response envelope {ok,data,error,ver}.                                              # CHANGED:
+
+2026-02-28
+- ADD: Pass through license_key + pack metadata into BOTH Checkout Session metadata and
+       PaymentIntent metadata so webhook can grant token packs safely.                            # CHANGED:
+- ADD: If ppa_kind=pack and license_key missing, return 400 early to prevent ungrantable buys.    # CHANGED:
 """
 
 from __future__ import annotations  # CHANGED:
@@ -53,12 +58,12 @@ from typing import Any, Dict, Optional, Tuple  # CHANGED:
 from django.core.cache import cache  # CHANGED:
 from django.http import HttpRequest, JsonResponse  # CHANGED:
 from django.utils.crypto import salted_hmac  # CHANGED:
-from django.views.decorators.http import require_POST  # CHANGED:
 from django.views.decorators.csrf import csrf_exempt  # CHANGED:
+from django.views.decorators.http import require_POST  # CHANGED:
 
 logger = logging.getLogger(__name__)  # CHANGED:
 
-VER = "checkout_session.v1.2025-12-27.3"  # CHANGED: bump for visibility
+VER = "checkout_session.v1.2026-02-28.1"  # CHANGED: bump for visibility
 
 
 @dataclass(frozen=True)  # CHANGED:
@@ -219,6 +224,28 @@ def _idempotency_key(email: str, price_id: str, mode: str, success_url: str, can
     return f"ppa_checkout_{digest[:40]}"  # CHANGED:
 
 
+def _coerce_metadata_value(val: Any) -> Optional[str]:  # CHANGED:
+    """Stripe metadata values must be strings (<= ~500 chars)."""  # CHANGED:
+    if val is None:  # CHANGED:
+        return None  # CHANGED:
+    if isinstance(val, str):  # CHANGED:
+        s = val.strip()  # CHANGED:
+    elif isinstance(val, (int, float, bool)):  # CHANGED:
+        s = str(val)  # CHANGED:
+    elif isinstance(val, (dict, list, tuple)):  # CHANGED:
+        try:  # CHANGED:
+            s = json.dumps(val, separators=(",", ":"), ensure_ascii=True)  # CHANGED:
+        except Exception:  # CHANGED:
+            s = str(val)  # CHANGED:
+    else:  # CHANGED:
+        s = str(val).strip()  # CHANGED:
+
+    s = (s or "").strip()  # CHANGED:
+    if not s:  # CHANGED:
+        return None  # CHANGED:
+    return s[:500]  # CHANGED:
+
+
 @csrf_exempt  # CHANGED:
 @require_POST  # CHANGED:
 def create_checkout_session(request: HttpRequest) -> JsonResponse:  # CHANGED:
@@ -229,7 +256,15 @@ def create_checkout_session(request: HttpRequest) -> JsonResponse:  # CHANGED:
         "name": "Buyer Name" (optional),
         "promo": "optional string",
         "success_url": "optional override",
-        "cancel_url": "optional override"
+        "cancel_url": "optional override",
+
+        "license_key": "PPA-..." (optional; REQUIRED when ppa_kind=pack),                         # CHANGED:
+        "ppa_license_key": "PPA-..." (alias),                                                     # CHANGED:
+
+        "ppa_kind": "pack" (optional),                                                            # CHANGED:
+        "pack_type": "small" (optional),                                                         # CHANGED:
+        "pack_tokens": 120000 (optional),                                                         # CHANGED:
+        "billing_period": "one_time" (optional)                                                   # CHANGED:
       }
     """
     try:  # CHANGED:
@@ -247,8 +282,23 @@ def create_checkout_session(request: HttpRequest) -> JsonResponse:  # CHANGED:
     name = (data.get("name") or "").strip()  # CHANGED:
     promo = (data.get("promo") or "").strip()  # CHANGED:
 
+    # NEW: optional pack + license mapping metadata (enables webhook to grant packs).             # CHANGED:
+    license_key = (data.get("license_key") or data.get("ppa_license_key") or "").strip()  # CHANGED:
+    ppa_kind = (data.get("ppa_kind") or "").strip()  # CHANGED:
+    pack_type = (data.get("pack_type") or "").strip()  # CHANGED:
+    pack_tokens = _coerce_metadata_value(data.get("pack_tokens")) or ""  # CHANGED:
+    billing_period = (data.get("billing_period") or "").strip()  # CHANGED:
+
     if not email or "@" not in email:  # CHANGED:
         return _json_error("Valid email is required.", 400, code="invalid_email")  # CHANGED:
+
+    # Prevent ungrantable token-pack purchases (webhook needs license_key).                        # CHANGED:
+    if ppa_kind.strip().lower() == "pack" and not license_key:  # CHANGED:
+        return _json_error(
+            "license_key is required for token packs.",
+            400,
+            code="missing_license_key",
+        )  # CHANGED:
 
     try:  # CHANGED:
         cfg = _get_checkout_config()  # CHANGED:
@@ -269,31 +319,58 @@ def create_checkout_session(request: HttpRequest) -> JsonResponse:  # CHANGED:
 
     idem_key = _idempotency_key(email, cfg.price_id, cfg.mode, success_url, cancel_url)  # CHANGED:
 
+    # Build metadata for BOTH Checkout Session and PaymentIntent.                                  # CHANGED:
+    extra_meta: Dict[str, str] = {}  # CHANGED:
+
+    v = _coerce_metadata_value(license_key)  # CHANGED:
+    if v:  # CHANGED:
+        extra_meta["license_key"] = v  # CHANGED:
+
+    v = _coerce_metadata_value(ppa_kind)  # CHANGED:
+    if v:  # CHANGED:
+        extra_meta["ppa_kind"] = v  # CHANGED:
+
+    v = _coerce_metadata_value(pack_type)  # CHANGED:
+    if v:  # CHANGED:
+        extra_meta["pack_type"] = v  # CHANGED:
+
+    v = _coerce_metadata_value(pack_tokens)  # CHANGED:
+    if v:  # CHANGED:
+        extra_meta["pack_tokens"] = v  # CHANGED:
+
+    v = _coerce_metadata_value(billing_period)  # CHANGED:
+    if v:  # CHANGED:
+        extra_meta["billing_period"] = v  # CHANGED:
+
+    session_meta: Dict[str, str] = {  # CHANGED:
+        "ppa_ver": VER,  # CHANGED:
+        "buyer_email": email,  # CHANGED:
+        "buyer_name": name,  # CHANGED:
+        "promo": promo,  # CHANGED:
+        "ip": ip,  # CHANGED:
+        "stripe_mode": cfg.mode,  # CHANGED:
+    }  # CHANGED:
+    session_meta.update(extra_meta)  # CHANGED:
+
+    pi_meta: Dict[str, str] = {  # CHANGED:
+        "ppa_ver": VER,  # CHANGED:
+        "buyer_email": email,  # CHANGED:
+        "buyer_name": name,  # CHANGED:
+        "stripe_mode": cfg.mode,  # CHANGED:
+    }  # CHANGED:
+    pi_meta.update(extra_meta)  # CHANGED:
+
     try:  # CHANGED:
-        session = stripe.checkout.Session.create(  # CHANGED:
+        session = stripe.checkout.Session.create(
             mode="payment",  # CHANGED:
             line_items=[{"price": cfg.price_id, "quantity": 1}],  # CHANGED:
             success_url=success_url + "?session_id={CHECKOUT_SESSION_ID}",  # CHANGED:
             cancel_url=cancel_url,  # CHANGED:
             customer_email=email,  # CHANGED:
             allow_promotion_codes=True,  # CHANGED:
-            metadata={  # CHANGED:
-                "ppa_ver": VER,  # CHANGED:
-                "buyer_email": email,  # CHANGED:
-                "buyer_name": name,  # CHANGED:
-                "promo": promo,  # CHANGED:
-                "ip": ip,  # CHANGED:
-                "stripe_mode": cfg.mode,  # CHANGED:
-            },  # CHANGED:
+            metadata=session_meta,  # CHANGED:
             client_reference_id=email,  # CHANGED:
-            payment_intent_data={  # CHANGED:
-                "metadata": {  # CHANGED:
-                    "ppa_ver": VER,  # CHANGED:
-                    "buyer_email": email,  # CHANGED:
-                    "buyer_name": name,  # CHANGED:
-                    "stripe_mode": cfg.mode,  # CHANGED:
-                }  # CHANGED:
-            },  # CHANGED:
+            payment_intent_data={"metadata": pi_meta},  # CHANGED:
             idempotency_key=idem_key,  # CHANGED:
         )
 
