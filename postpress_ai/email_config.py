@@ -1,56 +1,27 @@
-"""
+﻿"""
 postpress_ai.email_config
 
-Centralized, env-driven email configuration for PostPress AI (transactional email).
-This exists so we can support multiple providers cleanly without rewriting fulfillment logic.
+Env-driven email configuration for PostPress AI (transactional email).
 
-WHY THIS FILE EXISTS
-- We already send transactional emails (license keys).
-- Transactional email should NOT depend on Mailchimp marketing campaigns.
-- Anymail is already in play in your stack (per the AnymailInvalidAddress error), so we standardize it.
+GOAL
+- NO django-anymail dependency.
+- Use Django's built-in email backends:
+  - SMTP (recommended for real delivery)
+  - Console (safe fallback)
 
-LOCKED INTENT
-- Django sends transactional emails (license keys).
-- Provider choice is infra-only (env vars), not business logic.
+ENV
+- PPA_EMAIL_PROVIDER: "auto" | "smtp" | "console"   (default: auto)
+- DEFAULT_FROM_EMAIL: default sender
 
-SUPPORTED PROVIDERS (set PPA_EMAIL_PROVIDER)
-- postmark   (recommended: simplest + great deliverability)
-- mailgun
-- sendgrid
-- ses
-- mandrill   (Mailchimp Transactional)
-- smtp       (fallback / basic)
+SMTP (if provider=auto or smtp)
+- EMAIL_HOST / SMTP_HOST
+- EMAIL_PORT
+- EMAIL_HOST_USER / SMTP_USER
+- EMAIL_HOST_PASSWORD / SMTP_PASSWORD
+- EMAIL_USE_TLS
+- EMAIL_USE_SSL
 
-ENV VARS (common)
-- PPA_EMAIL_PROVIDER            (default: "postmark")
-- DEFAULT_FROM_EMAIL            (recommended)
-- PPA_SUPPORT_EMAIL             (optional; used in email body)
-- PPA_PRODUCT_NAME              (optional; used in email body)
-
-Provider-specific ENV (examples)
-POSTMARK
-- POSTMARK_SERVER_TOKEN
-
-MAILGUN
-- MAILGUN_API_KEY
-- MAILGUN_SENDER_DOMAIN
-
-SENDGRID
-- SENDGRID_API_KEY
-
-SES
-- AWS_ACCESS_KEY_ID
-- AWS_SECRET_ACCESS_KEY
-- AWS_REGION
-
-MANDRILL (Mailchimp Transactional)
-- MANDRILL_API_KEY
-
-SMTP
-- EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, EMAIL_USE_TLS/SSL
-
-========= CHANGE LOG =========
-2025-12-26 • ADD: Env-driven email provider config helper for Anymail/SMPP.  # CHANGED:
+If SMTP is not configured, provider=auto falls back to console backend.
 """
 
 from __future__ import annotations
@@ -68,98 +39,46 @@ def _bool_env(name: str, default: str = "0") -> bool:
     return v in ("1", "true", "yes", "on")
 
 
-def get_email_settings() -> Dict[str, object]:  # CHANGED:
-    """
-    Returns a dict of Django settings to merge into your settings module.
+def _int_env(name: str, default: str) -> int:
+    try:
+        return int(_env(name, default) or default)
+    except Exception:
+        return int(default)
 
-    Usage (next file step in your settings.py):
-        from postpress_ai.email_config import get_email_settings
-        globals().update(get_email_settings())
-    """
-    provider = _env("PPA_EMAIL_PROVIDER", "postmark").lower()
 
-    # Always provide these sane defaults; you can override via env.  # CHANGED:
+def _smtp_is_configured() -> bool:
+    return bool(_env("EMAIL_HOST") or _env("SMTP_HOST"))
+
+
+def get_email_settings() -> Dict[str, object]:
+    provider = _env("PPA_EMAIL_PROVIDER", "auto").lower()
+    if provider not in ("auto", "smtp", "console"):
+        provider = "auto"
+
     base: Dict[str, object] = {
         "DEFAULT_FROM_EMAIL": _env("DEFAULT_FROM_EMAIL", "no-reply@localhost"),
-        # Optional: keep a predictable subject prefix if you want later.
-        # "EMAIL_SUBJECT_PREFIX": _env("EMAIL_SUBJECT_PREFIX", ""),
     }
 
-    # --- Provider: Postmark (recommended) ---
-    if provider == "postmark":
+    # Console backend (always safe)
+    if provider == "console":
+        base.update({"EMAIL_BACKEND": "django.core.mail.backends.console.EmailBackend"})
+        return base
+
+    # SMTP backend (recommended)
+    if provider == "smtp" or (provider == "auto" and _smtp_is_configured()):
         base.update(
             {
-                "EMAIL_BACKEND": "anymail.backends.postmark.EmailBackend",
-                "ANYMAIL": {
-                    "POSTMARK_SERVER_TOKEN": _env("POSTMARK_SERVER_TOKEN"),
-                },
+                "EMAIL_BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+                "EMAIL_HOST": _env("EMAIL_HOST") or _env("SMTP_HOST", "localhost"),
+                "EMAIL_PORT": _int_env("EMAIL_PORT", "587"),
+                "EMAIL_HOST_USER": _env("EMAIL_HOST_USER") or _env("SMTP_USER", ""),
+                "EMAIL_HOST_PASSWORD": _env("EMAIL_HOST_PASSWORD") or _env("SMTP_PASSWORD", ""),
+                "EMAIL_USE_TLS": _bool_env("EMAIL_USE_TLS", "1"),
+                "EMAIL_USE_SSL": _bool_env("EMAIL_USE_SSL", "0"),
             }
         )
         return base
 
-    # --- Provider: Mailgun ---
-    if provider == "mailgun":
-        base.update(
-            {
-                "EMAIL_BACKEND": "anymail.backends.mailgun.EmailBackend",
-                "ANYMAIL": {
-                    "MAILGUN_API_KEY": _env("MAILGUN_API_KEY"),
-                    "MAILGUN_SENDER_DOMAIN": _env("MAILGUN_SENDER_DOMAIN"),
-                },
-            }
-        )
-        return base
-
-    # --- Provider: SendGrid ---
-    if provider == "sendgrid":
-        base.update(
-            {
-                "EMAIL_BACKEND": "anymail.backends.sendgrid.EmailBackend",
-                "ANYMAIL": {
-                    "SENDGRID_API_KEY": _env("SENDGRID_API_KEY"),
-                },
-            }
-        )
-        return base
-
-    # --- Provider: Amazon SES ---
-    if provider == "ses":
-        # Anymail SES backend uses boto3 under the hood.
-        base.update(
-            {
-                "EMAIL_BACKEND": "anymail.backends.amazon_ses.EmailBackend",
-                "ANYMAIL": {
-                    "AMAZON_SES_CLIENT_PARAMS": {
-                        "region_name": _env("AWS_REGION", "us-east-1"),
-                    }
-                },
-            }
-        )
-        return base
-
-    # --- Provider: Mandrill (Mailchimp Transactional) ---
-    if provider == "mandrill":
-        base.update(
-            {
-                "EMAIL_BACKEND": "anymail.backends.mandrill.EmailBackend",
-                "ANYMAIL": {
-                    "MANDRILL_API_KEY": _env("MANDRILL_API_KEY"),
-                },
-            }
-        )
-        return base
-
-    # --- Provider: SMTP fallback ---
-    # Good for quick testing; not my favorite for production deliverability unless you know the host.
-    base.update(
-        {
-            "EMAIL_BACKEND": "django.core.mail.backends.smtp.EmailBackend",
-            "EMAIL_HOST": _env("EMAIL_HOST", "localhost"),
-            "EMAIL_PORT": int(_env("EMAIL_PORT", "25") or "25"),
-            "EMAIL_HOST_USER": _env("EMAIL_HOST_USER", ""),
-            "EMAIL_HOST_PASSWORD": _env("EMAIL_HOST_PASSWORD", ""),
-            "EMAIL_USE_TLS": _bool_env("EMAIL_USE_TLS", "0"),
-            "EMAIL_USE_SSL": _bool_env("EMAIL_USE_SSL", "0"),
-        }
-    )
+    # Auto fallback  console if SMTP isn't configured
+    base.update({"EMAIL_BACKEND": "django.core.mail.backends.console.EmailBackend"})
     return base

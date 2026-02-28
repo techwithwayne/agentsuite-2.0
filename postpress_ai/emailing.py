@@ -5,7 +5,7 @@ PostPress AI — Emailing utilities
 Path: postpress_ai/emailing.py
 
 Purpose:
-- Transactional email delivery (SendGrid via django-anymail backend).
+- Transactional email delivery (Django email backend; SMTP recommended)
 - Branded license delivery email:
   Subject: "Welcome to PostPress AI — here’s your key"
 - Inline logo served from within this Django app (no external URL dependency).

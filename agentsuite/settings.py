@@ -37,9 +37,16 @@ import os
 import logging  # CHANGED: for PDF engine validation logging
 from dotenv import load_dotenv
 import environ  # CHANGED: DATABASE_URL parsing (Render Postgres)
+import sys
 
 # ========= Base / Env =========
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+def _settings_pm(msg: str) -> None:
+    try:
+        print(msg, file=sys.stderr)
+    except Exception:
+        pass
 
 # ## PPA: load .env (minimal)
 try:
@@ -67,7 +74,7 @@ ENV_CANDIDATES = [
 for _env in ENV_CANDIDATES:
     if _env.exists():
         load_dotenv(_env)
-        print(f"[settings_pm] Loaded env from: {_env}")
+        _settings_pm(f"[settings_pm] Loaded env from: {_env}")
         break
 else:
     load_dotenv()
@@ -179,10 +186,10 @@ try:
             else:
                 raise
     if _missing_apps:
-        print(f"[settings_pm] Optional apps not present; skipping: {_missing_apps}")
+        _settings_pm(f"[settings_pm] Optional apps not present; skipping: {_missing_apps}")
     INSTALLED_APPS = _final_apps
 except Exception as _guard_exc:
-    print(f"[settings_pm] App guard failed: {_guard_exc}")
+    _settings_pm(f"[settings_pm] App guard failed: {_guard_exc}")
 
 # ========= Middleware =========
 # Build middleware list and skip optional ones if their module can't import (Render-safe).  # CHANGED:
@@ -211,9 +218,9 @@ try:  # CHANGED:
             # Keep MentorAccessMiddleware after sessions/csrf (we append at end).  # CHANGED:
             MIDDLEWARE.append(_mw)  # CHANGED:
         except ModuleNotFoundError:  # CHANGED:
-            print(f"[settings_pm] Optional middleware not present; skipping: {_mw}")  # CHANGED:
+            _settings_pm(f"[settings_pm] Optional middleware not present; skipping: {_mw}")  # CHANGED:
 except Exception as _mw_exc:  # CHANGED:
-    print(f"[settings_pm] Optional middleware guard failed: {_mw_exc}")  # CHANGED:
+    _settings_pm(f"[settings_pm] Optional middleware guard failed: {_mw_exc}")  # CHANGED:
 
 # ========= URL / Templates / WSGI =========
 ROOT_URLCONF = "agentsuite.urls"
@@ -257,7 +264,7 @@ try:
     os.makedirs(PPA_CACHE_DIR, exist_ok=True)
     _can_write_cache_dir = os.access(PPA_CACHE_DIR, os.W_OK)
 except Exception as _cache_exc:
-    print(f"[settings_pm] PPA cache dir create failed ({PPA_CACHE_DIR}): {_cache_exc}")
+    _settings_pm(f"[settings_pm] PPA cache dir create failed ({PPA_CACHE_DIR}): {_cache_exc}")
     _can_write_cache_dir = False
 
 if _can_write_cache_dir:
@@ -272,7 +279,7 @@ if _can_write_cache_dir:
             },
         }
     }
-    print(f"[settings_pm] CACHES=FileBasedCache ({PPA_CACHE_DIR})")
+    _settings_pm(f"[settings_pm] CACHES=FileBasedCache ({PPA_CACHE_DIR})")
 else:
     CACHES = {
         "default": {
@@ -375,25 +382,15 @@ SESSION_SAVE_EVERY_REQUEST = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 
 # ========= Email =========
-# If your email_config returns an anymail backend but anymail isn't installed, fall back safely.  # CHANGED:
 try:
     from postpress_ai.email_config import get_email_settings
     _PPA_EMAIL_SETTINGS = get_email_settings()
     globals().update(_PPA_EMAIL_SETTINGS)
 
-    # If settings point at anymail but package isn't present, don't crash later.  # CHANGED:
-    _backend = str(globals().get("EMAIL_BACKEND", "")).strip()  # CHANGED:
-    if _backend.startswith("anymail.") or ".anymail." in _backend:  # CHANGED:
-        try:  # CHANGED:
-            import anymail  # noqa: F401  # CHANGED:
-        except ModuleNotFoundError:  # CHANGED:
-            EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"  # CHANGED:
-            print("[settings_pm] anymail not installed; EMAIL_BACKEND forced to console backend.")  # CHANGED:
-
-    print(f"[settings_pm] EMAIL_BACKEND = {globals().get('EMAIL_BACKEND')}")
-    print(f"[settings_pm] DEFAULT_FROM_EMAIL = {globals().get('DEFAULT_FROM_EMAIL')}")
+    _settings_pm(f"[settings_pm] EMAIL_BACKEND = {globals().get('EMAIL_BACKEND')}")
+    _settings_pm(f"[settings_pm] DEFAULT_FROM_EMAIL = {globals().get('DEFAULT_FROM_EMAIL')}")
 except Exception as _ppa_email_exc:
-    print(f"[settings_pm] PPA email config not applied: {_ppa_email_exc}")
+    _settings_pm(f"[settings_pm] PPA email config not applied: {_ppa_email_exc}")
     EMAIL_BACKEND = os.getenv("DJANGO_EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
     DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@localhost")
 
