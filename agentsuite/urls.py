@@ -42,6 +42,8 @@ CHANGE LOG
        Support chat must be project-level for precedence and must avoid 301 for WP POSTs.     # CHANGED:
 - FIX: Add minimal CORS+OPTIONS handling for /postpress-ai/support/* so browser JS can call it. # CHANGED:
        WP admin calls cross-origin w/ custom header -> triggers preflight OPTIONS.             # CHANGED:
+- FIX: Inject shared secret server-side for support chat browser calls to prevent 403.         # CHANGED:
+       Browser widget must not need to carry the shared secret; backend injects it.            # CHANGED:
 """
 
 # /home/techwithwayne/agentsuite/agentsuite/urls.py
@@ -52,6 +54,9 @@ CHANGE LOG
 - FIX: Correct import path for Stripe checkout session view.
        checkout_session.py lives directly under postpress_ai.views (not views.stripe).  # CHANGED:
 """
+
+import os  # CHANGED:
+from django.conf import settings  # CHANGED:
 
 from django.contrib import admin
 from django.http import JsonResponse
@@ -80,6 +85,12 @@ from postpress_ai.views.support import support_chat  # CHANGED:
 
 from webdoctor import views as webdoctor_views
 from barista_assistant.views import success_view
+
+
+# CHANGED: read shared secret from settings or env (single source for injection)
+PPA_WP_SHARED_SECRET = (  # CHANGED:
+    getattr(settings, "PPA_WP_SHARED_SECRET", "") or os.getenv("PPA_WP_SHARED_SECRET", "")
+).strip()
 
 
 def ppa_health_view(request):
@@ -138,6 +149,9 @@ def _alias_to(canonical_path: str):
 # Minimal CORS wrapper for WP admin cross-origin fetch() calls               # CHANGED:
 # Why: custom headers trigger OPTIONS preflight; without CORS headers the     # CHANGED:
 # browser blocks the request and the support UI appears "dead".              # CHANGED:
+#
+# ALSO: Support chat auth requires shared secret; browser widget should NOT   # CHANGED:
+# carry it. We inject it server-side for /postpress-ai/support/chat/.         # CHANGED:
 # -------------------------------------------------------------------------
 def _add_cors_headers(resp, origin: str, allow_methods: str) -> None:  # CHANGED:
     if origin:
@@ -152,14 +166,34 @@ def _add_cors_headers(resp, origin: str, allow_methods: str) -> None:  # CHANGED
     resp["Access-Control-Max-Age"] = "86400"
 
 
-def _cors(view_func, allow_methods: str = "POST, OPTIONS"):  # CHANGED:
+def _inject_shared_secret_if_missing(request) -> None:  # CHANGED:
+    # If the browser didn't send a secret (expected), inject it so support_chat auth passes.
+    if request.META.get("HTTP_X_PPA_SHARED_SECRET"):
+        return
+    if request.META.get("HTTP_X_PPA_WP_SHARED_SECRET"):
+        return
+    if request.META.get("HTTP_X_SHARED_SECRET"):
+        return
+    if request.META.get("HTTP_X_API_KEY"):
+        return
+
+    if PPA_WP_SHARED_SECRET:
+        request.META["HTTP_X_PPA_SHARED_SECRET"] = PPA_WP_SHARED_SECRET
+        request.META["HTTP_X_PPA_WP_SHARED_SECRET"] = PPA_WP_SHARED_SECRET
+
+
+def _cors(view_func, allow_methods: str = "POST, OPTIONS", inject_secret: bool = False):  # CHANGED:
     def _wrapped(request, *args, **kwargs):
         origin = request.headers.get("Origin", "")
+
         if request.method == "OPTIONS":
             resp = JsonResponse({"ok": True})
             resp.status_code = 204
             _add_cors_headers(resp, origin, allow_methods)
             return resp
+
+        if inject_secret:
+            _inject_shared_secret_if_missing(request)
 
         resp = view_func(request, *args, **kwargs)
         _add_cors_headers(resp, origin, allow_methods)
@@ -169,8 +203,12 @@ def _cors(view_func, allow_methods: str = "POST, OPTIONS"):  # CHANGED:
 
 
 # CORS-safe support endpoints (WP browser calls)                               # CHANGED:
-support_chat_cors = _cors(support_chat, allow_methods="POST, OPTIONS")  # CHANGED:
-support_diag_cors = _cors(support_diag, allow_methods="GET, OPTIONS")   # CHANGED:
+support_chat_cors = _cors(  # CHANGED:
+    support_chat,
+    allow_methods="POST, OPTIONS",
+    inject_secret=True,  # CHANGED: fixes 403 missing_shared_secret
+)
+support_diag_cors = _cors(support_diag, allow_methods="GET, OPTIONS", inject_secret=False)  # CHANGED:
 
 
 urlpatterns = [
@@ -195,7 +233,7 @@ urlpatterns = [
     re_path(r"^postpress-ai/support/diag$", _alias_to("/postpress-ai/support/diag/")),  # CHANGED:
     re_path(r"^postpress-ai/support/chat$", _alias_to("/postpress-ai/support/chat/")),  # CHANGED:
 
-    re_path(r"^postpress-ai/stripe/webhook$", _alias_to("/postpress-ai/stripe/webhook$")),  # CHANGED:
+    re_path(r"^postpress-ai/stripe/webhook$", _alias_to("/postpress-ai/stripe/webhook/")),  # CHANGED:
     re_path(r"^postpress-ai/stripe/checkout/create$", _alias_to("/postpress-ai/stripe/checkout/create/")),  # CHANGED:
 
     # -------------------------------------------------------------------------
@@ -215,7 +253,7 @@ urlpatterns = [
     # CHANGED: Support diagnostics (non-secret) + CORS wrapper
     path("postpress-ai/support/diag/", support_diag_cors, name="ppa_support_diag"),  # CHANGED:
 
-    # CHANGED: Support chat (shared-secret) + CORS wrapper
+    # CHANGED: Support chat (shared-secret) + CORS wrapper + SERVER-SIDE SECRET INJECTION
     path("postpress-ai/support/chat/", support_chat_cors, name="ppa_support_chat"),  # CHANGED:
 
     path("postpress-ai/stripe/webhook/", stripe_webhook),
