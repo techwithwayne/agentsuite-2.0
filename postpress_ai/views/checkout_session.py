@@ -14,19 +14,37 @@ LOCKED RULES
 - No browser secrets exposed.
 - No CORS / ALLOWED_HOSTS widening here.
 
-ENV
-Required (recommended, mode-aware):
+ENV (LAUNCH-SANE)
+Required:
 - PPA_STRIPE_MODE = "test" or "live" (defaults to "live")
-- STRIPE_TEST_SECRET_KEY + PPA_STRIPE_TEST_PRICE_ID (when mode=test)
-- STRIPE_LIVE_SECRET_KEY + PPA_STRIPE_LIVE_PRICE_ID (when mode=live)
+- Stripe secret key for current mode:
+  - STRIPE_TEST_SECRET_KEY (test)
+  - STRIPE_LIVE_SECRET_KEY (live)
+  - (legacy fallback) STRIPE_SECRET_KEY
 
-Optional (subscription-only, Solo plan):
-- PPA_STRIPE_TEST_PRICE_ID_SOLO (when mode=test)
-- PPA_STRIPE_LIVE_PRICE_ID_SOLO (when mode=live)
+Prices (ONE env var to rule them all):
+- PPA_STRIPE_PRICE_MAP  (JSON)
 
-Backward compatible (legacy):
-- STRIPE_SECRET_KEY (required if mode-aware vars not set)
-- PPA_STRIPE_PRICE_ID (required if mode-aware vars not set)  e.g. price_123...
+Expected keys (recommended):
+{
+  "test": {
+    "pack_default": "price_...",
+    "solo_monthly": "price_..."
+  },
+  "live": {
+    "pack_default": "price_...",
+    "solo_monthly": "price_..."
+  }
+}
+
+Key resolution rules:
+- pack uses: pack_default (or pack / default / default_price)
+- subscription uses: "<plan_slug>_monthly" then "<plan_slug>"
+  e.g. plan_slug="solo" -> solo_monthly then solo
+
+Legacy (kept for backward compatibility during launch):
+- PPA_STRIPE_TEST_PRICE_ID / PPA_STRIPE_LIVE_PRICE_ID / PPA_STRIPE_PRICE_ID (pack default)
+- PPA_STRIPE_TEST_PRICE_ID_SOLO / PPA_STRIPE_LIVE_PRICE_ID_SOLO (solo)
 
 Optional:
 - PPA_STRIPE_SUCCESS_URL (defaults to https://postpressai.com/)
@@ -56,22 +74,6 @@ POST JSON body (common):
 NOTES
 - For pack purchases: license_key is REQUIRED (so webhook can map pack → license).
 - For subscription purchases: license_key is optional (webhook may create a new license).
-
-========= CHANGE LOG =========
-2025-12-27
-- FIX: Idempotency key includes mode + success/cancel URLs to prevent Stripe idempotency_error 400s.
-- ADD: Stripe test/live switching via PPA_STRIPE_MODE + mode-specific env vars.
-
-2026-02-28
-- ADD: ppa_kind support: pack (mode=payment) + subscription (mode=subscription).
-- ADD: Solo plan price selection via PPA_STRIPE_*_PRICE_ID_SOLO.
-- ADD: Pass-through metadata for license_key + pack/subscription details into Stripe objects.
-- ADD: Guard: if ppa_kind=pack and missing license_key → 400 missing_license_key.
-
-2026-02-28 (hotfix)
-- FIX: Infer pack correctly even when pack_type is omitted (license_key is a pack signal).
-- FIX: Append session_id param safely (handles existing query strings).
-- SAFETY: subscription with no plan_slug defaults to solo (avoids accidental use of pack price id).
 """
 
 from __future__ import annotations
@@ -90,7 +92,7 @@ from django.views.decorators.http import require_POST
 
 logger = logging.getLogger(__name__)
 
-VER = "checkout_session.v2.2026-02-28.2"
+VER = "checkout_session.v2.2026-02-28.3"
 
 PPA_KIND_PACK = "pack"
 PPA_KIND_SUBSCRIPTION = "subscription"
@@ -127,24 +129,79 @@ def _stripe_mode() -> str:
     return "test" if raw == "test" else "live"
 
 
+def _load_price_map() -> Dict[str, Any]:
+    """Loads PPA_STRIPE_PRICE_MAP JSON, returns {} on missing/invalid."""
+    raw = _env("PPA_STRIPE_PRICE_MAP")
+    if not raw:
+        return {}
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            return obj
+        logger.warning("PPA_STRIPE_PRICE_MAP is not a JSON object")
+        return {}
+    except Exception as e:
+        logger.warning("Invalid PPA_STRIPE_PRICE_MAP JSON: %s", str(e))
+        return {}
+
+
+def _price_bucket_for_mode(mode: str) -> Dict[str, str]:
+    """Returns the dict of prices for the given mode."""
+    pm = _load_price_map()
+    if not pm:
+        return {}
+
+    # Preferred: {"test": {...}, "live": {...}}
+    if mode in pm and isinstance(pm.get(mode), dict):
+        bucket = pm.get(mode) or {}
+        return {k: _as_str(v) for k, v in bucket.items() if _as_str(v)}
+
+    # Fallback: allow a flat mapping for single-mode deployments
+    # e.g. {"pack_default":"price_...","solo_monthly":"price_..."}
+    if all(isinstance(v, (str, int, float)) for v in pm.values()):
+        return {k: _as_str(v) for k, v in pm.items() if _as_str(v)}
+
+    return {}
+
+
+def _price_from_bucket(bucket: Dict[str, str], keys: Tuple[str, ...]) -> Optional[str]:
+    for k in keys:
+        v = (bucket.get(k) or "").strip()
+        if v:
+            return v
+    return None
+
+
 def _resolve_stripe_creds(mode: str) -> Tuple[Optional[str], Optional[str]]:
     """Resolve Stripe creds in the safest order:
 
+    Secret:
     1) Mode-aware vars (recommended)
-    2) Legacy vars (backward compatible)
+    2) Legacy STRIPE_SECRET_KEY
 
-    Returns (secret_key, default_price_id)
+    Price (pack default):
+    1) PPA_STRIPE_PRICE_MAP for current mode
+    2) Legacy mode-aware price vars
+    3) Legacy PPA_STRIPE_PRICE_ID
     """
+    # Secret key
     if mode == "test":
         secret_key = _env("STRIPE_TEST_SECRET_KEY")
-        price_id = _env("PPA_STRIPE_TEST_PRICE_ID")
-    else:  # live
+    else:
         secret_key = _env("STRIPE_LIVE_SECRET_KEY")
-        price_id = _env("PPA_STRIPE_LIVE_PRICE_ID")
-
-    # Legacy fallback
     if not secret_key:
         secret_key = _env("STRIPE_SECRET_KEY")
+
+    # Price id (default pack price)
+    bucket = _price_bucket_for_mode(mode)
+    price_id = _price_from_bucket(bucket, ("pack_default", "pack", "default", "default_price"))
+
+    # Legacy fallback
+    if not price_id:
+        if mode == "test":
+            price_id = _env("PPA_STRIPE_TEST_PRICE_ID")
+        else:
+            price_id = _env("PPA_STRIPE_LIVE_PRICE_ID")
     if not price_id:
         price_id = _env("PPA_STRIPE_PRICE_ID")
 
@@ -168,8 +225,7 @@ def _get_checkout_config() -> CheckoutConfig:
         )
     if not default_price_id:
         missing.append(
-            ("PPA_STRIPE_TEST_PRICE_ID" if mode == "test" else "PPA_STRIPE_LIVE_PRICE_ID")
-            + " (or PPA_STRIPE_PRICE_ID legacy)"
+            "PPA_STRIPE_PRICE_MAP[mode].pack_default (or legacy PPA_STRIPE_*_PRICE_ID)"
         )
 
     if missing:
@@ -251,32 +307,11 @@ def _safe_url(url: Optional[str], fallback: str) -> str:
     return u
 
 
-def _append_session_id_param(success_url: str) -> str:
-    # Stripe replaces CHECKOUT_SESSION_ID; use & if query string already exists.
-    joiner = "&" if "?" in success_url else "?"
-    return f"{success_url}{joiner}session_id={{CHECKOUT_SESSION_ID}}"
-
-
 def _infer_kind(data: Dict[str, Any]) -> str:
     raw = (data.get("ppa_kind") or data.get("kind") or data.get("purchase_kind") or "").strip().lower()
     if raw in (PPA_KIND_PACK, PPA_KIND_SUBSCRIPTION):
         return raw
 
-    # Strong subscription signals
-    plan_slug = (data.get("plan_slug") or data.get("ppa_plan_slug") or "").strip().lower()
-    if plan_slug:
-        return PPA_KIND_SUBSCRIPTION
-
-    # Strong pack signal: license_key (pack requires it; subscription does not)
-    license_key = (
-        (data.get("license_key") or "").strip()
-        or (data.get("ppa_license_key") or "").strip()
-        or (data.get("key") or "").strip()
-    )
-    if license_key:
-        return PPA_KIND_PACK
-
-    # Other pack-ish signals
     pack_signals = [
         data.get("pack_type"),
         data.get("ppa_pack_type"),
@@ -284,28 +319,37 @@ def _infer_kind(data: Dict[str, Any]) -> str:
         data.get("credits_granted"),
         data.get("pack"),
     ]
-    if any(v not in (None, "", 0) for v in pack_signals):
-        return PPA_KIND_PACK
-
-    # Safer default: keep legacy behavior (endpoint historically used for packs)
-    return PPA_KIND_PACK
+    return PPA_KIND_PACK if any(v not in (None, "", 0) for v in pack_signals) else PPA_KIND_SUBSCRIPTION
 
 
 def _resolve_price_id(cfg: CheckoutConfig, *, ppa_kind: str, plan_slug: str) -> Tuple[Optional[str], Optional[str]]:
-    """Returns (price_id, missing_env_name_if_any)."""
+    """Returns (price_id, missing_hint)."""
+
     if ppa_kind != PPA_KIND_SUBSCRIPTION:
         return cfg.default_price_id, None
 
     slug = (plan_slug or "").strip().lower()
-    if slug == "solo":
+    if not slug:
+        return None, "Missing plan_slug for subscription (expected e.g. plan_slug='solo')"
+
+    # Prefer PRICE_MAP
+    bucket = _price_bucket_for_mode(cfg.mode)
+    key1 = f"{slug}_monthly"
+    key2 = slug
+    price_id = _price_from_bucket(bucket, (key1, key2))
+
+    # Legacy solo fallback (kept during launch)
+    if not price_id and slug == "solo":
         if cfg.mode == "test":
             price_id = _env("PPA_STRIPE_TEST_PRICE_ID_SOLO")
-            return (price_id, "PPA_STRIPE_TEST_PRICE_ID_SOLO") if not price_id else (price_id, None)
+            return (price_id, "PPA_STRIPE_PRICE_MAP[test].solo_monthly (or legacy PPA_STRIPE_TEST_PRICE_ID_SOLO)") if not price_id else (price_id, None)
         price_id = _env("PPA_STRIPE_LIVE_PRICE_ID_SOLO")
-        return (price_id, "PPA_STRIPE_LIVE_PRICE_ID_SOLO") if not price_id else (price_id, None)
+        return (price_id, "PPA_STRIPE_PRICE_MAP[live].solo_monthly (or legacy PPA_STRIPE_LIVE_PRICE_ID_SOLO)") if not price_id else (price_id, None)
 
-    # If you add more plans later, handle them here.
-    return None, "PPA_STRIPE_*_PRICE_ID_<PLAN>"
+    if not price_id:
+        return None, f"PPA_STRIPE_PRICE_MAP[{cfg.mode}].{key1} (or .{key2}) is missing"
+
+    return price_id, None
 
 
 def _idempotency_key(
@@ -360,6 +404,7 @@ def create_checkout_session(request: HttpRequest) -> JsonResponse:
     if not email or "@" not in email:
         return _json_error("Valid email is required.", 400, code="invalid_email")
 
+    # Purchase kind + details
     ppa_kind = _infer_kind(data)
     plan_slug = (data.get("plan_slug") or data.get("ppa_plan_slug") or "").strip().lower()
 
@@ -370,10 +415,6 @@ def create_checkout_session(request: HttpRequest) -> JsonResponse:
     )
 
     pack_type = (data.get("pack_type") or data.get("ppa_pack_type") or "").strip().lower()
-
-    if ppa_kind == PPA_KIND_SUBSCRIPTION and not plan_slug:
-        # Safety default: avoid accidentally trying to subscribe using a one-time pack price id.
-        plan_slug = "solo"
 
     if ppa_kind == PPA_KIND_PACK and not license_key:
         return _json_error(
@@ -387,10 +428,10 @@ def create_checkout_session(request: HttpRequest) -> JsonResponse:
     except RuntimeError as e:
         return _json_error(str(e), 500, code="misconfigured")
 
-    price_id, missing_env = _resolve_price_id(cfg, ppa_kind=ppa_kind, plan_slug=plan_slug)
-    if missing_env:
+    price_id, missing_hint = _resolve_price_id(cfg, ppa_kind=ppa_kind, plan_slug=plan_slug)
+    if missing_hint:
         return _json_error(
-            f"Missing required Stripe env var for this purchase: {missing_env} (mode={cfg.mode}).",
+            f"Missing required Stripe price config: {missing_hint}.",
             500,
             code="misconfigured",
         )
@@ -428,6 +469,7 @@ def create_checkout_session(request: HttpRequest) -> JsonResponse:
         cancel_url=cancel_url,
     )
 
+    # --- Stripe metadata (Session + PI/Subscription) ---
     session_md: Dict[str, str] = {
         "ppa_ver": VER,
         "ppa_kind": ppa_kind,
@@ -460,7 +502,7 @@ def create_checkout_session(request: HttpRequest) -> JsonResponse:
     try:
         common_kwargs: Dict[str, Any] = {
             "line_items": [{"price": price_id, "quantity": 1}],
-            "success_url": _append_session_id_param(success_url),
+            "success_url": success_url + "?session_id={CHECKOUT_SESSION_ID}",
             "cancel_url": cancel_url,
             "customer_email": email,
             "allow_promotion_codes": True,
