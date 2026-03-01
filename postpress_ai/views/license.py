@@ -59,6 +59,7 @@ from __future__ import annotations
 #            - Keeps license.v1 response shape unchanged; only corrects computed entitlements.                         # CHANGED:
 # 2026-02-22: FIX: Include full activated sites list in license.v1 at license.sites.list (WP Account needs it). # CHANGED:
 # 2026-02-23: FIX: CSRF-exempt + POST-only /license/deactivate/ so WP server-to-server calls never 403. # CHANGED:
+# 2026-03-01: WIRE: tokens.purchased_balance now derives from CreditLedger (pack_grant/manual_adjust/spend) scoped to license. # CHANGED:
 
 import hmac
 import json
@@ -834,6 +835,47 @@ def _usageevent_sum_tokens_for_period(lic: License, period_start, period_end) ->
         return None
 
 
+
+
+def _creditledger_purchased_balance_for_license(lic: License) -> Optional[int]:  # CHANGED:
+    """
+    Best-effort purchased token balance from CreditLedger for THIS license.
+
+    Definition (locked for WP contract):
+    - Purchased tokens are ledger-based and are ALWAYS separate from plan monthly tokens.
+    - purchased_balance = SUM(amount) for entry_type in {pack_grant, manual_adjust, spend}
+      scoped to this license.
+    - Monthly grants are excluded by design.
+
+    Notes:
+    - CreditLedger.amount is defined as: Positive = add credits, Negative = spend credits.
+    - Never breaks licensing: returns None if the credit models aren't available or any query fails.
+    """
+    try:
+        from postpress_ai.models.credit import CreditLedger  # local import avoids hard coupling
+    except Exception:
+        return None
+
+    try:
+        # Prefer model constants when present.
+        t_pack = getattr(CreditLedger, "TYPE_PACK_GRANT", "pack_grant")
+        t_spend = getattr(CreditLedger, "TYPE_SPEND", "spend")
+        # In credit.py this constant is TYPE_MANUAL, not TYPE_MANUAL_ADJUST.
+        t_manual = getattr(CreditLedger, "TYPE_MANUAL", "manual_adjust")
+
+        types = [t_pack, t_manual, t_spend]
+
+        qs = CreditLedger.objects.filter(license=lic, entry_type__in=types)  # type: ignore
+
+        agg = qs.aggregate(total=Coalesce(Sum("amount"), 0))
+        val = agg.get("total")
+        try:
+            return max(0, int(val or 0))
+        except Exception:
+            return None
+    except Exception:
+        return None
+
 def _token_snapshot(lic: License) -> Dict[str, Any]:  # CHANGED:
     """
     Token accounting snapshot.
@@ -869,7 +911,8 @@ def _token_snapshot(lic: License) -> Dict[str, Any]:  # CHANGED:
     else:
         monthly_used = max(int(legacy_monthly_used), int(usage_event_used))  # CHANGED:
 
-    purchased_balance = _getattr_int(
+    # Legacy field fallback (kept for safety, but CreditLedger is authoritative when present).  # CHANGED:
+    purchased_balance_legacy = _getattr_int(
         lic,
         "purchased_tokens_balance",
         "tokens_purchased_balance",
@@ -877,8 +920,17 @@ def _token_snapshot(lic: License) -> Dict[str, Any]:  # CHANGED:
         "tokens_addon_balance",
         "extra_tokens_balance",
     )
-    if purchased_balance is None:
-        purchased_balance = 0
+    if purchased_balance_legacy is None:
+        purchased_balance_legacy = 0
+
+    # CHANGED: Prefer CreditLedger (token pack purchases attach to the same activation key/license).  # CHANGED:
+    purchased_balance_ledger = _creditledger_purchased_balance_for_license(lic)  # CHANGED:
+    if purchased_balance_ledger is None:
+        purchased_balance = int(purchased_balance_legacy)  # CHANGED:
+    else:
+        # Never let purchased balance go backwards if a legacy counter exists.  # CHANGED:
+        purchased_balance = max(int(purchased_balance_legacy), int(purchased_balance_ledger))  # CHANGED:
+        purchased_balance = max(0, int(purchased_balance))  # CHANGED:
 
     monthly_remaining = max(0, monthly_limit - int(monthly_used))
     remaining_total = monthly_remaining + max(0, int(purchased_balance))
