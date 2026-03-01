@@ -712,6 +712,10 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
 
         with transaction.atomic():
             customer_obj, _ = Customer.objects.get_or_create(email=customer_email, defaults={})  # type: ignore
+            try:
+                Customer.objects.select_for_update().get(id=getattr(customer_obj, "id", None))  # type: ignore
+            except Exception:
+                pass
             first, last = _split_name(customer_name)
             if first:
                 _set_if_field(customer_obj, "first_name", first)
@@ -798,7 +802,18 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             entry_type = getattr(CreditLedger, "TYPE_PACK_GRANT", "pack_grant")
             has_entry = False
             try:
-                has_entry = CreditLedger.objects.filter(credit_pack=purchase, entry_type=entry_type).exists()  # type: ignore
+                has_entry = False
+                try:
+                    if event_id:
+                        has_entry = CreditLedger.objects.filter(entry_type=entry_type, meta__stripe_event_id=event_id).exists()  # type: ignore
+                    if (not has_entry) and stripe_payment_intent_id:
+                        has_entry = CreditLedger.objects.filter(entry_type=entry_type, meta__stripe_payment_intent_id=stripe_payment_intent_id).exists()  # type: ignore
+                    if (not has_entry) and session_id:
+                        has_entry = CreditLedger.objects.filter(entry_type=entry_type, meta__stripe_session_id=session_id).exists()  # type: ignore
+                    if (not has_entry) and purchase is not None:
+                        has_entry = CreditLedger.objects.filter(credit_pack=purchase, entry_type=entry_type).exists()  # type: ignore
+                except Exception:
+                    has_entry = False  # type: ignore
             except Exception:
                 has_entry = False
 
