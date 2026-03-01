@@ -55,7 +55,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_VER = "stripe-webhook.v2026-02-28.1"  # CHANGED:
+WEBHOOK_VER = "stripe-webhook.v2026-03-01.1"  # CHANGED:
 
 
 # ---------------------------
@@ -204,6 +204,163 @@ def _derive_plan_code(tier: str) -> str:
     """
     tier = _normalize_tier(tier)
     return tier or "tyler"
+
+def _extract_plan_slug_from_metadata(md: Dict[str, Any]) -> str:  # CHANGED:
+    """Best-effort extraction of plan slug from Checkout Session metadata."""  # CHANGED:
+    try:
+        v = (
+            md.get("plan_slug")
+            or md.get("ppa_plan_slug")
+            or md.get("ppa_plan")
+            or md.get("plan_code")
+            or ""
+        )
+        return str(v).strip()
+    except Exception:
+        return ""
+
+
+def _infer_plan_code_from_name(name: str) -> str:  # CHANGED:
+    """Infer plan_code from Stripe product/price name when metadata is missing."""  # CHANGED:
+    s = (name or "").strip().lower()
+    if not s:
+        return ""
+    if "studio" in s:
+        return "studio"
+    if "creator" in s:
+        return "creator"
+    if "solo" in s:
+        return "solo"
+    if "agency" in s and ("byo" in s or "unlimited" in s):
+        return "agency_unlimited_byo"
+    if "agency" in s:
+        return "agency"
+    # Early Bird / Tyler variants collapse to tyler
+    if "early bird" in s or "earlybird" in s or "tyler" in s:
+        return "tyler"
+    return ""
+
+
+def _resolve_plan_code_via_stripe(
+    *,
+    mode: str,
+    stripe_subscription_id: str,
+    session_id: str,
+) -> Tuple[str, str]:  # CHANGED:
+    """
+    Resolve plan_code using Stripe objects (authoritative), not session metadata.  # CHANGED:
+
+    Priority:
+    - Subscription item price.metadata.plan_slug
+    - Subscription item product.metadata.plan_slug
+    - Price/Product name inference (e.g., "PostPress AI — Studio")
+    - Checkout Session line_items fallback (if not a subscription)
+
+    Returns: (plan_code, source)  # CHANGED:
+    """
+    api_key, api_source = _get_stripe_api_key_info(mode)
+    if not api_key:
+        return "", "no_api_key"
+
+    try:
+        stripe.api_key = api_key
+    except Exception:
+        return "", "api_key_set_failed"
+
+    # 1) Subscription-driven (most reliable for recurring plans)
+    sid = (stripe_subscription_id or "").strip()
+    if sid:
+        try:
+            sub = stripe.Subscription.retrieve(
+                sid,
+                expand=["items.data.price.product"],
+            )
+            items = (sub.get("items") or {}).get("data") or []
+            it0 = items[0] if items else {}
+            price = (it0 or {}).get("price") or {}
+            product = (price or {}).get("product") or {}
+
+            # price metadata
+            pmd = (price.get("metadata") or {}) if isinstance(price, dict) else {}
+            raw = (
+                pmd.get("plan_slug")
+                or pmd.get("ppa_plan_slug")
+                or pmd.get("ppa_plan")
+                or pmd.get("plan_code")
+                or ""
+            )
+            plan_code = _normalize_plan_code_from_slug(str(raw).strip())
+            if plan_code:
+                return plan_code, f"stripe.subscription.price.metadata ({api_source})"
+
+            # product metadata
+            prmd = (product.get("metadata") or {}) if isinstance(product, dict) else {}
+            raw2 = (
+                prmd.get("plan_slug")
+                or prmd.get("ppa_plan_slug")
+                or prmd.get("ppa_plan")
+                or prmd.get("plan_code")
+                or ""
+            )
+            plan_code = _normalize_plan_code_from_slug(str(raw2).strip())
+            if plan_code:
+                return plan_code, f"stripe.subscription.product.metadata ({api_source})"
+
+            # product name inference
+            pname = ""
+            if isinstance(product, dict):
+                pname = str(product.get("name") or "")
+            plan_code = _infer_plan_code_from_name(pname)
+            if plan_code:
+                return plan_code, f"stripe.subscription.product.name ({api_source})"
+        except Exception:
+            logger.exception("PPA:plan_resolve subscription_lookup_failed sub=%s source=%s", sid, api_source)
+
+    # 2) Non-subscription fallback: Checkout Session line items
+    csid = (session_id or "").strip()
+    if csid:
+        try:
+            li = stripe.checkout.Session.list_line_items(csid, limit=10, expand=["data.price.product"])
+            data = li.get("data") or []
+            it0 = data[0] if data else {}
+            price = (it0 or {}).get("price") or {}
+            product = (price or {}).get("product") or {}
+
+            pmd = (price.get("metadata") or {}) if isinstance(price, dict) else {}
+            raw = (
+                pmd.get("plan_slug")
+                or pmd.get("ppa_plan_slug")
+                or pmd.get("ppa_plan")
+                or pmd.get("plan_code")
+                or ""
+            )
+            plan_code = _normalize_plan_code_from_slug(str(raw).strip())
+            if plan_code:
+                return plan_code, f"stripe.session.line_items.price.metadata ({api_source})"
+
+            prmd = (product.get("metadata") or {}) if isinstance(product, dict) else {}
+            raw2 = (
+                prmd.get("plan_slug")
+                or prmd.get("ppa_plan_slug")
+                or prmd.get("ppa_plan")
+                or prmd.get("plan_code")
+                or ""
+            )
+            plan_code = _normalize_plan_code_from_slug(str(raw2).strip())
+            if plan_code:
+                return plan_code, f"stripe.session.line_items.product.metadata ({api_source})"
+
+            pname = ""
+            if isinstance(product, dict):
+                pname = str(product.get("name") or "")
+            plan_code = _infer_plan_code_from_name(pname)
+            if plan_code:
+                return plan_code, f"stripe.session.line_items.product.name ({api_source})"
+        except Exception:
+            logger.exception("PPA:plan_resolve line_items_lookup_failed session=%s source=%s", csid, api_source)
+
+    return "", "not_found"
+
 
 
 def _derive_max_sites_from_plan(plan_obj: Any, fallback: int = 3) -> int:
@@ -694,21 +851,35 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
             }
         )
 
-    # CHANGED: Prefer plan_slug for plan selection (prevents solo → tyler fallback)
-    raw_plan_slug = (
-        md.get("plan_slug")
-        or md.get("ppa_plan_slug")
-        or md.get("ppa_plan")
-        or ""
+        # CHANGED: Resolve plan_code from Stripe objects first (authoritative), then fall back to session metadata.
+    plan_code, plan_source = _resolve_plan_code_via_stripe(
+        mode=mode,
+        stripe_subscription_id=stripe_subscription_id,
+        session_id=session_id,
     )
-    plan_code = _normalize_plan_code_from_slug(str(raw_plan_slug) if raw_plan_slug is not None else "")
+
+    if not plan_code:
+        raw_plan_slug = _extract_plan_slug_from_metadata(md)
+        plan_code = _normalize_plan_code_from_slug(raw_plan_slug)
+        if plan_code:
+            plan_source = "session.metadata.plan_slug"
+
     if plan_code:
         tier = plan_code  # used for email + response payloads  # CHANGED
     else:
-        # Metadata-driven tier, with locked fallback behavior (legacy)
+        # Legacy metadata-driven tier fallback (LOCKED behavior)
         raw_tier = md.get("tier") or md.get("plan") or md.get("plan_code") or md.get("tier_name") or ""
         tier = _normalize_tier(str(raw_tier))
         plan_code = _derive_plan_code(tier)
+        plan_source = "session.metadata.tier_legacy"
+
+    logger.info(
+        "PPA:plan_resolve plan_code=%s source=%s session=%s sub=%s",
+        plan_code,
+        plan_source,
+        session_id,
+        stripe_subscription_id,
+    )
 
     # Persist Order FIRST (idempotent by stripe_session_id)  # CHANGED:
     Order = _model("postpress_ai", "Order")
