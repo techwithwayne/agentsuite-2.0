@@ -36,7 +36,7 @@ LOCKED INTENT
 
 2026-02-28  # CHANGED:
 - FIX: Email logo now uses public HTTPS URL by default (PPA_EMAIL_LOGO_URL override).          # CHANGED:
-- KEEP: CID inline logo supported if PPA_EMAIL_LOGO_URL is set to "cid:ppa_logo".             # CHANGED:
+- FIX: Remove DEFAULT_PRODUCT_TIER fallback — plan line only shown if explicitly provided.     # CHANGED:
 """
 
 from __future__ import annotations
@@ -53,7 +53,10 @@ from django.core.mail import EmailMultiAlternatives
 log = logging.getLogger("webdoctor")
 
 DEFAULT_SUBJECT = "Welcome to PostPress AI — here’s your key"
-DEFAULT_PRODUCT_TIER = "Tyler"
+
+# NO DEFAULT TIER.
+# If webhook/caller doesn't pass tier/product_tier explicitly, the email will NOT display a plan.
+DEFAULT_PRODUCT_TIER = ""
 
 # Public HTTPS logo URL (most reliable across email clients)
 LOGO_PUBLIC_URL = os.environ.get(
@@ -86,8 +89,10 @@ def _first_name_from_full(full_name: str) -> str:
 
 
 def _format_tier_label(raw: str) -> str:
-    """Make slugs look decent in customer email without changing caller contracts."""
-    s = _safe(raw) or DEFAULT_PRODUCT_TIER
+    """Make slugs look decent in customer email. Empty input returns empty output."""
+    s = _safe(raw)
+    if not s:
+        return ""
 
     # If it looks like a slug (no spaces, mostly lowercase), title-case it.
     if " " not in s and s.lower() == s:
@@ -187,16 +192,17 @@ def send_license_key_email(
     to_email = _safe(to_email).lower()
     license_key = _safe(license_key)
 
-    # Alias resolution (webhook compatibility)                                           # CHANGED:
-    if not purchaser_name and name:  # CHANGED:
-        purchaser_name = name  # CHANGED:
-    if (product_tier == DEFAULT_PRODUCT_TIER) and tier:  # CHANGED:
-        product_tier = tier  # CHANGED:
-    purchaser_name = _safe(purchaser_name)  # CHANGED:
-    product_tier = _safe(product_tier) or DEFAULT_PRODUCT_TIER  # CHANGED:
+    # Alias resolution (webhook compatibility)
+    if not purchaser_name and name:
+        purchaser_name = name
+    if (not _safe(product_tier)) and tier:
+        product_tier = tier
 
-    # Subject is LOCKED EXACT for license delivery.                                      # CHANGED:
-    subject = DEFAULT_SUBJECT  # CHANGED:
+    purchaser_name = _safe(purchaser_name)
+    product_tier = _safe(product_tier)  # may be "" intentionally
+
+    # Subject is LOCKED EXACT for license delivery.
+    subject = DEFAULT_SUBJECT
 
     if not to_email:
         raise ValueError("send_license_key_email: missing to_email")
@@ -209,16 +215,24 @@ def send_license_key_email(
     tier_label = _format_tier_label(product_tier)
     logo_src, logo_cid = _logo_src_and_cid()
 
+    plan_text = f"\nPlan: {tier_label}\n" if tier_label else "\n"
+    plan_html = (
+        f"""
+        <div style=\"margin-top:10px;color:#cfcfcf;font-size:12px;opacity:.9;\">
+          Plan: <span style=\"color:#ffffff;\">{tier_label}</span>
+        </div>
+        """
+        if tier_label
+        else ""
+    )
+
     # Plain text
     text = f"""{hello}
 
 Welcome to PostPress AI. I’m genuinely grateful you’re here — especially as an Early Bird.
 
 Here’s your license key:
-{license_key}
-
-Plan: {tier_label}
-
+{license_key}{plan_text}
 Quick start:
 1) Install the PostPress AI plugin in WordPress
 2) Go to PostPress AI → Settings → paste your key → Activate
@@ -234,51 +248,45 @@ Support: support@postpressai.com
 
     # HTML
     html = f"""
-<div style="background:#121212;padding:24px;font-family:Arial,sans-serif;">
-  <div style="max-width:680px;margin:0 auto;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:12px;overflow:hidden;">
-    <div style="padding:16px 18px;border-bottom:1px solid #2a2a2a;display:flex;align-items:center;gap:12px;">
-      <img src="{logo_src}" alt="PostPress AI" style="height:38px;display:block;" />
+<div style=\"background:#121212;padding:24px;font-family:Arial,sans-serif;\">
+  <div style=\"max-width:680px;margin:0 auto;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:12px;overflow:hidden;\">
+    <div style=\"padding:16px 18px;border-bottom:1px solid #2a2a2a;display:flex;align-items:center;gap:12px;\">
+      <img src=\"{logo_src}\" alt=\"PostPress AI\" style=\"height:38px;display:block;\" />
     </div>
 
-    <div style="padding:18px;color:#f2f2f2;line-height:1.55;">
-      <h2 style="margin:0 0 10px 0;font-size:20px;font-weight:700;">Welcome to PostPress AI — here’s your key</h2>
+    <div style=\"padding:18px;color:#f2f2f2;line-height:1.55;\">
+      <h2 style=\"margin:0 0 10px 0;font-size:20px;font-weight:700;\">Welcome to PostPress AI — here’s your key</h2>
 
-      <p style="margin:0 0 14px 0;color:#e6e6e6;">
+      <p style=\"margin:0 0 14px 0;color:#e6e6e6;\">
         {hello}<br/>
         You’re officially in. And since you’re here early… seriously: thank you.
       </p>
 
-      <div style="margin-top:12px;padding:14px 14px;border:1px solid #ff6c00;border-radius:10px;background:rgba(255,108,0,0.06);">
-        <div style="opacity:.85;font-size:12px;margin-bottom:6px;letter-spacing:.2px;">Your License Key</div>
-        <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:18px;word-break:break-all;">
+      <div style=\"margin-top:12px;padding:14px 14px;border:1px solid #ff6c00;border-radius:10px;background:rgba(255,108,0,0.06);\">
+        <div style=\"opacity:.85;font-size:12px;margin-bottom:6px;letter-spacing:.2px;\">Your License Key</div>
+        <div style=\"font-family:ui-monospace,Menlo,Consolas,monospace;font-size:18px;word-break:break-all;\">
           {license_key}
         </div>
-        <div style="margin-top:10px;color:#cfcfcf;font-size:12px;opacity:.9;">
-          Plan: <span style="color:#ffffff;">{tier_label}</span>
-        </div>
+        {plan_html}
       </div>
 
-      <div style="margin-top:16px;padding:14px;border:1px solid #2a2a2a;border-radius:10px;">
-        <div style="font-weight:700;margin-bottom:8px;">Quick start (2 minutes)</div>
-        <ol style="margin:0;padding-left:18px;color:#eaeaea;">
-          <li style="margin:0 0 6px 0;">Install the PostPress AI plugin in WordPress</li>
-          <li style="margin:0 0 6px 0;">Go to <b>PostPress AI → Settings</b> → paste your key → <b>Activate</b></li>
-          <li style="margin:0 0 6px 0;">Open the Composer and click <b>Generate Preview</b></li>
-          <li style="margin:0 0 6px 0;">Click <b>Save Draft (Store)</b>, then open the draft link</li>
+      <div style=\"margin-top:16px;padding:14px;border:1px solid #2a2a2a;border-radius:10px;\">
+        <div style=\"font-weight:700;margin-bottom:8px;\">Quick start (2 minutes)</div>
+        <ol style=\"margin:0;padding-left:18px;color:#eaeaea;\">
+          <li style=\"margin:0 0 6px 0;\">Install the PostPress AI plugin in WordPress</li>
+          <li style=\"margin:0 0 6px 0;\">Go to <b>PostPress AI → Settings</b> → paste your key → <b>Activate</b></li>
+          <li style=\"margin:0 0 6px 0;\">Open the Composer and click <b>Generate Preview</b></li>
+          <li style=\"margin:0 0 6px 0;\">Click <b>Save Draft (Store)</b>, then open the draft link</li>
         </ol>
       </div>
-      <div style="margin-top:16px;padding:14px;border:1px solid #2a2a2a;border-radius:10px;">
-        <div style="font-weight:700;margin-bottom:8px;">Need help?</div>
-        <p style="margin:0;color:#e6e6e6;">
-          Reply to this email and we’ll get you unstuck.
-        </p>
-        <p style="margin:10px 0 0 0;color:#bdbdbd;font-size:12px;">
-          Support: <a href="mailto:support@postpressai.com" style="color:#ff6c00;text-decoration:none;">support@postpressai.com</a>
+      <div style=\"margin-top:16px;padding:14px;border:1px solid #2a2a2a;border-radius:10px;\">
+        <div style=\"font-weight:700;margin-bottom:8px;\">Need help?</div>
+        <p style=\"margin:0;color:#e6e6e6;\">Reply to this email and we’ll get you unstuck.</p>
+        <p style=\"margin:10px 0 0 0;color:#bdbdbd;font-size:12px;\">
+          Support: <a href=\"mailto:support@postpressai.com\" style=\"color:#ff6c00;text-decoration:none;\">support@postpressai.com</a>
         </p>
       </div>
-      <p style="margin:18px 0 0 0;color:#bdbdbd;font-size:12px;">
-        — Wayne Hatter, PostPress AI
-      </p>
+      <p style=\"margin:18px 0 0 0;color:#bdbdbd;font-size:12px;\">— Wayne Hatter, PostPress AI</p>
     </div>
   </div>
 </div>
