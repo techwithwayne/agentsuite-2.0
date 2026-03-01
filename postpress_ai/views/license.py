@@ -504,6 +504,25 @@ def _sites_list_for_license(lic: License, *, limit: int = 50) -> list:  # CHANGE
         return rows
     except Exception:
         return []
+    
+def _billing_email_for_license(lic: License) -> str:
+    """
+    Key-connected email = Entitlement.customer.email (best-effort).
+    Never breaks licensing: returns "" on any exception / missing rows.
+    """
+    try:
+        Entitlement = apps.get_model("postpress_ai", "Entitlement")
+        qs = (
+            Entitlement.objects.filter(license=lic)
+            .select_related("customer")
+            .order_by("-id")
+        )
+        ent = qs.first()
+        cust = getattr(ent, "customer", None) if ent else None
+        email = getattr(cust, "email", "") or ""
+        return str(email).strip()
+    except Exception:
+        return ""
 
 
 def _license_limit_allows_site(lic, site_url: str = "") -> bool:
@@ -1113,6 +1132,7 @@ def _license_contract_snapshot(license_key: str, lic: License) -> Dict[str, Any]
     sites_used = _activation_count_for_license(lic)
     sites_list = _sites_list_for_license(lic, limit=50)  # CHANGED:
     tokens = _token_snapshot(lic)
+    billing_email = _billing_email_for_license(lic)
     links = _account_links(lic, ent, tokens)  # CHANGED:
 
     max_sites = int(ent["sites"]["max"])
@@ -1130,6 +1150,7 @@ def _license_contract_snapshot(license_key: str, lic: License) -> Dict[str, Any]
         # Plan (display)
         "plan_slug": plan.get("slug"),  # CHANGED: normalized slug for stable UI keys
         "plan": plan,  # CHANGED: {slug,name,label}
+        "billing_email": billing_email or "",
 
         # Status
         "status": getattr(lic, "status", None),
