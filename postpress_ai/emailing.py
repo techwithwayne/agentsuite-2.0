@@ -8,8 +8,10 @@ Purpose:
 - Transactional email delivery (Django email backend; SMTP recommended)
 - Branded license delivery email:
   Subject: "Welcome to PostPress AI — here’s your key"
-- Inline logo served from within this Django app (no external URL dependency).
-- Safe-by-default: if logo file missing, email still sends (just without image).
+- Logo support:
+  - Default: public HTTPS URL (reliable across email clients)
+  - Optional: CID inline attachment (set PPA_EMAIL_LOGO_URL="cid:ppa_logo")
+- Safe-by-default: if logo missing/inline attach fails, email still sends.
 
 LOCKED INTENT
 - Keep dependency-light and reusable by webhook + admin tools.
@@ -31,6 +33,10 @@ LOCKED INTENT
 2026-01-11  # CHANGED:
 - FIX: Accept webhook-friendly alias kwargs (name/tier/max_sites) without changing callers.    # CHANGED:
 - KEEP: Subject locked EXACT (force DEFAULT_SUBJECT for license emails).                       # CHANGED:
+
+2026-02-28  # CHANGED:
+- FIX: Email logo now uses public HTTPS URL by default (PPA_EMAIL_LOGO_URL override).          # CHANGED:
+- KEEP: CID inline logo supported if PPA_EMAIL_LOGO_URL is set to "cid:ppa_logo".             # CHANGED:
 """
 
 from __future__ import annotations
@@ -49,7 +55,13 @@ log = logging.getLogger("webdoctor")
 DEFAULT_SUBJECT = "Welcome to PostPress AI — here’s your key"
 DEFAULT_PRODUCT_TIER = "Tyler"
 
-# Static-relative path (Django staticfiles convention)
+# Public HTTPS logo URL (most reliable across email clients)
+LOGO_PUBLIC_URL = os.environ.get(
+    "PPA_EMAIL_LOGO_URL",
+    "https://postpressai.com/wp-content/uploads/2025/11/postpressai-logo-trimmed-horizontal-white-text.png",
+)
+
+# Static-relative path (Django staticfiles convention) used for optional CID inline fallback
 LOGO_STATIC_RELATIVE_PATH = "postpress_ai/email/postpress-ai-logo.png"
 
 # Absolute repo path fallback (works in dev + prod when repo present)
@@ -71,6 +83,18 @@ def _first_name_from_full(full_name: str) -> str:
     if not full_name:
         return ""
     return full_name.split()[0]
+
+
+def _format_tier_label(raw: str) -> str:
+    """Make slugs look decent in customer email without changing caller contracts."""
+    s = _safe(raw) or DEFAULT_PRODUCT_TIER
+
+    # If it looks like a slug (no spaces, mostly lowercase), title-case it.
+    if " " not in s and s.lower() == s:
+        s = s.replace("_", " ").replace("-", " ")
+        s = " ".join(w.capitalize() for w in s.split())
+
+    return s
 
 
 def _find_logo_file_path() -> Optional[str]:
@@ -127,6 +151,15 @@ def _attach_inline_logo(msg: EmailMultiAlternatives, content_id: str = "ppa_logo
         return False
 
 
+def _logo_src_and_cid() -> tuple[str, Optional[str]]:
+    """Return (img_src, cid) where cid is only set when src is cid:*"""
+    src = _safe(LOGO_PUBLIC_URL)
+    if src.lower().startswith("cid:"):
+        cid = src.split(":", 1)[1].strip() or "ppa_logo"
+        return f"cid:{cid}", cid
+    return src, None
+
+
 def send_license_key_email(
     *,
     to_email: str,
@@ -141,7 +174,7 @@ def send_license_key_email(
     max_sites: Optional[int] = None,  # CHANGED: accepted (unused in email copy)
 ) -> None:
     """
-    Send the PostPress AI license delivery email (text + HTML) with inline logo.
+    Send the PostPress AI license delivery email (text + HTML).
 
     Backward-compatible with webhook-friendly signature:
       send_license_key_email(to_email=..., license_key=..., name=..., tier=..., max_sites=...)
@@ -173,6 +206,9 @@ def send_license_key_email(
     first_name = _first_name_from_full(purchaser_name)
     hello = f"Hey {first_name}," if first_name else "Hey there,"
 
+    tier_label = _format_tier_label(product_tier)
+    logo_src, logo_cid = _logo_src_and_cid()
+
     # Plain text
     text = f"""{hello}
 
@@ -180,6 +216,8 @@ Welcome to PostPress AI. I’m genuinely grateful you’re here — especially a
 
 Here’s your license key:
 {license_key}
+
+Plan: {tier_label}
 
 Quick start:
 1) Install the PostPress AI plugin in WordPress
@@ -194,12 +232,12 @@ If anything feels weird or confusing, reply to this email. I read these.
 Support: support@postpressai.com
 """
 
-    # HTML (CID image: ppa_logo)
+    # HTML
     html = f"""
 <div style="background:#121212;padding:24px;font-family:Arial,sans-serif;">
   <div style="max-width:680px;margin:0 auto;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:12px;overflow:hidden;">
     <div style="padding:16px 18px;border-bottom:1px solid #2a2a2a;display:flex;align-items:center;gap:12px;">
-      <img src="cid:ppa_logo" alt="PostPress AI" style="height:38px;display:block;" />
+      <img src="{logo_src}" alt="PostPress AI" style="height:38px;display:block;" />
     </div>
 
     <div style="padding:18px;color:#f2f2f2;line-height:1.55;">
@@ -216,7 +254,7 @@ Support: support@postpressai.com
           {license_key}
         </div>
         <div style="margin-top:10px;color:#cfcfcf;font-size:12px;opacity:.9;">
-          Plan: <span style="color:#ffffff;">{product_tier}</span>
+          Plan: <span style="color:#ffffff;">{tier_label}</span>
         </div>
       </div>
 
@@ -254,7 +292,11 @@ Support: support@postpressai.com
         headers=headers or None,
     )
     msg.attach_alternative(html, "text/html")
-    _attach_inline_logo(msg, content_id="ppa_logo")
+
+    # Only attach inline logo if the HTML references cid:...
+    if logo_cid:
+        _attach_inline_logo(msg, content_id=logo_cid)
+
     sent_count = msg.send()
     if not sent_count:
         raise RuntimeError("Email backend returned 0 (not sent).")
