@@ -59,6 +59,7 @@ from __future__ import annotations
 #            - Keeps license.v1 response shape unchanged; only corrects computed entitlements.                         # CHANGED:
 # 2026-02-22: FIX: Include full activated sites list in license.v1 at license.sites.list (WP Account needs it). # CHANGED:
 # 2026-02-23: FIX: CSRF-exempt + POST-only /license/deactivate/ so WP server-to-server calls never 403. # CHANGED:
+
 # 2026-03-01: WIRE: tokens.purchased_balance now derives from CreditLedger (pack_grant/manual_adjust/spend) scoped to license. # CHANGED:
 
 import hmac
@@ -71,7 +72,7 @@ from urllib.parse import urlparse
 
 from django.core.cache import cache
 from django.apps import apps  # CHANGED:
-from django.db.models import Sum  # CHANGED:
+from django.db.models import Sum, Q  # CHANGED:
 from django.db.models.functions import Coalesce  # CHANGED:
 from django.http import HttpRequest, JsonResponse
 from django.utils import timezone
@@ -836,7 +837,6 @@ def _usageevent_sum_tokens_for_period(lic: License, period_start, period_end) ->
 
 
 
-
 def _creditledger_purchased_balance_for_license(lic: License) -> Optional[int]:  # CHANGED:
     """
     Best-effort purchased token balance from CreditLedger for THIS license.
@@ -865,7 +865,8 @@ def _creditledger_purchased_balance_for_license(lic: License) -> Optional[int]: 
 
         types = [t_pack, t_manual, t_spend]
 
-        qs = CreditLedger.objects.filter(license=lic, entry_type__in=types)  # type: ignore
+        # Prefer license linkage; also include legacy rows linked via credit_pack.  # CHANGED:
+        qs = CreditLedger.objects.filter(entry_type__in=types).filter(Q(license=lic) | Q(credit_pack__license=lic))  # type: ignore  # CHANGED:
 
         agg = qs.aggregate(total=Coalesce(Sum("amount"), 0))
         val = agg.get("total")
@@ -875,6 +876,7 @@ def _creditledger_purchased_balance_for_license(lic: License) -> Optional[int]: 
             return None
     except Exception:
         return None
+
 
 def _token_snapshot(lic: License) -> Dict[str, Any]:  # CHANGED:
     """
@@ -1568,8 +1570,6 @@ def license_activate(request: HttpRequest) -> JsonResponse:
         return _json_err(e, data=base_data) if isinstance(base_data, dict) else _json_err(e)
 
 
-@csrf_exempt
-@require_POST
 @csrf_exempt
 @require_POST
 def license_verify(request: HttpRequest) -> JsonResponse:
