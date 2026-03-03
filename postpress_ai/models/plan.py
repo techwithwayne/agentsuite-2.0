@@ -1,7 +1,7 @@
 # /home/techwithwayne/agentsuite/postpress_ai/models/plan.py
 
 """
-PostPress AI — Plan model
+PostPress AI - Plan model
 Path: postpress_ai/models/plan.py
 
 Purpose:
@@ -11,7 +11,8 @@ Purpose:
 - Optional: store included monthly credits (future-proof).
 
 CHANGE LOG
-- 2026-01-10: Add Plan model + helpers + seed defaults.  # CHANGED:
+- 2026-01-10: Add Plan model + helpers + seed defaults.
+- 2026-03-02: ADD: trial_25k_14d seed plan for campaign issuance (Mailchimp/GF flow).
 """
 
 from __future__ import annotations
@@ -21,21 +22,20 @@ from django.utils import timezone
 
 
 class Plan(models.Model):
-    """
-    Plan definition.
+    """Plan definition.
 
     Key design rule:
     - Use max_sites = NULL for unlimited.
     """
 
     # Stable internal code; use in logic and admin filters.
-    code = models.SlugField(unique=True)  # CHANGED:
+    code = models.SlugField(unique=True)
 
     # Human-facing name for admin display.
-    name = models.CharField(max_length=120)  # CHANGED:
+    name = models.CharField(max_length=120)
 
     # NULL means unlimited sites.
-    max_sites = models.PositiveIntegerField(null=True, blank=True)  # CHANGED:
+    max_sites = models.PositiveIntegerField(null=True, blank=True)
 
     # AI mode for the plan: "included" means PostPress AI provides AI access,
     # "byo_key" means customer must provide their own OpenAI key.
@@ -49,46 +49,46 @@ class Plan(models.Model):
         max_length=20,
         choices=AI_MODE_CHOICES,
         default=AI_INCLUDED,
-    )  # CHANGED:
+    )
 
     # Optional: monthly credits included with the plan (if/when you enforce usage).
-    credits_monthly_included = models.PositiveIntegerField(default=0)  # CHANGED:
+    credits_monthly_included = models.PositiveIntegerField(default=0)
 
     # Optional: support/perks flags
-    priority_support = models.BooleanField(default=False)  # CHANGED:
+    priority_support = models.BooleanField(default=False)
 
-    is_active = models.BooleanField(default=True)  # CHANGED:
-    created_at = models.DateTimeField(default=timezone.now, editable=False)  # CHANGED:
-    updated_at = models.DateTimeField(auto_now=True)  # CHANGED:
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["name"]  # CHANGED:
+        ordering = ["name"]
 
-    def __str__(self) -> str:  # CHANGED:
+    def __str__(self) -> str:
         limit = "Unlimited" if self.max_sites is None else str(self.max_sites)
         ai = "AI Included" if self.ai_mode == self.AI_INCLUDED else "BYO Key"
         return f"{self.name} ({limit} sites, {ai})"
 
     @property
     def is_unlimited(self) -> bool:
-        return self.max_sites is None  # CHANGED:
+        return self.max_sites is None
 
     def allows_site_count(self, used_sites: int) -> bool:
-        """
-        Return True if this plan allows another activation given used_sites.
+        """Return True if this plan allows another activation given used_sites.
+
         used_sites should be the count of distinct sites already activated.
         """
         if self.max_sites is None:
             return True
-        return used_sites < self.max_sites  # CHANGED:
+        return used_sites < self.max_sites
 
 
 def seed_default_plans() -> None:
-    """
-    Idempotent seed for default plans from /tyler.
+    """Idempotent seed for default plans from /tyler.
 
     Run manually in Django shell after migrate, or wire into a management command later.
     """
+
     defaults = [
         # code, name, max_sites, ai_mode, monthly_credits, priority_support
         ("solo", "Solo", 1, Plan.AI_INCLUDED, 0, False),
@@ -96,6 +96,9 @@ def seed_default_plans() -> None:
         ("studio", "Studio", 10, Plan.AI_INCLUDED, 0, False),
         ("agency", "Agency (AI Included)", 25, Plan.AI_INCLUDED, 0, True),
         ("agency_unlimited_byo", "Agency Unlimited (BYO Key)", None, Plan.AI_BYO_KEY, 0, True),
+
+        # Campaign/trial plan (Stripe bypass). Intended to be issued via a protected endpoint.
+        ("trial_25k_14d", "Trial 25,000 Tokens (14 Days)", 1, Plan.AI_INCLUDED, 0, False),
     ]
 
     for code, name, max_sites, ai_mode, credits, priority in defaults:
@@ -109,4 +112,4 @@ def seed_default_plans() -> None:
                 "priority_support": priority,
                 "is_active": True,
             },
-        )  # CHANGED:
+        )
