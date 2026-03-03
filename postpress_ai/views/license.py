@@ -62,16 +62,20 @@ from __future__ import annotations
 
 # 2026-03-01: WIRE: tokens.purchased_balance now derives from CreditLedger (pack_grant/manual_adjust/spend) scoped to license. # CHANGED:
 
+import base64
+import hashlib
 import hmac
 import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from django.core.cache import cache
 from django.apps import apps  # CHANGED:
+from django.db import IntegrityError, models, transaction  # CHANGED:
 from django.db.models import Sum, Q  # CHANGED:
 from django.db.models.functions import Coalesce  # CHANGED:
 from django.http import HttpRequest, JsonResponse
@@ -98,6 +102,13 @@ VERIFY_CACHE_TTL_SECONDS = 300  # 5 minutes  # CHANGED:
 VERIFY_TOUCH_MIN_SECONDS = 600  # 10 minutes (throttle DB writes from verify)  # CHANGED:
 
 # ------------------------------
+# Campaign issuance (trial)
+# ------------------------------
+TRIAL_CAMPAIGN_SLUG = "trial_25k_14d"  # CHANGED:
+TRIAL_TOKENS_GRANTED = 25_000  # CHANGED:
+TRIAL_DURATION_DAYS = 14  # CHANGED:
+
+# ------------------------------
 # Plan defaults (fallback only)
 # Django remains authoritative; if License has explicit fields set, those win.
 # ------------------------------
@@ -109,7 +120,10 @@ PLAN_DEFAULTS = {  # CHANGED:
     "studio": (10, False, 1_500_000, True, False),
     "agency": (25, False, 4_000_000, True, False),
     "agency_byo": (0, True, 0, False, True),  # Unlimited sites, BYO key, no included tokens
+    # Campaign trial (expires in 14 days, uses purchased_balance via ledger grant)  # CHANGED:
+    "trial_25k_14d": (1, False, 0, True, False),  # CHANGED:
 }
+
 
 # ------------------------------
 # Plan metadata (display-only)
@@ -125,7 +139,9 @@ PLAN_META = {  # CHANGED:
     "studio": {"name": "Studio", "label": "Studio"},
     "agency": {"name": "Agency", "label": "Agency"},
     "agency_byo": {"name": "Agency (BYO Key)", "label": "Agency BYO"},
+    "trial_25k_14d": {"name": "Trial 25,000 Tokens (14 Days)", "label": "Trial"},  # CHANGED:
 }
+
 
 # slug: (max_sites, unlimited, monthly_tokens, ai_included, byo_required)
 UNKNOWN_PLAN_FALLBACK = (0, False, 0, False, True)  # CHANGED: fail closed (BYO required, no included tokens)
@@ -439,15 +455,38 @@ def _get_license_or_raise(license_key: str) -> License:
 
 
 def _ensure_license_active(lic: License) -> None:
-    is_active = getattr(lic, "is_active", None)
-    if callable(is_active):
-        if not is_active():
+    """
+    Strict active check.
+
+    Supports both:
+      - is_active as a method (legacy)
+      - is_active as a boolean property (current License model)
+
+    Also enforces expires_at when available.
+    """
+    attr = getattr(lic, "is_active", None)
+
+    # Legacy: method form
+    if callable(attr):
+        if not bool(attr()):
             raise APIError(code="license_inactive", message="License is not active.", http_status=403)
         return
 
+    # Current: property form
+    if attr is not None:
+        if not bool(attr):
+            raise APIError(code="license_inactive", message="License is not active.", http_status=403)
+        return
+
+    # Fallback: status + expires_at
     status = getattr(lic, "status", "")
     if str(status) != "active":
         raise APIError(code="license_inactive", message="License is not active.", http_status=403)
+
+    expires_at = getattr(lic, "expires_at", None)
+    if expires_at and timezone.now() > expires_at:
+        raise APIError(code="license_inactive", message="License is not active.", http_status=403)
+
 
 
 def _activation_count_for_license(lic: License) -> int:
@@ -1781,3 +1820,250 @@ def license_deactivate(request: HttpRequest) -> JsonResponse:
 
     except APIError as e:
         return _json_err(e, data=base_data) if isinstance(base_data, dict) else _json_err(e)
+
+
+# ------------------------------
+# Campaign issuance (protected)
+# ------------------------------
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")  # CHANGED:
+
+
+def _clean_email(value: Any) -> str:  # CHANGED:
+    if not isinstance(value, str):
+        raise APIError(code="invalid_email", message="email must be a string.")
+    email = value.strip().lower()
+    if (not email) or (len(email) > 254) or (not _EMAIL_RE.match(email)):
+        raise APIError(code="invalid_email", message="email format invalid.")
+    return email
+
+
+def _read_campaign_secret_env() -> str:  # CHANGED:
+    return _opt_str(os.environ.get("PPA_CAMPAIGN_SECRET")) or ""
+
+
+def _require_campaign_secret(request: HttpRequest) -> None:  # CHANGED:
+    expected = _read_campaign_secret_env().strip()
+    if not expected:
+        raise APIError(
+            code="server_misconfig",
+            message="Campaign issuance not configured (PPA_CAMPAIGN_SECRET missing).",
+            http_status=500,
+            err_type="server_error",
+        )
+
+    provided = request.headers.get("X-PPA-CAMPAIGN-SECRET")
+    if provided is None:
+        provided = request.META.get("HTTP_X_PPA_CAMPAIGN_SECRET")
+    provided = _norm(provided)
+
+    if (not provided) or (not hmac.compare_digest(provided, expected)):
+        raise APIError(
+            code="unauthorized",
+            message="Unauthorized.",
+            http_status=401,
+            err_type="auth_error",
+        )
+
+
+def _base32_no_pad(b: bytes) -> str:  # CHANGED:
+    return base64.b32encode(b).decode("ascii").replace("=", "")
+
+
+def _deterministic_license_key(*, email: str, campaign: str, secret: str) -> str:  # CHANGED:
+    """Stable key per (email, campaign) using HMAC(secret, ...)."""
+    msg = f"{campaign}|{email}".encode("utf-8")
+    dig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()
+    token = _base32_no_pad(dig)[:25].upper()
+    parts = [token[i : i + 5] for i in range(0, 25, 5)]
+    return "PPA-" + "-".join(parts)
+
+
+def _get_or_create_customer_for_email(email: str):  # CHANGED:
+    """Best-effort Customer create. Fails closed if model constraints prevent creation."""
+    try:
+        Customer = apps.get_model("postpress_ai", "Customer")
+    except Exception:
+        raise APIError(
+            code="customer_model_missing",
+            message="Customer model not available.",
+            http_status=500,
+            err_type="server_error",
+        )
+
+    existing = Customer.objects.filter(email__iexact=email).order_by("-id").first()
+    if existing:
+        return existing, False
+
+    create_kwargs: Dict[str, Any] = {"email": email}
+
+    try:
+        fields = [f for f in Customer._meta.get_fields() if hasattr(f, "name")]
+        field_names = {f.name for f in fields}
+    except Exception:
+        field_names = set()
+
+    for cand in ("name", "full_name", "first_name", "last_name"):
+        if cand in field_names:
+            try:
+                f = Customer._meta.get_field(cand)
+                if (not getattr(f, "null", False)) and (not getattr(f, "blank", False)) and (f.default is models.NOT_PROVIDED):
+                    create_kwargs[cand] = ""
+            except Exception:
+                continue
+
+    try:
+        obj = Customer.objects.create(**create_kwargs)
+        return obj, True
+    except Exception:
+        raise APIError(
+            code="customer_create_failed",
+            message="Unable to create customer record.",
+            http_status=500,
+            err_type="server_error",
+        )
+
+
+@csrf_exempt
+@require_POST
+def campaign_issue(request: HttpRequest) -> JsonResponse:  # CHANGED:
+    """Issue an expiring trial/campaign license key without Stripe automation.
+
+    Auth:
+      - X-PPA-CAMPAIGN-SECRET must match env PPA_CAMPAIGN_SECRET
+
+    Input JSON:
+      { "email": "...", "campaign": "trial_25k_14d", "source": "gravity_forms" }
+
+    Output (license.v1 envelope):
+      data: { license_key, expires_at, tokens_granted, idempotent, grant_created }
+    """
+    try:
+        _require_campaign_secret(request)
+
+        payload = _parse_json_body(request)
+        email = _clean_email(payload.get("email"))
+        campaign = _clean_plan_slug(payload.get("campaign"))
+        source = _opt_str(payload.get("source")) or "gravity_forms"
+
+        if campaign != TRIAL_CAMPAIGN_SLUG:
+            raise APIError(code="invalid_campaign", message="Unsupported campaign.", http_status=400)
+
+        secret = _read_campaign_secret_env().strip()
+        if not secret:
+            raise APIError(
+                code="server_misconfig",
+                message="Campaign issuance not configured (PPA_CAMPAIGN_SECRET missing).",
+                http_status=500,
+                err_type="server_error",
+            )
+
+        ip = _get_client_ip(request)
+        _rate_limit_or_raise(scope="campaign_issue", ip=ip, license_key=None)
+
+        license_key = _deterministic_license_key(email=email, campaign=campaign, secret=secret)
+
+        now = timezone.now()
+        expires_at = now + timedelta(days=TRIAL_DURATION_DAYS)
+
+        created_license = False
+        grant_created = False
+
+        with transaction.atomic():
+            lic = License.objects.select_for_update().filter(key=license_key).first()
+
+            if not lic:
+                try:
+                    lic = License.objects.create(
+                        key=license_key,
+                        plan_slug=campaign,
+                        status="active",
+                        max_sites=1,
+                        unlimited_sites=False,
+                        byo_key_required=False,
+                        ai_included=True,
+                        expires_at=expires_at,
+                    )
+                    created_license = True
+                except IntegrityError:
+                    lic = License.objects.select_for_update().filter(key=license_key).first()
+
+            if not lic:
+                raise APIError(code="issue_failed", message="Unable to issue license.", http_status=500, err_type="server_error")
+
+            # Do NOT extend expiry on idempotent re-issues.
+            if getattr(lic, "expires_at", None):
+                expires_at = getattr(lic, "expires_at")
+
+            customer, _ = _get_or_create_customer_for_email(email)
+
+            # Grant tokens idempotently (prefers DB uniqueness when available).
+            CreditLedger = None
+            try:
+                CreditLedger = apps.get_model("postpress_ai", "CreditLedger")
+            except Exception:
+                CreditLedger = None
+
+            if not CreditLedger:
+                raise APIError(code="grant_failed", message="Unable to grant campaign tokens.", http_status=500, err_type="server_error")
+
+            try:
+                field_names = {f.name for f in CreditLedger._meta.get_fields() if hasattr(f, "name")}
+            except Exception:
+                field_names = set()
+
+            idem_hash = hashlib.sha256(f"{campaign}:{email}".encode("utf-8")).hexdigest()[:32]
+            idem_key = f"camp:{campaign}:{idem_hash}"
+
+            entry_type = "manual_adjust"  # already included in purchased_balance snapshot
+            create_kwargs = {
+                "customer": customer,
+                "license": lic,
+                "entry_type": entry_type,
+                "amount": int(TRIAL_TOKENS_GRANTED),
+                "description": f"Campaign grant: {campaign}",
+                "meta": {"campaign": campaign, "email": email, "source": source},
+            }
+
+            try:
+                if "idempotency_key" in field_names:
+                    create_kwargs["idempotency_key"] = idem_key
+                    try:
+                        CreditLedger.objects.create(**create_kwargs)
+                        grant_created = True
+                    except IntegrityError:
+                        grant_created = False
+                else:
+                    qs = CreditLedger.objects.filter(customer=customer, license=lic, entry_type=entry_type, amount=int(TRIAL_TOKENS_GRANTED))
+                    try:
+                        qs = qs.filter(meta__campaign=campaign, meta__email=email)  # type: ignore
+                    except Exception:
+                        qs = qs.filter(description=f"Campaign grant: {campaign}")
+                    if qs.exists():
+                        grant_created = False
+                    else:
+                        CreditLedger.objects.create(**create_kwargs)
+                        grant_created = True
+            except Exception:
+                raise APIError(code="grant_failed", message="Unable to grant campaign tokens.", http_status=500, err_type="server_error")
+
+        data = {
+            "license_key": license_key,
+            "expires_at": expires_at,
+            "tokens_granted": int(TRIAL_TOKENS_GRANTED),
+            "idempotent": (not created_license),
+            "grant_created": bool(grant_created),
+        }
+
+        resp = _json_ok(data)
+        resp["Cache-Control"] = "private, no-store, max-age=0"
+        resp["Pragma"] = "no-cache"
+        resp["Expires"] = "0"
+        return resp
+
+    except APIError as e:
+        resp = _json_err(e)
+        resp["Cache-Control"] = "private, no-store, max-age=0"
+        resp["Pragma"] = "no-cache"
+        resp["Expires"] = "0"
+        return resp
