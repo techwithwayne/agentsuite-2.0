@@ -38,3 +38,6 @@ dist/
 ppa_cache/
 agentsuite_postpress_ai_*.zip
 *.zip
+
+_tmp/
+
