@@ -85,18 +85,18 @@ if License is not None:  # CHANGED:
             "status",  # CHANGED:
 
             # Raw DB overrides (often blank by design).  # CHANGED:
-            "max_sites",  # CHANGED:
-            "unlimited_sites",  # CHANGED:
+            # "max_sites",  # CHANGED:
+            # "unlimited_sites",  # CHANGED:
 
             # Effective computed entitlements (PLAN_DEFAULTS fallback).  # CHANGED:
             "eff_max_sites",  # CHANGED:
-            "eff_unlimited_sites",  # CHANGED:
-            "eff_tokens_mode",  # CHANGED:
-            "eff_tokens_monthly_limit",  # CHANGED:
-            "eff_entitlements_source",  # CHANGED:
+            # "eff_unlimited_sites",  # CHANGED:
+            # "eff_tokens_mode",  # CHANGED:
+            # "eff_tokens_monthly_limit",  # CHANGED:
+            # "eff_entitlements_source",  # CHANGED:
 
-            "byo_key_required",  # CHANGED:
-            "ai_included",  # CHANGED:
+            # "byo_key_required",  # CHANGED:
+            # "ai_included",  # CHANGED:
             "expires_at",  # CHANGED:
             "updated_at",  # CHANGED:
         )  # CHANGED:
