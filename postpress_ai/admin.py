@@ -78,28 +78,7 @@ if License is not None:  # CHANGED:
     @admin.register(License)  # CHANGED:
     class LicenseAdmin(admin.ModelAdmin):  # CHANGED:
         # __str__ already masks the key; list_display uses a safe method too.  # CHANGED:
-        list_display = (  # CHANGED:
-            "id",  # CHANGED:
-            "masked_key",  # CHANGED:
-            "plan_slug",  # CHANGED:
-            "status",  # CHANGED:
-
-            # Raw DB overrides (often blank by design).  # CHANGED:
-            "max_sites",  # CHANGED:
-            "unlimited_sites",  # CHANGED:
-
-            # Effective computed entitlements (PLAN_DEFAULTS fallback).  # CHANGED:
-            "eff_max_sites",  # CHANGED:
-            "eff_unlimited_sites",  # CHANGED:
-            "eff_tokens_mode",  # CHANGED:
-            "eff_tokens_monthly_limit",  # CHANGED:
-            "eff_entitlements_source",  # CHANGED:
-
-            "byo_key_required",  # CHANGED:
-            "ai_included",  # CHANGED:
-            "expires_at",  # CHANGED:
-            "updated_at",  # CHANGED:
-        )  # CHANGED:
+        list_display = ("id", "plan_slug", "eff_max_sites")
         search_fields = ("key",)  # CHANGED:
         list_filter = ("plan_slug", "status", "byo_key_required", "ai_included", "unlimited_sites")  # CHANGED:
         ordering = ("-updated_at",)  # CHANGED:
