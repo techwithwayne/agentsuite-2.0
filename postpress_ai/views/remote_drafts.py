@@ -68,6 +68,14 @@ def license_sites(request: HttpRequest) -> JsonResponse:
         )
     except APIError as e:
         return _json_err(e)
+    except Exception as exc:
+        err = APIError(
+            code="internal_error_license_sites",
+            message=f"Unexpected error in license_sites: {exc}",
+            http_status=500,
+            err_type="internal",
+        )
+        return _json_err(err)
 
 
 @csrf_exempt
@@ -177,6 +185,14 @@ def register_site(request: HttpRequest) -> JsonResponse:
         )
     except APIError as e:
         return _json_err(e, data=base_data) if isinstance(base_data, dict) else _json_err(e)
+    except Exception as exc:
+        err = APIError(
+            code="internal_error_register_site",
+            message=f"Unexpected error in register_site: {exc}",
+            http_status=500,
+            err_type="internal",
+        )
+        return _json_err(err, data=base_data) if isinstance(base_data, dict) else _json_err(err)
 
 
 @csrf_exempt
@@ -325,3 +341,18 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
             except Exception:
                 pass
         return _json_err(e, data=base_data) if isinstance(base_data, dict) else _json_err(e)
+    except Exception as exc:
+        if log:
+            try:
+                if not log.success:
+                    log.error_message = log.error_message or str(exc)
+                    log.save(update_fields=["error_message"])
+            except Exception:
+                pass
+        err = APIError(
+            code="internal_error_remote_drafts_create",
+            message=f"Unexpected error in remote_drafts_create: {exc}",
+            http_status=500,
+            err_type="internal",
+        )
+        return _json_err(err, data=base_data) if isinstance(base_data, dict) else _json_err(err)
