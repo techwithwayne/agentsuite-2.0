@@ -24,6 +24,10 @@ from . import entitlement  # noqa: F401  # CHANGED:
 from . import credit  # noqa: F401  # CHANGED:
 from . import email_log  # noqa: F401  # CHANGED:
 from . import usage_event  # noqa: F401  # CHANGED:
+from . import license_site  # noqa: F401
+from . import remote_draft_log  # noqa: F401
+from . import license_site  # noqa: F401
+from . import remote_draft_log  # noqa: F401
 
 __all__ = [
     "StoredArticle",

@@ -73,6 +73,11 @@ from postpress_ai.views.license import (
 )
 
 from postpress_ai.views.debug_model import license_debug_auth
+from postpress_ai.views.remote_drafts import (
+    license_sites,
+    register_site,
+    remote_drafts_create,
+)
 from postpress_ai.views.stripe_webhook import stripe_webhook
 
 # ✅ FIXED IMPORT PATH  # CHANGED:
@@ -227,6 +232,9 @@ urlpatterns = [
     re_path(r"^postpress-ai/license/verify$", _alias_to("/postpress-ai/license/verify/")),  # CHANGED:
     re_path(r"^postpress-ai/license/deactivate$", _alias_to("/postpress-ai/license/deactivate/")),  # CHANGED:
     re_path(r"^postpress-ai/license/debug-auth$", _alias_to("/postpress-ai/license/debug-auth/")),  # CHANGED:
+    re_path(r"^postpress-ai/license/sites$", _alias_to("/postpress-ai/license/sites/")),  # CHANGED:
+    re_path(r"^postpress-ai/license/register-site$", _alias_to("/postpress-ai/license/register-site/")),  # CHANGED:
+    re_path(r"^postpress-ai/remote-drafts/create$", _alias_to("/postpress-ai/remote-drafts/create/")),  # CHANGED:
 
     re_path(r"^postpress-ai/support/diag$", _alias_to("/postpress-ai/support/diag/")),  # CHANGED:
     re_path(r"^postpress-ai/support/chat$", _alias_to("/postpress-ai/support/chat/")),  # CHANGED:
@@ -247,6 +255,9 @@ urlpatterns = [
     path("postpress-ai/license/deactivate/", license_deactivate),
 
     path("postpress-ai/license/debug-auth/", license_debug_auth),
+    path("postpress-ai/license/sites/", license_sites),
+    path("postpress-ai/license/register-site/", register_site),
+    path("postpress-ai/remote-drafts/create/", remote_drafts_create),
 
     path("postpress-ai/support/diag/", support_diag_cors, name="ppa_support_diag"),  # CHANGED:
     path("postpress-ai/support/chat/", support_chat_cors, name="ppa_support_chat"),  # CHANGED:
