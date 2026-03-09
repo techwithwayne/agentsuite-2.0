@@ -53,10 +53,10 @@ def license_sites(request: HttpRequest) -> JsonResponse:
         lic = _get_license_or_raise(license_key)
         _ensure_license_active(lic)
 
+        # IMPORTANT CHANGE: list ALL sites for this license (any status).
         rows = list(
             LicenseSite.objects.filter(
                 license=lic,
-                status=LicenseSiteStatus.ACTIVE,
             ).order_by("site_url")
         )
 
