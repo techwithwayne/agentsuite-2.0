@@ -53,7 +53,7 @@ def license_sites(request: HttpRequest) -> JsonResponse:
         lic = _get_license_or_raise(license_key)
         _ensure_license_active(lic)
 
-        # IMPORTANT CHANGE: list ALL sites for this license (any status).
+        # List ALL sites for this license (any status).
         rows = list(
             LicenseSite.objects.filter(
                 license=lic,
@@ -166,7 +166,10 @@ def register_site(request: HttpRequest) -> JsonResponse:
                 err_type="upstream",
             )
 
-        if resp.status_code != 200 or not bool(resp_json.get("ok")):
+        # ACCEPT EITHER: {"ok": true, ...} OR {"status": "ok", ...}
+        ok_flag = bool(resp_json.get("ok")) or resp_json.get("status") == "ok"
+
+        if resp.status_code != 200 or not ok_flag:
             raise APIError(
                 code="handshake_failed",
                 message="Site handshake failed.",
@@ -199,7 +202,7 @@ def register_site(request: HttpRequest) -> JsonResponse:
 @require_POST
 def remote_drafts_create(request: HttpRequest) -> JsonResponse:
     base_data = None
-    log = None
+    log: RemoteDraftLog | None = None
 
     try:
         payload = _parse_json_body(request)
@@ -207,7 +210,13 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
         license_key = (payload.get("license_key") or "").strip()
         source_site_id_raw = str(payload.get("source_site_id") or "").strip()
         target_site_id_raw = str(payload.get("target_site_id") or "").strip()
-        post_payload = payload.get("post") or {}
+
+        # Accept BOTH "post" (new) and "payload" (current WP plugin).
+        post_payload = payload.get("post")
+        if post_payload is None:
+            post_payload = payload.get("payload")
+        if post_payload is None:
+            post_payload = {}
 
         if not license_key:
             raise APIError(
@@ -305,7 +314,11 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
 
         log.response_payload = resp_json
 
-        if resp.status_code != 200 or not bool(resp_json.get("ok")):
+        # Target WP currently returns {"status": "ok", "post_id": ..., "edit_link": ...}
+        # but we also accept {"ok": true, ...} for forward compatibility.
+        ok_from_target = bool(resp_json.get("ok")) or resp_json.get("status") == "ok"
+
+        if resp.status_code != 200 or not ok_from_target:
             log.success = False
             log.error_message = f"Target site error [{resp.status_code}]"
             log.save(update_fields=["response_payload", "success", "error_message"])
@@ -316,22 +329,38 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
                 err_type="upstream",
             )
 
+        # Support both flat and nested shapes coming back from the target site.
         remote_post_id = resp_json.get("post_id")
         edit_link = resp_json.get("edit_link")
+
+        remote_post_obj = resp_json.get("remote_post")
+        if isinstance(remote_post_obj, dict):
+            remote_post_id = remote_post_obj.get("id", remote_post_id)
+            edit_link = remote_post_obj.get("edit_link", edit_link)
 
         log.success = True
         log.remote_post_id = str(remote_post_id or "")
         log.remote_edit_link = str(edit_link or "")
         log.save(update_fields=["response_payload", "success", "remote_post_id", "remote_edit_link"])
 
-        return _json_ok(
-            {
-                "license_key": license_key,
-                "target_site_id": target_site.id,
-                "remote_post_id": remote_post_id,
+        # Response shape for the plugin JS:
+        #   response.target_site.url
+        #   response.remote_post.edit_link
+        response_body = {
+            "ok": True,
+            "license_key": license_key,
+            "target_site": {
+                "id": target_site.id,
+                "url": target_site.site_url,
+            },
+            "remote_post": {
+                "id": remote_post_id,
                 "edit_link": edit_link,
-            }
-        )
+            },
+        }
+
+        return JsonResponse(response_body, status=200)
+
     except APIError as e:
         if log:
             try:
