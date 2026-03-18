@@ -1,4 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
+
+from typing import Any
 
 from django.db import transaction
 from django.http import HttpRequest, JsonResponse
@@ -35,6 +37,54 @@ def _site_row(site: LicenseSite) -> dict:
     }
 
 
+def _response_json(resp) -> dict:
+    try:
+        data = resp.json()
+        return data if isinstance(data, dict) else {"raw": data}
+    except Exception:
+        text = getattr(resp, "text", "")
+        return {"raw": text}
+
+
+def _upstream_result(resp, body: dict) -> dict:
+    return {
+        "status_code": getattr(resp, "status_code", None),
+        "body": body,
+    }
+
+
+def _target_ok(resp, body: dict) -> bool:
+    return getattr(resp, "status_code", None) == 200 and (
+        bool(body.get("ok")) or body.get("status") == "ok"
+    )
+
+
+def _is_invalid_remote_draft_token(resp, body: dict) -> bool:
+    if getattr(resp, "status_code", None) not in (401, 403):
+        return False
+
+    code = str(body.get("code") or "").strip().lower()
+    message = str(body.get("message") or "").strip().lower()
+    raw = str(body.get("raw") or "").strip().lower()
+
+    if "invalid remote draft token" in message or "invalid remote draft token" in raw:
+        return True
+
+    return code == "forbidden" and "invalid remote draft token" in message
+
+
+def _extract_remote_post_details(body: dict) -> tuple[Any, Any]:
+    remote_post_id = body.get("post_id")
+    edit_link = body.get("edit_link")
+
+    remote_post_obj = body.get("remote_post")
+    if isinstance(remote_post_obj, dict):
+        remote_post_id = remote_post_obj.get("id", remote_post_id)
+        edit_link = remote_post_obj.get("edit_link", edit_link)
+
+    return remote_post_id, edit_link
+
+
 @require_GET
 def license_sites(request: HttpRequest) -> JsonResponse:
     try:
@@ -53,7 +103,6 @@ def license_sites(request: HttpRequest) -> JsonResponse:
         lic = _get_license_or_raise(license_key)
         _ensure_license_active(lic)
 
-        # List ALL sites for this license (any status).
         rows = list(
             LicenseSite.objects.filter(
                 license=lic,
@@ -154,10 +203,7 @@ def register_site(request: HttpRequest) -> JsonResponse:
                 site_id=site.id,
                 site_token=site.site_token,
             )
-            try:
-                resp_json = resp.json()
-            except Exception:
-                resp_json = {"ok": False, "raw": resp.text}
+            resp_json = _response_json(resp)
         except Exception as exc:
             raise APIError(
                 code="handshake_failed",
@@ -166,7 +212,6 @@ def register_site(request: HttpRequest) -> JsonResponse:
                 err_type="upstream",
             )
 
-        # ACCEPT EITHER: {"ok": true, ...} OR {"status": "ok", ...}
         ok_flag = bool(resp_json.get("ok")) or resp_json.get("status") == "ok"
 
         if resp.status_code != 200 or not ok_flag:
@@ -211,7 +256,6 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
         source_site_id_raw = str(payload.get("source_site_id") or "").strip()
         target_site_id_raw = str(payload.get("target_site_id") or "").strip()
 
-        # Accept BOTH "post" (new) and "payload" (current WP plugin).
         post_payload = payload.get("post")
         if post_payload is None:
             post_payload = payload.get("payload")
@@ -294,16 +338,16 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
             request_payload=payload,
         )
 
+        attempt_log: dict[str, Any] = {}
+        recovered_after_handshake = False
+
         try:
             resp = call_remote_draft(
                 target_site_url=target_site.site_url,
                 target_site_token=target_site.site_token,
                 post_payload=post_payload,
             )
-            try:
-                resp_json = resp.json()
-            except Exception:
-                resp_json = {"ok": False, "raw": resp.text}
+            resp_json = _response_json(resp)
         except Exception as exc:
             raise APIError(
                 code="remote_draft_request_failed",
@@ -312,40 +356,116 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
                 err_type="upstream",
             )
 
-        log.response_payload = resp_json
+        attempt_log["attempt_1"] = _upstream_result(resp, resp_json)
 
-        # Target WP currently returns {"status": "ok", "post_id": ..., "edit_link": ...}
-        # but we also accept {"ok": true, ...} for forward compatibility.
-        ok_from_target = bool(resp_json.get("ok")) or resp_json.get("status") == "ok"
+        if not _target_ok(resp, resp_json):
+            if _is_invalid_remote_draft_token(resp, resp_json):
+                try:
+                    handshake_resp = call_site_handshake(
+                        site_url=target_site.site_url,
+                        license_key=license_key,
+                        site_id=target_site.id,
+                        site_token=target_site.site_token,
+                    )
+                    handshake_json = _response_json(handshake_resp)
+                except Exception as exc:
+                    attempt_log["handshake"] = {"error": str(exc)}
+                    log.response_payload = attempt_log
+                    log.success = False
+                    log.error_message = "Target site rejected draft token; connection repair failed."
+                    log.save(update_fields=["response_payload", "success", "error_message"])
+                    raise APIError(
+                        code="remote_draft_failed",
+                        message="Target site connection repair failed.",
+                        http_status=502,
+                        err_type="upstream",
+                    )
 
-        if resp.status_code != 200 or not ok_from_target:
-            log.success = False
-            log.error_message = f"Target site error [{resp.status_code}]"
-            log.save(update_fields=["response_payload", "success", "error_message"])
-            raise APIError(
-                code="remote_draft_failed",
-                message="Target site failed to create the draft.",
-                http_status=502,
-                err_type="upstream",
-            )
+                attempt_log["handshake"] = _upstream_result(handshake_resp, handshake_json)
+                handshake_ok = _target_ok(handshake_resp, handshake_json)
 
-        # Support both flat and nested shapes coming back from the target site.
-        remote_post_id = resp_json.get("post_id")
-        edit_link = resp_json.get("edit_link")
+                if not handshake_ok:
+                    log.response_payload = attempt_log
+                    log.success = False
+                    log.error_message = "Target site rejected draft token; connection repair failed."
+                    log.save(update_fields=["response_payload", "success", "error_message"])
+                    raise APIError(
+                        code="remote_draft_failed",
+                        message="Target site connection repair failed.",
+                        http_status=502,
+                        err_type="upstream",
+                    )
 
-        remote_post_obj = resp_json.get("remote_post")
-        if isinstance(remote_post_obj, dict):
-            remote_post_id = remote_post_obj.get("id", remote_post_id)
-            edit_link = remote_post_obj.get("edit_link", edit_link)
+                try:
+                    retry_resp = call_remote_draft(
+                        target_site_url=target_site.site_url,
+                        target_site_token=target_site.site_token,
+                        post_payload=post_payload,
+                    )
+                    retry_json = _response_json(retry_resp)
+                except Exception as exc:
+                    attempt_log["attempt_2"] = {"error": str(exc)}
+                    log.response_payload = attempt_log
+                    log.success = False
+                    log.error_message = "Target site rejected draft token; connection repaired but retry still failed."
+                    log.save(update_fields=["response_payload", "success", "error_message"])
+                    raise APIError(
+                        code="remote_draft_failed",
+                        message="Target site connection was repaired, but draft creation still failed.",
+                        http_status=502,
+                        err_type="upstream",
+                    )
 
+                attempt_log["attempt_2"] = _upstream_result(retry_resp, retry_json)
+
+                if not _target_ok(retry_resp, retry_json):
+                    log.response_payload = attempt_log
+                    log.success = False
+                    log.error_message = "Target site rejected draft token; connection repaired but retry still failed."
+                    log.save(update_fields=["response_payload", "success", "error_message"])
+                    raise APIError(
+                        code="remote_draft_failed",
+                        message="Target site connection was repaired, but draft creation still failed.",
+                        http_status=502,
+                        err_type="upstream",
+                    )
+
+                resp = retry_resp
+                resp_json = retry_json
+                recovered_after_handshake = True
+                attempt_log["recovery"] = {
+                    "reason": "invalid_remote_draft_token",
+                    "recovered": True,
+                }
+            else:
+                log.response_payload = attempt_log
+                log.success = False
+                log.error_message = f"Target site error [{resp.status_code}]"
+                log.save(update_fields=["response_payload", "success", "error_message"])
+                raise APIError(
+                    code="remote_draft_failed",
+                    message="Target site failed to create the draft.",
+                    http_status=502,
+                    err_type="upstream",
+                )
+
+        remote_post_id, edit_link = _extract_remote_post_details(resp_json)
+
+        log.response_payload = attempt_log
         log.success = True
         log.remote_post_id = str(remote_post_id or "")
         log.remote_edit_link = str(edit_link or "")
-        log.save(update_fields=["response_payload", "success", "remote_post_id", "remote_edit_link"])
+        log.error_message = "" if not recovered_after_handshake else "Recovered after automatic handshake repair."
+        log.save(
+            update_fields=[
+                "response_payload",
+                "success",
+                "remote_post_id",
+                "remote_edit_link",
+                "error_message",
+            ]
+        )
 
-        # Response shape for the plugin JS:
-        #   response.target_site.url
-        #   response.remote_post.edit_link
         response_body = {
             "ok": True,
             "license_key": license_key,
@@ -358,6 +478,12 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
                 "edit_link": edit_link,
             },
         }
+
+        if recovered_after_handshake:
+            response_body["repair"] = {
+                "performed": True,
+                "reason": "invalid_remote_draft_token",
+            }
 
         return JsonResponse(response_body, status=200)
 

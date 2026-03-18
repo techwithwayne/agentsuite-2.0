@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import secrets
 from typing import Any, Dict
@@ -20,21 +20,34 @@ def _timeout_seconds() -> int:
 
 
 def _backend_token() -> str:
-    return str(getattr(settings, "POSTPRESS_AI_BACKEND_TOKEN", "") or "").strip()
+    return str(
+        getattr(settings, "PPA_SHARED_KEY", "")
+        or getattr(settings, "POSTPRESS_AI_BACKEND_TOKEN", "")
+        or ""
+    ).strip()
 
 
 def call_site_handshake(*, site_url: str, license_key: str, site_id: int, site_token: str) -> requests.Response:
     endpoint = urljoin(site_url.rstrip("/") + "/", "wp-json/postpress-ai/v1/site-handshake")
 
+    backend_token = _backend_token()
+
     payload: Dict[str, Any] = {
         "license_key": license_key,
         "site_id": str(site_id),
         "site_token": site_token,
-        "backend_token": _backend_token(),
+        "backend_token": backend_token,
     }
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if backend_token:
+        headers["x-postpress-ai-handshake"] = backend_token
 
     return requests.post(
         endpoint,
+        headers=headers,
         json=payload,
         timeout=_timeout_seconds(),
     )
