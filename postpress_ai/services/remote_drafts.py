@@ -52,6 +52,19 @@ def call_site_handshake(*, site_url: str, license_key: str, site_id: int, site_t
         timeout=_timeout_seconds(),
     )
 
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if backend_token:
+        headers["x-postpress-ai-handshake"] = backend_token
+
+    return requests.post(
+        endpoint,
+        headers=headers,
+        json=payload,
+        timeout=_timeout_seconds(),
+    )
+
 
 def call_remote_draft(*, target_site_url: str, target_site_token: str, post_payload: Dict[str, Any]) -> requests.Response:
     endpoint = urljoin(target_site_url.rstrip("/") + "/", "wp-json/postpress-ai/v1/remote-draft")
