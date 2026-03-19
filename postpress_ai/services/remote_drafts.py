@@ -1,22 +1,58 @@
 ﻿from __future__ import annotations
 
 import secrets
+import time
 from typing import Any, Dict
 from urllib.parse import urljoin
 
 import requests
 from django.conf import settings
+from requests import Response
+from requests.exceptions import RequestException
 
 
 def generate_site_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def _timeout_seconds() -> int:
+def _connect_timeout_seconds() -> float:
     try:
-        return int(getattr(settings, "POSTPRESS_AI_REQUEST_TIMEOUT", 10))
+        return float(getattr(settings, "POSTPRESS_AI_CONNECT_TIMEOUT", 5))
     except Exception:
-        return 10
+        return 5.0
+
+
+def _read_timeout_seconds() -> float:
+    try:
+        return float(
+            getattr(
+                settings,
+                "POSTPRESS_AI_REQUEST_TIMEOUT",
+                getattr(settings, "POSTPRESS_AI_READ_TIMEOUT", 10),
+            )
+        )
+    except Exception:
+        return 10.0
+
+
+def _request_timeout() -> tuple[float, float]:
+    return (_connect_timeout_seconds(), _read_timeout_seconds())
+
+
+def _max_attempts() -> int:
+    try:
+        value = int(getattr(settings, "POSTPRESS_AI_REMOTE_DRAFT_MAX_ATTEMPTS", 2))
+        return value if value > 0 else 2
+    except Exception:
+        return 2
+
+
+def _retry_delay_seconds() -> float:
+    try:
+        value = float(getattr(settings, "POSTPRESS_AI_REMOTE_DRAFT_RETRY_DELAY", 0.75))
+        return value if value >= 0 else 0.75
+    except Exception:
+        return 0.75
 
 
 def _backend_token() -> str:
@@ -25,6 +61,45 @@ def _backend_token() -> str:
         or getattr(settings, "POSTPRESS_AI_BACKEND_TOKEN", "")
         or ""
     ).strip()
+
+
+def _user_agent() -> str:
+    return "PostPressAI-Backend/remote-drafts"
+
+
+def _is_retryable_response(resp: Response) -> bool:
+    return resp.status_code in (408, 425, 429, 500, 502, 503, 504)
+
+
+def _post_with_retry(*, endpoint: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Response:
+    last_exc: Exception | None = None
+    session = requests.Session()
+    attempts = _max_attempts()
+
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = session.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=_request_timeout(),
+            )
+        except RequestException as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                raise
+            time.sleep(_retry_delay_seconds())
+            continue
+
+        if not _is_retryable_response(resp) or attempt >= attempts:
+            return resp
+
+        time.sleep(_retry_delay_seconds())
+
+    if last_exc:
+        raise last_exc
+
+    raise RuntimeError("Remote draft request failed without a response.")
 
 
 def call_site_handshake(*, site_url: str, license_key: str, site_id: int, site_token: str) -> requests.Response:
@@ -41,28 +116,15 @@ def call_site_handshake(*, site_url: str, license_key: str, site_id: int, site_t
 
     headers = {
         "Content-Type": "application/json",
+        "User-Agent": _user_agent(),
     }
     if backend_token:
         headers["x-postpress-ai-handshake"] = backend_token
 
-    return requests.post(
-        endpoint,
+    return _post_with_retry(
+        endpoint=endpoint,
         headers=headers,
-        json=payload,
-        timeout=_timeout_seconds(),
-    )
-
-    headers = {
-        "Content-Type": "application/json",
-    }
-    if backend_token:
-        headers["x-postpress-ai-handshake"] = backend_token
-
-    return requests.post(
-        endpoint,
-        headers=headers,
-        json=payload,
-        timeout=_timeout_seconds(),
+        payload=payload,
     )
 
 
@@ -72,11 +134,11 @@ def call_remote_draft(*, target_site_url: str, target_site_token: str, post_payl
     headers = {
         "Authorization": f"Bearer {target_site_token}",
         "Content-Type": "application/json",
+        "User-Agent": _user_agent(),
     }
 
-    return requests.post(
-        endpoint,
+    return _post_with_retry(
+        endpoint=endpoint,
         headers=headers,
-        json=post_payload,
-        timeout=_timeout_seconds(),
+        payload=post_payload,
     )

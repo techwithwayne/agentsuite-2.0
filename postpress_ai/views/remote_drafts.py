@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+import re
+from html import unescape
 from typing import Any
 
 from django.db import transaction
@@ -46,9 +48,57 @@ def _response_json(resp) -> dict:
         return {"raw": text}
 
 
+def _clean_text(value: Any) -> str:
+    text = unescape(str(value or ""))
+    text = re.sub(r"(?is)<script.*?>.*?</script>", " ", text)
+    text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _shorten_text(value: str, limit: int = 220) -> str:
+    value = str(value or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3].rstrip() + "..."
+
+
+def _compact_upstream_error(resp, body: dict, fallback: str) -> str:
+    status = getattr(resp, "status_code", None)
+
+    chunks: list[str] = []
+    for key in ("message", "detail", "error", "raw"):
+        if key in body and body.get(key):
+            cleaned = _clean_text(body.get(key))
+            if cleaned:
+                chunks.append(cleaned)
+
+    combined = _shorten_text(" ".join(chunks))
+
+    if status == 502:
+        if not combined or "cloudflare" in combined.lower():
+            return "Upstream returned 502 Bad Gateway."
+    if status == 503 and not combined:
+        return "Upstream returned 503 Service Unavailable."
+    if status == 504 and not combined:
+        return "Upstream returned 504 Gateway Timeout."
+
+    if combined:
+        if status:
+            return f"Upstream returned {status}: {combined}"
+        return combined
+
+    if status:
+        return f"{fallback} [{status}]"
+
+    return fallback
+
+
 def _upstream_result(resp, body: dict) -> dict:
     return {
         "status_code": getattr(resp, "status_code", None),
+        "summary": _compact_upstream_error(resp, body, "Upstream request failed."),
         "body": body,
     }
 
@@ -217,7 +267,7 @@ def register_site(request: HttpRequest) -> JsonResponse:
         if resp.status_code != 200 or not ok_flag:
             raise APIError(
                 code="handshake_failed",
-                message="Site handshake failed.",
+                message=_compact_upstream_error(resp, resp_json, "Site handshake failed."),
                 http_status=502,
                 err_type="upstream",
             )
@@ -391,7 +441,11 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
                     log.save(update_fields=["response_payload", "success", "error_message"])
                     raise APIError(
                         code="remote_draft_failed",
-                        message="Target site connection repair failed.",
+                        message=_compact_upstream_error(
+                            handshake_resp,
+                            handshake_json,
+                            "Target site connection repair failed.",
+                        ),
                         http_status=502,
                         err_type="upstream",
                     )
@@ -425,7 +479,11 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
                     log.save(update_fields=["response_payload", "success", "error_message"])
                     raise APIError(
                         code="remote_draft_failed",
-                        message="Target site connection was repaired, but draft creation still failed.",
+                        message=_compact_upstream_error(
+                            retry_resp,
+                            retry_json,
+                            "Target site connection was repaired, but draft creation still failed.",
+                        ),
                         http_status=502,
                         err_type="upstream",
                     )
@@ -438,13 +496,18 @@ def remote_drafts_create(request: HttpRequest) -> JsonResponse:
                     "recovered": True,
                 }
             else:
+                compact_error = _compact_upstream_error(
+                    resp,
+                    resp_json,
+                    "Target site failed to create the draft.",
+                )
                 log.response_payload = attempt_log
                 log.success = False
-                log.error_message = f"Target site error [{resp.status_code}]"
+                log.error_message = compact_error
                 log.save(update_fields=["response_payload", "success", "error_message"])
                 raise APIError(
                     code="remote_draft_failed",
-                    message="Target site failed to create the draft.",
+                    message=compact_error,
                     http_status=502,
                     err_type="upstream",
                 )
