@@ -131,8 +131,14 @@ def call_site_handshake(*, site_url: str, license_key: str, site_id: int, site_t
 def call_remote_draft(*, target_site_url: str, target_site_token: str, post_payload: Dict[str, Any]) -> requests.Response:
     endpoint = urljoin(target_site_url.rstrip("/") + "/", "wp-json/postpress-ai/v1/remote-draft")
 
+    payload = dict(post_payload or {})
+    payload.setdefault("remote_draft_token", target_site_token)
+    payload.setdefault("postpress_ai_site_token", target_site_token)
+
     headers = {
         "Authorization": f"Bearer {target_site_token}",
+        "x-postpress-ai-remote-draft": target_site_token,
+        "x-ppa-remote-draft-token": target_site_token,
         "Content-Type": "application/json",
         "User-Agent": _user_agent(),
     }
@@ -140,5 +146,5 @@ def call_remote_draft(*, target_site_url: str, target_site_token: str, post_payl
     return _post_with_retry(
         endpoint=endpoint,
         headers=headers,
-        payload=post_payload,
+        payload=payload,
     )
