@@ -270,3 +270,18 @@ if Customer is not None:  # CHANGED:
             inlines.append(EmailLogInline)  # CHANGED:
         if CustomerNote is not None:  # CHANGED:
             inlines.append(CustomerNoteInline)  # CHANGED:
+
+try:
+    from .models.plugin_release import PluginRelease
+except Exception:
+    PluginRelease = None
+
+
+if PluginRelease is not None:
+
+    @admin.register(PluginRelease)
+    class PluginReleaseAdmin(admin.ModelAdmin):
+        list_display = ("id", "product_slug", "version", "is_active", "released_at")
+        list_filter = ("product_slug", "is_active")
+        search_fields = ("product_slug", "version", "filename")
+        ordering = ("-released_at", "-id")

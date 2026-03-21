@@ -35,3 +35,8 @@ __all__ = [
     "Activation",  # CHANGED:
     "UsageEvent",  # CHANGED:
 ]  # CHANGED:
+
+try:
+    from .plugin_release import PluginRelease
+except Exception:
+    PluginRelease = None

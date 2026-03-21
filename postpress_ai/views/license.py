@@ -82,6 +82,7 @@ from django.http import HttpRequest, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
+from postpress_ai.plugin_updates import plugin_update_snapshot
 
 from postpress_ai.models.activation import Activation
 from postpress_ai.models.license import License
@@ -1222,6 +1223,7 @@ def _license_contract_snapshot(license_key: str, lic: License) -> Dict[str, Any]
 
         # UI links (optional)
         "links": links,  # CHANGED:
+        "plugin_update": plugin_update_snapshot(),  # CHANGED:
 
         "entitlements_source": ent.get("source"),
     }
