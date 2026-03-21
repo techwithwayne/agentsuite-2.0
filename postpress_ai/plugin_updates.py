@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, Optional
 
 from django.conf import settings
+from django.urls import reverse
 
 
 def _opt_str(value: Any) -> Optional[str]:
@@ -47,23 +48,24 @@ def plugin_update_snapshot() -> Dict[str, Any]:
             "released_at": None,
         }
 
-    raw_url = None
-    try:
-        raw_url = rel.zip_file.url if getattr(rel, "zip_file", None) else None
-    except Exception:
-        raw_url = None
-
     download_url = None
     base = _opt_str(getattr(settings, "DEPLOY_BASE_URL", None)) or _opt_str(os.environ.get("DEPLOY_BASE_URL"))
 
-    if raw_url:
-        raw_url = str(raw_url).strip()
-        if raw_url.startswith("http://") or raw_url.startswith("https://"):
-            download_url = raw_url
+    try:
+        download_path = reverse("postpress_ai:ppa-plugin-download")
+    except Exception:
+        download_path = None
+
+    if download_path:
+        download_path = str(download_path).strip()
+        if download_path.startswith("http://") or download_path.startswith("https://"):
+            download_url = download_path
         elif base:
-            if not raw_url.startswith("/"):
-                raw_url = "/" + raw_url
-            download_url = base.rstrip("/") + raw_url
+            if not download_path.startswith("/"):
+                download_path = "/" + download_path
+            download_url = base.rstrip("/") + download_path
+        else:
+            download_url = download_path
 
     filename = _opt_str(getattr(rel, "filename", None))
     if not filename:
@@ -80,3 +82,4 @@ def plugin_update_snapshot() -> Dict[str, Any]:
         "changelog": getattr(rel, "changelog", "") or "",
         "released_at": getattr(rel, "released_at", None),
     }
+

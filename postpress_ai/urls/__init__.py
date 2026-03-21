@@ -1,4 +1,4 @@
-﻿"""
+"""
 PostPress AI  URL routes (package router)
 
 CHANGE LOG
@@ -40,6 +40,7 @@ from django.urls import path, re_path
 from postpress_ai import views as ppa_views
 from postpress_ai.views.store import store_view
 from postpress_ai.views.stripe_webhook import stripe_webhook
+from postpress_ai.views.plugin_download import plugin_download_view
 
 # CHANGED: Import translate endpoint (lives outside views package)
 from postpress_ai.views_translate import translate_view
@@ -185,6 +186,8 @@ urlpatterns = [
         name="ppa-support-account-status",
     ),
 
+    path("plugin-download/", plugin_download_view, name="ppa-plugin-download"),
+
     # Translation endpoint (WP expects this exact path)
     path("translate/", translate_view, name="ppa-translate"),
 
@@ -215,3 +218,4 @@ urlpatterns = [
         name="ppa-remote-drafts-create-api",
     ),
 ]
+
