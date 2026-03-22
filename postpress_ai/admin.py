@@ -1,17 +1,17 @@
-# /home/techwithwayne/agentsuite/postpress_ai/admin.py
+﻿# /home/techwithwayne/agentsuite/postpress_ai/admin.py
 from __future__ import annotations  # CHANGED:
 
 """
-PostPress AI — Django Admin Registrations
+PostPress AI  Django Admin Registrations
 
 ========= CHANGE LOG =========
-2025-12-24 • Register PostPress AI models in this app's admin.py (isolated + modular).     # CHANGED:
-           • Add StoredArticle admin listing (simple, searchable).                          # CHANGED:
-           • Add License admin listing with SAFE masked key display (no full key exposure). # CHANGED:
-           • Forward-compatible: Activation admin auto-registers when model exists.         # CHANGED:
-2026-01-10 • Register Customer Command Center models + Plan model so they show in admin.   # CHANGED:
-2026-01-10 • Add EmailLog admin + inline under Customer for license-email visibility.      # CHANGED:
-2026-01-26 • ADMIN UX: Show Effective Max/Unlimited + Tokens in License list (computed from PLAN_DEFAULTS). # CHANGED:
+2025-12-24  Register PostPress AI models in this app's admin.py (isolated + modular).     # CHANGED:
+            Add StoredArticle admin listing (simple, searchable).                          # CHANGED:
+            Add License admin listing with SAFE masked key display (no full key exposure). # CHANGED:
+            Forward-compatible: Activation admin auto-registers when model exists.         # CHANGED:
+2026-01-10  Register Customer Command Center models + Plan model so they show in admin.   # CHANGED:
+2026-01-10  Add EmailLog admin + inline under Customer for license-email visibility.      # CHANGED:
+2026-01-26  ADMIN UX: Show Effective Max/Unlimited + Tokens in License list (computed from PLAN_DEFAULTS). # CHANGED:
 """
 
 from django.contrib import admin  # CHANGED:
@@ -89,7 +89,7 @@ if License is not None:  # CHANGED:
             k = (getattr(obj, "key", "") or "").strip()  # CHANGED:
             if len(k) <= 8:  # CHANGED:
                 return "****"  # CHANGED:
-            return f"{k[:4]}…{k[-4:]}"  # CHANGED:
+            return f"{k[:4]}{k[-4:]}"  # CHANGED:
 
         # ---- Effective entitlement helpers (read-only; display only; no behavior changes) ----  # CHANGED:
         def _effective_entitlements_safe(self, obj):  # CHANGED:
@@ -281,7 +281,30 @@ if PluginRelease is not None:
 
     @admin.register(PluginRelease)
     class PluginReleaseAdmin(admin.ModelAdmin):
-        list_display = ("id", "product_slug", "version", "is_active", "released_at")
+        list_display = ("id", "product_slug", "version", "is_active", "filename", "released_at")
         list_filter = ("product_slug", "is_active")
         search_fields = ("product_slug", "version", "filename")
         ordering = ("-released_at", "-id")
+        list_editable = ("is_active",)
+        readonly_fields = ("released_at", "updated_at")
+        save_on_top = True
+        fieldsets = (
+            (
+                "Release",
+                {
+                    "description": (
+                        "This record powers what plugin clients see on the Account page. "
+                        "Uploading the ZIP is not enough  Active must be checked for this release to be served. "
+                        "Only one active release should exist per product."
+                    ),
+                    "fields": ("product_slug", "version", "zip_file", "filename", "changelog", "is_active"),
+                },
+            ),
+            (
+                "Timestamps",
+                {
+                    "classes": ("collapse",),
+                    "fields": ("released_at", "updated_at"),
+                },
+            ),
+        )
